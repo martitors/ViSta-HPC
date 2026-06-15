@@ -1,0 +1,4 @@
+numpy>=1.21
+dask>=2022.1
+dask-ms>=0.2.18
+xarray>=0.19

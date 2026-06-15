@@ -1,0 +1,11 @@
+# ViSta input list
+# Format (one MS per line):
+#   <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_ID]
+#
+# RA/Dec format: hh:mm:ss.s  or  dd:mm:ss.s
+# FIELD_ID and SPW_ID are optional (default: 0)
+#
+# Example:
+/path/to/obs1.ms  2.310  12:34:56.7  +12:34:56.7
+/path/to/obs2.ms  1.987  12:34:56.7  +12:34:56.7  0  1
+/path/to/obs3.ms  2.105  12:34:56.7  +12:34:56.7
