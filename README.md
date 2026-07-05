@@ -180,3 +180,21 @@ If you use ViSta in your research, please cite:
 ## License
 
 This project is licensed under the MIT License.
+
+---
+
+## Changelog — v2.1
+
+- **Thread-safe Casacore access**: global + per-MS locking for safe concurrent reads
+- **Lazy materialisation**: vis/flag data kept as lazy Dask arrays, materialised one chunk at a time (peak RAM capped)
+- **Adaptive chunk sizing**: `chunk_rows` auto-reduced for wide-bandwidth data (target ~512 MB/chunk)
+- **Input channel pre-slicing**: only channels overlapping the output window are read from disk
+- **SPW frequency sorting**: merged axis always monotonically increasing in the same MS
+- **`velocity_range_kms` parameter**: set output bandwidth as a velocity range instead of channel count
+- **Automatic `OBSERVE_TARGET` filtering**: calibrator scans excluded via STATE subtable
+- **`CORRECTED_DATA` preference**: uses calibrated column when available, falls back to `DATA`
+- **Constant-column bulk write**: `FEED1`/`FEED2`/`PROCESSOR_ID`/... written once via `putcol` instead of per-chunk
+- **Full subtable set**: output includes FIELD, DATA_DESCRIPTION, ANTENNA, POLARIZATION, OBSERVATION, FEED, SOURCE
+- **Dynamic `REST_FREQUENCY`**: SOURCE table uses `central_freq` instead of hardcoded CO(4-3)
+- **Parallel reader pool**: multiple reader workers on SLURM, single reader on laptop
+- **English docstrings**: all comments and documentation rewritten in English
