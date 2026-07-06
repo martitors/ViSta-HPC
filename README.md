@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="ViSta logo" width="400">
+</p>
+
 # ViSta — Visibility Stacking tool
 
 **ViSta** is an HPC-optimised pipeline for stacking interferometric observations directly in the visibility (Fourier) domain. It combines datasets from sources at different redshifts, observed with different telescopes and array configurations, by rescaling, re-centring, and regridding each input Measurement Set onto a common rest-frame *uv*-plane before stacking them into a single unified observation.
