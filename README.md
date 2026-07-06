@@ -1,5 +1,5 @@
-<p align="center">
-  <img src="logo.png" alt="ViSta logo" width="400">
+<p align="left">
+  <img src="logo.png" alt="ViSta logo" width="200">
 </p>
 
 # ViSta — Visibility Stacking tool
