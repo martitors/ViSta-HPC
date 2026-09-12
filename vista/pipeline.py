@@ -49,7 +49,10 @@ import dask.array as da
 from collections import Counter
 from daskms import xds_from_ms, xds_from_table, xds_to_table, Dataset
 
-import ms_ops
+try:
+    from . import ms_ops     # installed into vista/ by 'make install'
+except ImportError:          # or found on PYTHONPATH
+    import ms_ops
 
 # ---------------------------------------------------------------------------
 # GPU availability check
