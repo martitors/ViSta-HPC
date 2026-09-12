@@ -5,6 +5,10 @@ Main class:
     ViSta  -- HPC-optimised visibility-domain stacking pipeline
               with optional CUDA GPU acceleration
 
+Subpackage:
+    vista.extract -- post-processing (continuum subtraction) and
+                     visibility-domain signal extraction of the stack
+
 Example usage::
 
     from vista import ViSta
@@ -19,9 +23,26 @@ New in v2.1:
     - Automatic OBSERVE_TARGET state filtering
     - CORRECTED_DATA preference with DATA fallback
     - Full output subtable set (FIELD, DD, ANTENNA, POL, OBS, FEED, SOURCE)
+
+New in v2.2:
+    - vista.extract: continuum subtraction, compression into sufficient
+      statistics, and uv-domain flux extraction with bootstrap errors
+    - Optional normalisation factor as the last column of the input list
 """
 
-from .pipeline import ViSta
-
 __all__ = ["ViSta"]
-__version__ = "2.1.0"
+__version__ = "2.2.0"
+
+
+def __getattr__(name):
+    """Import the stacking pipeline lazily (PEP 562).
+
+    ``vista.pipeline`` needs the compiled kernel ``ms_ops`` and the dask-ms
+    stack, which the extraction subpackage does not: importing it eagerly
+    here would make ``import vista.extract`` fail on a machine where the
+    kernel was never built.  ``from vista import ViSta`` still works.
+    """
+    if name == "ViSta":
+        from .pipeline import ViSta
+        return ViSta
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

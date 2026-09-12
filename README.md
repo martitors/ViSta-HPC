@@ -96,6 +96,24 @@ Create a plain text file with one Measurement Set per line:
 - `FIELD_ID` and `SPW_ID` are optional (default: 0)
 - Lines starting with `#` are ignored
 
+An optional extra value may follow, the normalisation factor used by
+`vista.extract` to put the sources on a common flux scale (a luminosity, a
+continuum flux density, any proxy of the stacked emission). It is ignored by
+the stacking and is recognised because it is neither a bare integer nor a
+comma-separated list of integers, so it cannot be confused with `FIELD_ID` or
+`SPW_IDS`:
+
+```
+# <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_IDS]  [NORM]
+/path/to/obs1.ms  2.369  00:18:02.46  -31:35:05.2  4   27,29  2.91e13
+/path/to/obs2.ms  2.561  00:32:07.60  -30:37:35.2  11  25,27  6.05e12
+/path/to/obs3.ms  2.561  00:32:07.60  -30:37:35.2  12  23,25  6.05e12
+```
+
+Lines sharing the same coordinates, like the last two above, are different
+observations of the same physical source; the extraction recognises them and
+combines them before the population average.
+
 ### Python API
 
 ```python
@@ -137,13 +155,26 @@ For GPU runs, the batch size (number of MSs dispatched per CUDA kernel launch) i
 ViSta-HPC/
 ├── vista/               # Python package
 │   ├── __init__.py
-│   └── pipeline.py      # Main ViSta class
+│   ├── pipeline.py      # Main ViSta class
+│   └── extract/         # post-processing and uv-domain extraction
+│       ├── config.py    # all user-facing options
+│       ├── contsub.py   # continuum subtraction on the stack
+│       ├── statistics.py# compression into sufficient statistics
+│       ├── sources.py   # source table, cosmology, flux normalisation
+│       ├── stack.py     # weighting, combination, bootstrap, driver
+│       ├── profiles.py  # line shape and per-annulus flux
+│       ├── uvfit.py     # circular Gaussian / point-source model
+│       ├── plots.py     # diagnostic figure
+│       └── cli.py       # python -m vista.extract
 ├── src/                 # C++ / CUDA kernel
 │   ├── ms_ops.cpp       # OpenMP kernel (+ GPU dispatch)
 │   └── ms_ops_cuda.cu   # CUDA kernel
 ├── examples/
 │   ├── run_vista.py
 │   └── example_input_list.txt
+├── docs/
+│   └── extraction.md
+├── run_vista.sh         # end-to-end driver
 ├── CMakeLists.txt
 ├── requirements.txt
 └── README.md
@@ -151,13 +182,95 @@ ViSta-HPC/
 
 ---
 
-## Post-processing
+## Post-processing and signal extraction
 
-After stacking, the output MS can be processed with any tool that supports the Measurement Set format:
+The output MS is a standard Measurement Set and can be processed with any tool
+that supports the format (`tclean`, [WSClean](https://wsclean.readthedocs.io/),
+[UVMultiFit](https://github.com/marti-vidal-i/UVMultiFit), `uvcontsub`), but
+both routes become awkward on a stack of heterogeneous, wide datasets: imaging
+inherits the ill-defined hybrid beam of a sample spanning very different
+angular resolutions, and a general visibility fitter has to hold everything in
+memory.
 
-- **Imaging**: `tclean` (CASA) or [WSClean](https://wsclean.readthedocs.io/)
-- **Visibility-plane fitting**: [UVMultiFit](https://github.com/marti-vidal-i/UVMultiFit)
-- **Continuum subtraction**: `uvcontsub` (CASA)
+The `vista.extract` subpackage recovers the stacked flux directly in the
+visibility domain, from a compact set of sufficient statistics, without ever
+loading the full visibility set:
+
+```python
+from vista.extract import (LineConfig, ContinuumConfig, WeightingConfig,
+                           subtract_continuum, compress_visibilities,
+                           extract_flux)
+
+line = LineConfig(rest_freq_ghz=345.7959899,   # the line you are stacking, GHz
+                  v_window_kms=(-600, 600))
+
+# continuum subtraction: writes MODEL_DATA and CORRECTED_DATA, keeps DATA
+subtract_continuum("stacked_output.ms", line, ContinuumConfig(order=0))
+
+# compression into sufficient statistics (read-only, checkpointed)
+compress_visibilities("stacked_output.ms", "input_list.txt", line,
+                      out_line="line_stats.npy",
+                      out_continuum="cont_stats.npy")
+
+# extraction: weighting scheme and source model are chosen here
+result = extract_flux("line_stats.npy", "input_list.txt", line,
+                      weighting=WeightingConfig(scheme="democratic"),
+                      output_prefix="stack_democratic")
+
+print(result.summary["flux_total"], result.summary["theta_fwhm_arcsec"])
+```
+
+For every channel the visibilities are binned radially into logarithmically
+spaced annuli of rest-frame baseline length, storing the weighted sums of the
+real and imaginary parts, the sum of the weights, the weighted sum of the
+baseline length and the number of samples. Every subsequent fit runs on that
+representation, which is what makes the bootstrap inexpensive. The total flux
+and the effective source size then come from a circular Gaussian fitted to the
+amplitude-versus-baseline profile, with the line shape measured once on the
+spatially integrated spectrum and held fixed while the amplitude is fitted
+annulus by annulus.
+
+Both weighting schemes are available and are applied at extraction time, so the
+stacked MS always keeps its native amplitudes and the same dataset can be reused
+for different subsamples and tests:
+
+- **natural**, the native visibility weights, maximum formal S/N;
+- **democratic**, each source renormalised to total weight 1, so that the stack
+  represents the population average.
+
+The extraction reads the **same input list** used for the stacking: the line
+number is the `DATA_DESC_ID` in the stacked MS, so no second file has to be
+kept in sync.
+
+If the continuum is not subtracted, `ProfileConfig(joint_continuum=True)` fits
+the line on top of a constant term whose amplitude is the continuum flux
+density, so line and continuum come out of the same fit, each with its own
+size.
+
+The whole workflow, from the stacking to the fits, is driven by
+`run_vista.sh`:
+
+```bash
+./run_vista.sh --input input_list.txt --rest-freq 345.7959899
+./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
+               --no-contsub --weighting natural --norm-flux
+./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
+               --only fit --model point        # refit, nothing else
+./run_vista.sh --help
+```
+
+or step by step:
+
+```bash
+python -m vista.extract contsub  stacked.ms     --rest-freq 345.7959899
+python -m vista.extract compress stacked.ms     --input input_list.txt \
+        --rest-freq 345.7959899 --out-line line_stats.npy
+python -m vista.extract flux     line_stats.npy --input input_list.txt \
+        --rest-freq 345.7959899 --weighting democratic --out stack_democratic
+```
+
+`casatools` is needed only by the two steps that read the MS; the extraction
+itself runs in a plain numpy/scipy environment. See `docs/extraction.md` for the full parameter reference.
 
 ---
 

@@ -2,3 +2,6 @@ numpy>=1.21
 dask>=2022.1
 dask-ms>=0.2.18
 xarray>=0.19
+scipy>=1.7            # vista.extract: profile and uv-plane fitting
+matplotlib>=3.4       # vista.extract: optional, diagnostic plots only
+astropy>=5.0          # vista.extract: optional, luminosity distances

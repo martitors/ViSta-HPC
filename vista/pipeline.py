@@ -622,6 +622,8 @@ class ViSta:
         self.dec_list   = []
         self.field_list = []
         self.spw_list   = []
+        self.norm_list  = []
+        self.input_file = input_file
         self._load_input(input_file)
 
     def _load_input(self, path):
@@ -631,10 +633,23 @@ class ViSta:
 
             /path/to/ms1  0.045  12:34:56.7  -23:01:45.6  0  16,18
             /path/to/ms2  0.102  12:35:00.0  -23:02:00.0
+
+        An optional extra value may follow, the normalisation factor used by
+        :mod:`vista.extract` to put the sources on a common flux scale (a
+        luminosity, a continuum flux density, any proxy of the stacked
+        emission).  It is ignored by the stacking itself and is recognised
+        because it is neither a bare integer nor a comma-separated list of
+        integers, so it cannot be confused with ``FIELD_ID`` or ``SPW_IDS``::
+
+            /path/to/ms3  0.102  12:35:00.0  -23:02:00.0  4  27,29  2.91e13
+            /path/to/ms4  0.102  12:35:00.0  -23:02:00.0  norm=2.91e13
         """
+        from .extract.sources import split_trailing_columns
+
         with open(path) as f:
             for line in f:
-                if not line.strip() or line.startswith("#"):
+                line = line.split("#", 1)[0].strip()
+                if not line:
                     continue
                 parts = line.split()
                 if len(parts) < 4:
@@ -643,11 +658,10 @@ class ViSta:
                 self.z_list.append(float(parts[1]))
                 self.ra_list.append(parts[2])
                 self.dec_list.append(parts[3])
-                self.field_list.append(int(parts[4]) if len(parts) >= 5 else None)
-                if len(parts) >= 6:
-                    self.spw_list.append([int(s) for s in parts[5].split(",") if s != ""])
-                else:
-                    self.spw_list.append(None)
+                field, spws, norm = split_trailing_columns(parts[4:])
+                self.field_list.append(field)
+                self.spw_list.append(spws)
+                self.norm_list.append(norm)
 
     # ------------------------------------------------------------------
     # Spectral grid computation
