@@ -667,7 +667,8 @@ class ViSta:
     # Spectral grid computation
     # ------------------------------------------------------------------
 
-    def _compute_per_ms_grids(self, central_freq, nchan_out=None, velocity_range_kms=None):
+    def _compute_per_ms_grids(self, central_freq, nchan_out=None,
+                              velocity_range_kms=None, channel_width_hz=None):
         """Compute the output spectral grid for each input MS.
 
         This reproduces the channel-grid logic of the original CASA-based
@@ -703,6 +704,10 @@ class ViSta:
             Rest-frame central frequency of the output grid (Hz).
         nchan_out : int or None
             If set, fix the number of output channels.
+        channel_width_hz : float or None
+            Common rest-frame channel width, in Hz.  ``None`` uses the widest
+            rest-framed channel of the sample, which is the finest grid every
+            dataset supports; a finer value is refused.
         velocity_range_kms : float, tuple, or None
             If set, determines the output bandwidth from a velocity range
             (optical convention, km/s).  A scalar is interpreted as ±v;
@@ -825,9 +830,30 @@ class ViSta:
                  f"z={z:.5f}  nchan={len(freq_all)}  df_rf={df_rf/1e3:.3f} kHz  "
                  f"range=[{freq_rf.min()/1e6:.3f}, {freq_rf.max()/1e6:.3f}] MHz")
 
-        # Common channel width = widest rest-framed channel across all MSs
-        df_new = max(spectral_res_list)
-        _log(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz")
+        # Common channel width: by default the widest rest-framed channel of
+        # the sample, which is the finest grid every dataset can actually
+        # support.  A user-set width must not be finer than that, or the
+        # coarsest dataset would be interpolated onto channels it does not
+        # resolve, correlating the noise between them.
+        df_floor = max(spectral_res_list)
+        if channel_width_hz is None:
+            df_new = df_floor
+            _log(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
+                 f"(widest rest-framed channel of the sample)")
+        else:
+            df_new = float(channel_width_hz)
+            if df_new < df_floor:
+                worst = int(np.argmax(spectral_res_list))
+                raise ValueError(
+                    f"[ViSta] requested channel width {df_new/1e3:.3f} kHz is "
+                    f"finer than the coarsest rest-framed channel of the "
+                    f"sample, {df_floor/1e3:.3f} kHz "
+                    f"({os.path.basename(self.ms_list[worst])}, "
+                    f"z={self.z_list[worst]:.4f}).  Use a width >= "
+                    f"{df_floor:.6g} Hz, or drop that dataset."
+                )
+            _log(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
+                 f"(user-set; sample floor is {df_floor/1e3:.3f} kHz)")
 
         # Maximum output channels each MS can contribute
         nn_per_ms = [max(1, int(nc * dr / df_new))
@@ -901,7 +927,8 @@ class ViSta:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None, velocity_range_kms=None):
+    def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None,
+            velocity_range_kms=None, channel_width_hz=None):
         """Run the stacking pipeline and write the output Measurement Set.
 
         Parameters
@@ -926,6 +953,10 @@ class ViSta:
 
             ``int`` — fix the number of output channels explicitly.  Can be
             larger or smaller than the automatic value.
+        channel_width_hz : float or None
+            Common rest-frame channel width, in Hz.  ``None`` uses the widest
+            rest-framed channel of the sample, which is the finest grid every
+            dataset supports; a finer value is refused.
         velocity_range_kms : float, tuple, or None
             If set, determines the output bandwidth from a velocity range
             (optical convention, km/s).  A scalar is interpreted as ±v;
@@ -966,7 +997,9 @@ class ViSta:
 
         _log("Computing per-MS spectral grids...")
         freq_new_per_ms, df_new = self._compute_per_ms_grids(
-            central_freq, nchan_out=nchan_out, velocity_range_kms=velocity_range_kms)
+            central_freq, nchan_out=nchan_out,
+            velocity_range_kms=velocity_range_kms,
+            channel_width_hz=channel_width_hz)
         nchan_new = len(freq_new_per_ms[0])
 
         t_setup = time.perf_counter()

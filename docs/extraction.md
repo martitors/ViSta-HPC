@@ -60,6 +60,40 @@ result = extract_flux("line_stats.npy", "input_list.txt", line,
                       output_prefix="stack_democratic")
 ```
 
+## The output spectral grid
+
+ViSta does not keep a fixed velocity interval around the line. The grid is
+built in three steps, in the rest frame.
+
+**The channel width.** Each dataset has its own observed width `df_obs`, which
+in the rest frame becomes `df_obs * (1 + z)`. The common width is the
+*largest* of these across the sample: it is the finest grid every dataset can
+support, since resampling a coarse spectrum onto finer channels would only
+correlate the noise between them. `--width HZ` overrides it, and a value finer
+than that floor is refused with an error naming the dataset that sets it.
+
+**The number of channels.** With `--velocity-range KMS` (the default, 2000)
+the bandwidth is `nu_rest * dv / c` and the number of channels follows from the
+width; `--nchan N` sets it directly instead. Without either, ViSta takes the
+widest coverage any single dataset can provide. The count is rounded down to
+an even number.
+
+**The placement.** The window of that bandwidth is centred on the rest
+frequency of the line, the same for every dataset. Where a dataset does not
+cover the whole window — its band ends before the edge — the window is slid to
+the nearest edge of that dataset's coverage rather than being truncated, and
+the log records the shift. So every output spectral window has the same width
+and the same number of channels, but possibly a different start frequency.
+
+That last point is why the extraction builds a common frequency grid of its
+own when compressing: the spectral windows share a step but not an origin, and
+the channels have to be mapped onto a single axis before the sources can be
+averaged. It is also why the number of contributing sources varies from
+channel to channel, which the figures show on the right-hand axis of the
+spectrum: the coverage is complete near the line and thins out in the wings.
+
+---
+
 ## The input list
 
 The extraction reads the **same file used for the stacking**, with one optional
@@ -100,11 +134,12 @@ there is no name column and no separate coordinate file to keep in sync.
 
 This is the first decision, and it decides everything downstream: which
 column is read, whether there are one or two fits, and which figures come out.
-On the command line it is `--continuum {subtract,joint,none}`.
+On the command line it is `--contsub before`, `--contsub after`, or nothing at
+all, which is the default.
 
-### `subtract` — remove it first, fit the two separately
+### `--contsub before` — remove it first, fit the two separately
 
-The default. Use it when the continuum is bright enough to distort the
+Use it when the continuum is bright enough to distort the
 baseline of the stacked line profile, or when a few sources have a much
 brighter continuum than the rest.
 
@@ -120,7 +155,7 @@ line-free channels of `MODEL_DATA`. Nothing is ever drawn on a shared axis.
 The continuum size can be fed back as a prior on the line size with
 `--theta-prior-from <tag>_continuum_results.json`.
 
-### `joint` — keep it, one fit for both
+### `--contsub after` — keep it, one fit for both
 
 Use it when you want both quantities out of the same fit on the same data, or
 when subtracting first would be awkward.
@@ -132,17 +167,20 @@ gets its own radial profile and its own uv fit, correlated with the line
 because they came out of one solution. One run, one set of outputs, one
 figure with three panels: line, continuum, spectrum.
 
-### `none` — no continuum to fit
+### no flag — no continuum to fit
 
-Use it when the continuum is genuinely absent or far below the noise. The data
-are treated as line only, over the velocity window of interest.
+The default. The data are treated as line only, over the velocity window of
+interest. Right when the continuum is genuinely absent or far below the noise,
+which is the common case for a line stack; wrong, and badly so, when a real
+continuum is present.
 
 Leaving a real continuum in **without** the joint term is the one combination
 to avoid: the shape fit has no baseline, so the Gaussian stretches to cover
 the pedestal and the line flux comes out far too high. On a synthetic test
-with a true flux of 4.0 and a true FWHM of 471 km/s, `joint` returns 3.9 and
-451 km/s while `none` on the same data returns 10.7 and 1227 km/s. If the line
-FWHM comes out implausibly broad, this is the first thing to check.
+with a true flux of 4.0 and a true FWHM of 471 km/s, `--contsub after` returns
+3.9 and 451 km/s while the default on the same data returns 10.7 and 1227
+km/s. If the line FWHM comes out implausibly broad, this is the first thing to
+check.
 
 Over a bandwidth spanning the thermal dust emission a polynomial is not the
 right function at all: in the Rayleigh-Jeans limit the continuum scales
@@ -158,12 +196,12 @@ roughly as `nu^4`, so fit it locally, on narrow windows.
 |-----------|-------|-------|
 | `rest_freq_ghz` | `LineConfig` | rest frequency of the line you are stacking, GHz. The only parameter with no default |
 | `v_window_kms` | `LineConfig` | default `(-600, 600)`. Must contain the whole profile: it defines the line-free channels for the continuum fit and, with `method='window'`, the integration window |
-| `scheme` | `WeightingConfig` | `democratic` or `natural`. A scientific choice, not a technical one |
+| `scheme` | `WeightingConfig` | `natural` (default) or `democratic`. A scientific choice, not a technical one |
 | the continuum | — | subtract it or fit it jointly, as above |
 
 ### Natural or democratic weighting
 
-**`democratic`** (default) rescales the internal weights of each source so
+**`democratic`** rescales the internal weights of each source so
 that they sum to one (Eq. 26), so every object contributes equally regardless
 of its observational depth. It buys population representativeness at the cost
 of formal sensitivity, because deep observations are no longer allowed to
@@ -171,7 +209,7 @@ drive the result. Use it when the question is the *average behaviour of the
 ensemble*, and when the line is bright enough to stay well defined at lower
 S/N.
 
-**`natural`** keeps the native visibility weights, so the deepest observations
+**`natural`** (the default) keeps the native visibility weights, so the deepest observations
 dominate. It gives the highest formal S/N but a combined estimate that may
 fail to represent the population. Use it for emission too faint to be seen in
 the individual sources.
@@ -261,9 +299,9 @@ is what decides whether line and continuum are two measurements or one.
 
 | Case | Figures |
 |------|---------|
-| `subtract` | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png`, `<tag>_continuum_uvamp.png` — two independent runs, two independent sets |
-| `joint` | `<tag>_joint.png` — one figure, three panels: line profile, continuum profile, spectrum with the line on the fitted continuum level |
-| `none` | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png` |
+| `--contsub before` | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png`, `<tag>_continuum_uvamp.png` — two independent runs, two independent sets |
+| `--contsub after` | `<tag>_joint.png` — one figure, three panels: line profile, continuum profile, spectrum with the line on the fitted continuum level |
+| no flag | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png` |
 
 The uv figures carry a lower panel with the number of sources contributing to
 each annulus and the minimum below which an annulus was dropped; annuli

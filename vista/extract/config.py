@@ -107,16 +107,16 @@ class WeightingConfig:
     Parameters
     ----------
     scheme
+        ``'natural'`` (default)  the native visibility weights are used as
+        they are, so the deepest observations dominate.  This maximises the
+        formal S/N and is preferable for emission too faint to be seen in
+        the individual sources.
+
         ``'democratic'``  each *physical source* contributes with total
         weight 1 (Eq. 26): repeated observations of the same source are
         first co-added with their native weights, i.e. naturally, and the
         resulting single measurement is then renormalised to unity.  This is
         the choice for a population average.
-
-        ``'natural'``  the native visibility weights are used as they are,
-        so the deepest observations dominate.  This maximises the formal S/N
-        and is preferable for emission too faint to be seen in the
-        individual sources.
     redshift_rescaling
         Apply the factor alpha of Eq. (27), which transports every source to
         ``z_ref``.  Essential over a broad redshift range, irrelevant over a
@@ -144,7 +144,7 @@ class WeightingConfig:
         Cosmology used for the luminosity distances in alpha.
     """
 
-    scheme: str = "democratic"          # 'democratic' | 'natural'
+    scheme: str = "natural"             # 'natural' | 'democratic'
     redshift_rescaling: bool = True
     z_ref: Optional[float] = None
     flux_normalisation: bool = False

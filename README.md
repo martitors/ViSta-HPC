@@ -234,7 +234,7 @@ Both weighting schemes are available and are applied at extraction time, so the
 stacked MS always keeps its native amplitudes and the same dataset can be reused
 for different subsamples and tests:
 
-- **natural**, the native visibility weights, maximum formal S/N;
+- **natural** (the default), the native visibility weights, maximum formal S/N;
 - **democratic**, each source renormalised to total weight 1, so that the stack
   represents the population average.
 
@@ -242,22 +242,22 @@ The extraction reads the **same input list** used for the stacking: the line
 number is the `DATA_DESC_ID` in the stacked MS, so no second file has to be
 kept in sync.
 
-If the continuum is not subtracted, `ProfileConfig(joint_continuum=True)` fits
-the line on top of a constant term whose amplitude is the continuum flux
-density, so line and continuum come out of the same fit, each with its own
-size.
-
 The whole workflow, from the stacking to the fits, is driven by
 `run_vista.sh`:
 
 ```bash
 ./run_vista.sh --input input_list.txt --rest-freq 345.7959899
 ./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
-               --no-contsub --weighting natural --norm-flux
+               --contsub after --weighting democratic --norm-flux
 ./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
                --only fit --model point        # refit, nothing else
 ./run_vista.sh --help
 ```
+
+By default nothing is subtracted and no continuum term is fitted: the data are
+treated as line only. `--contsub before` removes the continuum from the stack
+and fits the two separately; `--contsub after` keeps it and fits it together
+with the line.
 
 or step by step:
 

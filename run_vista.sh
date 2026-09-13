@@ -16,7 +16,7 @@
 # Usage
 #   ./run_vista.sh --input input_list.txt --rest-freq 345.7959899   # GHz
 #   ./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
-#                  --continuum joint --weighting natural --norm-flux
+#                  --contsub after --weighting democratic --norm-flux
 #   ./run_vista.sh --input input_list.txt --rest-freq 345.7959899 \
 #                  --only fit --weighting natural        # refit, nothing else
 #   ./run_vista.sh --help
@@ -24,15 +24,15 @@
 # The input list is the plain ViSta one:
 #   <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_IDS]  [NORM]
 # NORM is optional and is only used by --norm-flux.
-# The continuum can be handled in three ways, with --continuum:
-#   subtract  remove it from the stack first (it goes to MODEL_DATA, the line
-#             to CORRECTED_DATA), then fit line and continuum separately, each
-#             with its own figures.  The default.
-#   joint     leave it in and fit it together with the line, the line sitting
-#             on a constant term whose amplitude is the continuum flux
-#             density: one fit, one figure.
-#   none      there is no continuum worth fitting: everything is treated as
-#             line, over the velocity window of interest.
+# The continuum is handled in one of three ways.  By default nothing is
+# subtracted and no continuum term is fitted: the data are treated as line
+# only, over the velocity window of interest.  Otherwise:
+#   --contsub before   remove it from the stack first (it goes to MODEL_DATA,
+#                      the line to CORRECTED_DATA), then fit line and
+#                      continuum separately, each with its own figures.
+#   --contsub after    leave it in and fit it together with the line, the line
+#                      sitting on a constant term whose amplitude is the
+#                      continuum flux density: one fit, one figure.
 # ============================================================================
 set -u
 
@@ -45,11 +45,13 @@ TAG=""                      # name of the run; default from the rest frequency
 OUTDIR="."                  # where everything is written
 
 # --- what to do with the continuum (a scientific choice) -------------------
-# subtract : remove it from the stack first, then fit line and continuum
-#            separately, on two columns, with their own figures
-# joint    : keep it and fit it together with the line, one fit, one figure
-# none     : there is no continuum worth fitting; treat everything as line
-CONTINUUM="subtract"
+# none   : the default.  No subtraction and no continuum term: everything is
+#          treated as line, over the velocity window of interest.
+# before : --contsub before.  Subtract it from the stack first, spectral
+#          window by spectral window, then fit line and continuum separately.
+# after  : --contsub after.   Leave it in and fit it together with the line,
+#          one fit and one figure.
+CONTINUUM="none"
 
 # --- which steps to actually run (all of them by default) ------------------
 SKIP_STACK=0
@@ -60,6 +62,8 @@ SKIP_FIT=0
 # --- 1. stacking -----------------------------------------------------------
 VELOCITY_RANGE=2000         # half-width of the output band, km/s ("" to use NCHAN)
 NCHAN=""                    # fixed number of output channels, alternative
+WIDTH=""                    # common rest-frame channel width, Hz; empty =
+                            # widest rest-framed channel of the sample
 CHUNK_ROWS=50000
 SCRATCH="${TMPDIR:-}"       # build the MS on fast local disk, then move it
 
@@ -79,7 +83,7 @@ SECOND_RESTFREQ=""          # second line in the same band, GHz
 SECOND_VWINDOW="-500 500"
 EXCLUDE_V=""                # extra "LO HI" pairs kept out of the line-free channels
 
-WEIGHTING="democratic"      # democratic | natural
+WEIGHTING="natural"         # natural | democratic
 NORM_Z=1                    # transport every source to a common redshift
 ZREF=""                     # that redshift; empty = sample median
 NORM_FLUX=0                 # rescale by norm_ref/NORM (last column of the list)
@@ -113,14 +117,15 @@ Options
   --tag NAME              name of the run (default: from --rest-freq)
   --out-dir DIR           output directory                          (default .)
 
-  --continuum {subtract,joint,none}
-                                  subtract: remove the continuum from the
-                                    stack, then fit line and continuum
-                                    separately, each with its own figures
-                                  joint:    keep it and fit it together with
-                                    the line, one fit and one figure
-                                  none:     no continuum to fit, line only
-                                                              (default subtract)
+  --contsub {before,after}        how to handle the continuum.  Without it,
+                                  the default, nothing is subtracted and no
+                                  continuum term is fitted: the data are
+                                  treated as line only.
+                                    before: subtract it from the stack, then
+                                      fit line and continuum separately, each
+                                      with its own figures
+                                    after:  keep it and fit it together with
+                                      the line, one fit and one figure
 
   --skip-stack                    the stacked MS already exists
   --skip-contsub                  the subtraction was already done
@@ -130,6 +135,10 @@ Options
 
   --velocity-range KMS    half-width of the stacked band            (default 2000)
   --nchan N               fixed number of output channels instead
+  --width HZ              common rest-frame channel width, in Hz.  Default:
+                          the widest rest-framed channel of the sample, the
+                          finest grid every dataset supports.  A finer value
+                          is refused.
   --chunk-rows N          rows per chunk while reading              (default 50000)
   --scratch DIR           build the MS here, then move it           (default $TMPDIR)
 
@@ -146,7 +155,7 @@ Options
   --second-v-window "LO HI"                                         (default "-500 500")
   --exclude-v "LO HI ..." extra intervals kept out of the line-free channels
 
-  --weighting {democratic,natural}                                  (default democratic)
+  --weighting {natural,democratic}                                  (default natural)
   --norm-z | --no-norm-z          rescale to a common redshift      (default on)
   --z-ref Z                       that redshift (default: median)
   --norm-flux | --no-norm-flux    rescale by norm_ref/NORM          (default off)
@@ -187,14 +196,14 @@ while [ $# -gt 0 ]; do
         --tag)                TAG="$2"; shift 2;;
         --out-dir)            OUTDIR="$2"; shift 2;;
 
-        --continuum)
+        --contsub)
             case "$2" in
-                subtract|joint|none) CONTINUUM="$2";;
-                *) echo "--continuum wants subtract|joint|none" >&2; exit 2;;
-            esac
-            shift 2;;
-        --contsub)            CONTINUUM="subtract"; shift;;   # back-compat
-        --no-contsub)         CONTINUUM="joint"; shift;;      # back-compat
+                before) CONTINUUM="before"; shift 2;;
+                after)  CONTINUUM="after";  shift 2;;
+                none)   CONTINUUM="none";   shift 2;;
+                *) echo "--contsub wants before|after (or none)" >&2; exit 2;;
+            esac;;
+        --no-contsub)         CONTINUUM="none"; shift;;
 
         --skip-stack)         SKIP_STACK=1; shift;;
         --skip-contsub)       SKIP_CONTSUB=1; shift;;
@@ -213,6 +222,7 @@ while [ $# -gt 0 ]; do
 
         --velocity-range)     VELOCITY_RANGE="$2"; shift 2;;
         --nchan)              NCHAN="$2"; VELOCITY_RANGE=""; shift 2;;
+        --width)              WIDTH="$2"; shift 2;;
         --chunk-rows)         CHUNK_ROWS="$2"; shift 2;;
         --scratch)            SCRATCH="$2"; shift 2;;
 
@@ -276,9 +286,9 @@ echo "  ViSta  ${TAG}   nu_rest = ${RESTFREQ} GHz"
 echo "  input     : $INPUT"
 echo "  stacked MS: $MS"
 case "$CONTINUUM" in
-    subtract) CONT_NOTE="subtracted from the stack, fitted separately";;
-    joint)    CONT_NOTE="kept, fitted jointly with the line";;
-    none)     CONT_NOTE="not fitted (assumed negligible)";;
+    before) CONT_NOTE="subtracted from the stack, fitted separately";;
+    after)  CONT_NOTE="kept, fitted jointly with the line";;
+    none)   CONT_NOTE="not fitted, data treated as line only";;
 esac
 echo "  continuum : $CONT_NOTE"
 echo "  weighting : $WEIGHTING"
@@ -290,11 +300,12 @@ echo "============================================================"
 if [ "$SKIP_STACK" = 0 ]; then
     echo; echo "== [1/4] stacking =="
     python - "$INPUT" "$MS" "$RESTHZ" "$CHUNK_ROWS" "$VELOCITY_RANGE" \
-             "$NCHAN" "$SCRATCH" <<'PY' 2>&1 | tee "$OUTDIR/${TAG}_stack.log"
+             "$NCHAN" "$SCRATCH" "$WIDTH" <<'PY' 2>&1 | tee "$OUTDIR/${TAG}_stack.log"
 import sys
 from vista import ViSta
 
-input_file, ms_out, restfreq, chunk_rows, vrange, nchan, scratch = sys.argv[1:8]
+(input_file, ms_out, restfreq, chunk_rows, vrange, nchan, scratch,
+ width) = sys.argv[1:9]
 
 kwargs = {}
 if vrange:
@@ -303,6 +314,8 @@ elif nchan:
     kwargs["nchan_out"] = int(nchan)
 if scratch:
     kwargs["scratch_dir"] = scratch
+if width:
+    kwargs["channel_width_hz"] = float(width)
 
 ViSta(input_file=input_file, chunk_rows=int(chunk_rows), verbose=True).run(
     ms_out=ms_out, central_freq=float(restfreq), **kwargs)
@@ -313,7 +326,7 @@ else
 fi
 
 # the MS is only needed by the two steps that read it
-if { [ "$SKIP_CONTSUB" = 0 ] && [ "$CONTINUUM" = subtract ]; } \
+if { [ "$SKIP_CONTSUB" = 0 ] && [ "$CONTINUUM" = before ]; } \
    || [ "$SKIP_COMPRESS" = 0 ]; then
     [ -d "$MS" ] || { echo "stacked MS not found: $MS" >&2; exit 1; }
 fi
@@ -333,7 +346,7 @@ fi
 EXCL_ARGS=()
 [ -n "$EXCLUDE_V" ] && EXCL_ARGS+=(--exclude-v $EXCLUDE_V)
 
-if [ "$CONTINUUM" = subtract ] && [ "$SKIP_CONTSUB" = 0 ]; then
+if [ "$CONTINUUM" = before ] && [ "$SKIP_CONTSUB" = 0 ]; then
     echo; echo "== [2/4] continuum subtraction (order=$CONT_ORDER) =="
     python -u -m vista.extract contsub "$MS" \
         --rest-freq "$RESTFREQ" --v-window $VWINDOW \
@@ -341,9 +354,9 @@ if [ "$CONTINUUM" = subtract ] && [ "$SKIP_CONTSUB" = 0 ]; then
         --order "$CONT_ORDER" \
         2>&1 | tee "$OUTDIR/${TAG}_contsub.log"
     [ ${PIPESTATUS[0]} -eq 0 ] || { echo "continuum subtraction failed" >&2; exit 1; }
-elif [ "$CONTINUUM" = subtract ]; then
+elif [ "$CONTINUUM" = before ]; then
     echo; echo "== [2/4] continuum subtraction skipped (already done) =="
-elif [ "$CONTINUUM" = joint ]; then
+elif [ "$CONTINUUM" = after ]; then
     echo; echo "== [2/4] no subtraction: line and continuum will be fitted"
     echo "         together on DATA =="
 else
@@ -356,7 +369,7 @@ fi
 # ---------------------------------------------------------------------------
 COMPRESS_ARGS=(--bins $BINS --chunk-mb "$CHUNK_MB")
 [ -n "$MAX_AMP" ] && COMPRESS_ARGS+=(--max-amplitude "$MAX_AMP")
-if [ "$CONTINUUM" = subtract ]; then
+if [ "$CONTINUUM" = before ]; then
     COMPRESS_ARGS+=(--line-column CORRECTED_DATA
                     --out-continuum "$STATS_CONT")
 else
@@ -403,7 +416,7 @@ FIT_ARGS=(--weighting "$WEIGHTING" --model "$MODEL"
 [ -n "$V_LIMITS" ]    && FIT_ARGS+=(--v-limits $V_LIMITS)
 
 case "$CONTINUUM" in
-subtract)
+before)
     # ---- two independent fits, on two columns, with their own figures -----
     echo "-- continuum, from the line-free channels of MODEL_DATA"
     python -u -m vista.extract flux "$STATS_CONT" --input "$INPUT" \
@@ -425,7 +438,7 @@ subtract)
         2>&1 | tee "$OUTDIR/${TAG}_fit_line.log"
     ;;
 
-joint)
+after)
     # ---- one fit, line on top of a constant continuum, one figure ---------
     echo "-- line and continuum together, from DATA"
     python -u -m vista.extract flux "$STATS_LINE" --input "$INPUT" \
@@ -486,6 +499,6 @@ PY
 echo
 echo "done."
 echo "  stacked MS : $MS"
-echo "  statistics : $STATS_LINE$([ "$CONTINUUM" = subtract ] && echo ", $STATS_CONT")"
+echo "  statistics : $STATS_LINE$([ "$CONTINUUM" = before ] && echo ", $STATS_CONT")"
 echo "  results    : $OUTDIR/${TAG}_*_results.json"
 [ "$PLOT" = 1 ] && echo "  figures    : $OUTDIR/${TAG}_*.png"

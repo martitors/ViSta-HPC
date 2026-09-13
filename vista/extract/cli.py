@@ -115,11 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("statistics")
     p.add_argument("--input", required=True, help="ViSta input list")
     _add_line_options(p)
-    p.add_argument("--weighting", default="democratic",
-                   choices=["democratic", "natural"],
-                   help="democratic: every source contributes with total "
-                        "weight 1; natural: native weights, the deepest "
-                        "observations dominate")
+    p.add_argument("--weighting", default="natural",
+                   choices=["natural", "democratic"],
+                   help="natural (default): native weights, the deepest "
+                        "observations dominate; democratic: every source "
+                        "contributes with total weight 1")
     p.add_argument("--no-redshift-rescaling", dest="redshift_rescaling",
                    action="store_false", default=True,
                    help="do not transport the sources to a common redshift")
