@@ -36,7 +36,7 @@ from .profiles import (LineShape, fit_line_shape, flux_per_annulus_continuum,
 from .sources import (Entry, amplitude_factors, group_by_position,
                       read_input_list)
 from .statistics import SufficientStatistics
-from .uvfit import UVFitResult, fit_uv_profile
+from .uvfit import UVFitResult, fit_uv_profile, gaussian_visibility
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +184,49 @@ def combine(sums, factors, multiplicity=None, renormalise=True):
     return real, imaginary, denominator, mean_b
 
 
+def flux_per_channel(real, weight, baseline_lambda, theta_arcsec,
+                     bin_ok=None):
+    """Flux density of the source in each channel, extrapolated to b = 0.
+
+    With the size held fixed the source model is linear in the flux,
+    ``V(b) = F * g(b)`` with ``g(b) = exp[-(pi theta b)^2 / (4 ln 2)]``, so
+    the flux of a channel is the weighted least squares solution
+
+    ``F = sum_b w g Re(V) / sum_b w g^2``
+
+    over the annuli.  This is the spectrum an image-plane fit would give:
+    the amplitude is corrected for the resolution of every annulus instead of
+    being averaged with it, so its units are those of the data, not of a
+    visibility average, and its integral over velocity is the total line flux.
+
+    Parameters
+    ----------
+    real, weight
+        Stacked real part and summed weights, both ``(nchan, nbins)``.
+    baseline_lambda
+        Mean baseline length of each annulus, in units of the wavelength.
+    theta_arcsec
+        Source size to assume, normally the one fitted on the line profile.
+        ``0`` treats the source as unresolved and the result is the plain
+        weighted average.
+    bin_ok
+        Annuli to use.
+    """
+    g = gaussian_visibility(np.asarray(baseline_lambda, float), 1.0,
+                            theta_arcsec)
+    usable = np.isfinite(g) & (g > 1e-3)
+    if bin_ok is not None:
+        usable &= np.asarray(bin_ok, bool)
+    if not usable.any():
+        return np.full(real.shape[0], np.nan)
+    w = np.where(np.isfinite(weight[:, usable]), weight[:, usable], 0.0)
+    r = np.where(np.isfinite(real[:, usable]), real[:, usable], 0.0)
+    numerator = np.nansum(w * g[usable] * r, axis=1)
+    denominator = np.nansum(w * g[usable] ** 2, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(denominator > 0, numerator / denominator, np.nan)
+
+
 def sources_per_bin(sums, channel_mask) -> np.ndarray:
     """Number of sources contributing to each annulus, over the given channels."""
     weight = sums[..., 2][:, channel_mask, :].sum(axis=1)
@@ -218,6 +261,9 @@ class ExtractionResult:
     shape: Optional[LineShape] = None
     second: Optional[dict] = None
     continuum: Optional[dict] = None
+    spectrum_zero_baseline: Optional[np.ndarray] = None
+    spectrum_zero_baseline_error: Optional[np.ndarray] = None
+    zero_baseline_shape: Optional[LineShape] = None
 
     def _save_profile(self, prefix: str, tag: str, block: dict) -> str:
         path = f"{prefix}_uvamp_{tag}.txt"
@@ -241,6 +287,14 @@ class ExtractionResult:
                                     self.sources_per_channel]),
                    header="v_kms  Re_stack  err_bootstrap  n_sources")
         written.append(f"{prefix}_spectrum.txt")
+        if self.spectrum_zero_baseline is not None:
+            path = f"{prefix}_spectrum_zerob.txt"
+            np.savetxt(path, np.column_stack([
+                self.velocity_kms, self.spectrum_zero_baseline,
+                self.spectrum_zero_baseline_error,
+                self.sources_per_channel]),
+                header="v_kms  flux_density  err_bootstrap  n_sources")
+            written.append(path)
         np.savetxt(f"{prefix}_uvamp.txt",
                    np.column_stack([self.baseline_klambda, self.flux,
                                     self.flux_error, self.flux_imaginary,
@@ -525,6 +579,41 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
         continuum["effective_freq_ghz"] = float(
             np.nansum(freq[used_channels]) / max(used_channels.sum(), 1) / 1e9)
 
+    # ---- the spectrum at zero baseline -----------------------------------
+    # Per-channel flux with the fitted size held fixed: the spectrum an
+    # image-plane fit would produce, in flux units, whose integral over
+    # velocity is the total line flux.
+    spectrum_zero = spectrum_zero_error = zero_shape = None
+    if profile.method != "continuum" and np.isfinite(fit.theta_arcsec):
+        theta_fixed = float(fit.theta_arcsec)
+        spectrum_zero = flux_per_channel(real, weight, baseline, theta_fixed,
+                                         bin_ok)
+        boot_zero = []
+        rng_zero = np.random.default_rng(bootstrap.seed)
+        for _ in range(bootstrap.n_realisations):
+            multiplicity = np.bincount(
+                rng_zero.integers(0, n_sources, n_sources),
+                minlength=n_sources).astype(float)
+            r, _, w, _ = combine(sums, factors, multiplicity=multiplicity,
+                                 renormalise=renormalise)
+            boot_zero.append(flux_per_channel(r, w, baseline, theta_fixed,
+                                              bin_ok))
+        spectrum_zero_error = np.nanstd(np.asarray(boot_zero), axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            channel_weight = np.where(spectrum_zero_error > 0,
+                                      1.0 / spectrum_zero_error ** 2, 0.0)
+        zero_shape = fit_line_shape(spectrum_zero, channel_weight, freq, line,
+                                    profile,
+                                    start=None if shape is None
+                                    else shape.raw_params)
+        if verbose and zero_shape is not None:
+            integral = (zero_shape.amplitude * zero_shape.sigma_kms
+                        * np.sqrt(2.0 * np.pi))
+            print(f"[zero-b] peak = {zero_shape.amplitude:.4g}  "
+                  f"FWHM = {zero_shape.fwhm_kms:.0f} km/s  "
+                  f"integral = {integral:.4g} "
+                  f"({100 * integral / fit.flux:.0f}% of F)")
+
     # ---- summary ---------------------------------------------------------
     null_test = np.isfinite(flux_imaginary) & bin_ok
     summary = {
@@ -578,6 +667,13 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
     }
     if shape is not None:
         summary["line_shape"] = shape.as_dict()
+    if zero_shape is not None:
+        block = zero_shape.as_dict()
+        block["peak"] = zero_shape.amplitude
+        block["integral"] = float(zero_shape.amplitude * zero_shape.sigma_kms
+                                  * np.sqrt(2.0 * np.pi))
+        block["theta_assumed_arcsec"] = float(fit.theta_arcsec)
+        summary["zero_baseline_spectrum"] = block
     if effective_freq is not None:
         summary["continuum_effective_freq_ghz"] = effective_freq / 1e9
         summary["continuum_n_channels"] = int(continuum_mask.sum())
@@ -592,7 +688,10 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
         sources_per_channel=per_channel, baseline_klambda=baseline / 1e3,
         flux=flux, flux_error=flux_error, flux_imaginary=flux_imaginary,
         sources_per_annulus=per_annulus, bin_ok=bin_ok, fit=fit, shape=shape,
-        second=second, continuum=continuum)
+        second=second, continuum=continuum,
+        spectrum_zero_baseline=spectrum_zero,
+        spectrum_zero_baseline_error=spectrum_zero_error,
+        zero_baseline_shape=zero_shape)
 
     if output_prefix:
         written = result.save(output_prefix)
@@ -611,5 +710,6 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
     return result
 
 
-__all__ = ["StackInput", "build_stack_input", "combine", "sources_per_bin",
+__all__ = ["StackInput", "build_stack_input", "combine", "flux_per_channel",
+           "sources_per_bin",
            "sources_per_channel", "extract_flux", "ExtractionResult"]

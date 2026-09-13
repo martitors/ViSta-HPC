@@ -286,7 +286,11 @@ difference is itself informative about the depth distribution of the sample.
 
 - `<prefix>_results.json` — every fitted quantity and the configuration that
   produced it;
-- `<prefix>_spectrum.txt` — `v_kms  Re_stack  err_bootstrap  n_sources`;
+- `<prefix>_spectrum.txt` — `v_kms  Re_stack  err_bootstrap  n_sources`, the
+  stacked visibility average, whose amplitude is diluted by the long
+  baselines and is not a flux;
+- `<prefix>_spectrum_zerob.txt` — `v_kms  flux_density  err_bootstrap
+  n_sources`, the same line in flux units, extrapolated to zero baseline;
 - `<prefix>_uvamp.txt` — `b_klambda  flux  err_bootstrap  flux_imaginary  n_sources`;
 - `<prefix>_uvamp_second_line.txt`, `<prefix>_uvamp_continuum.txt` when those
   components are fitted.
@@ -302,6 +306,13 @@ is what decides whether line and continuum are two measurements or one.
 | `--contsub before` | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png`, `<tag>_continuum_uvamp.png` — two independent runs, two independent sets |
 | `--contsub after` | `<tag>_joint.png` — one figure, three panels: line profile, continuum profile, spectrum with the line on the fitted continuum level |
 | no flag | `<tag>_line_uvamp.png`, `<tag>_line_spectrum.png` |
+
+`<tag>_lineprofile.png` is the line as an image-plane fit would show it: for
+every channel the flux is measured on the whole radial profile with the fitted
+size held fixed, so the resolution of each annulus is divided out rather than
+averaged in. The y axis is a flux density and the area under the Gaussian is
+the total line flux, which makes it the spectrum to publish. The `Re(V)`
+spectrum next to it is the input of the shape fit, not a flux.
 
 The uv figures carry a lower panel with the number of sources contributing to
 each annulus and the minimum below which an annulus was dropped; annuli

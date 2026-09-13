@@ -445,6 +445,68 @@ def plot_joint(result: ExtractionResult, line: LineConfig,
     return figure
 
 
+# ---------------------------------------------------------------------------
+# the line profile in flux units
+# ---------------------------------------------------------------------------
+def plot_line_profile(result: ExtractionResult, line: LineConfig,
+                      path: Optional[str] = None, unit: Optional[str] = None,
+                      dpi: int = 150, v_limits=None):
+    """The line profile in flux units, as an image-plane fit would give it.
+
+    For every channel the flux is measured on the whole radial profile with
+    the fitted size held fixed, so the resolution of each annulus is divided
+    out instead of being averaged in.  The y axis is a flux density and the
+    area under the fitted Gaussian is the total line flux, unlike the stacked
+    ``Re(V)`` spectrum whose amplitude is diluted by the long baselines.
+    """
+    if result.spectrum_zero_baseline is None:
+        raise ValueError("this result carries no zero-baseline spectrum: it "
+                         "needs a converged uv fit on a line")
+    plt = _pyplot(path is not None)
+    figure, ax = plt.subplots(figsize=(7.4, 4.6), layout="constrained")
+
+    order = np.argsort(result.velocity_kms)
+    v = result.velocity_kms[order]
+    flux = result.spectrum_zero_baseline[order]
+    error = result.spectrum_zero_baseline_error
+    error = None if error is None else error[order]
+
+    ax.step(v, flux, where="mid", color="0.3", lw=1.0)
+    if error is not None:
+        ax.fill_between(v, flux - error, flux + error, step="mid",
+                        color="0.6", alpha=0.25)
+
+    shape = result.zero_baseline_shape
+    if shape is not None:
+        model = shape.amplitude * np.exp(
+            -0.5 * ((result.velocity_kms - shape.centroid_kms)
+                    / shape.sigma_kms) ** 2)
+        if shape.baseline is not None:
+            model = model + shape.baseline
+        area = shape.amplitude * shape.sigma_kms * np.sqrt(2.0 * np.pi)
+        ax.plot(v, model[order], "-", color=_MODEL_COLOUR, lw=1.6,
+                label=f"v$_0$ = {shape.centroid_kms:+.0f} km/s, "
+                      f"FWHM = {shape.fwhm_kms:.0f} km/s\n"
+                      f"area = {area:.3g} {_unit(unit)} km/s")
+        ax.legend(fontsize=9, loc="upper right", frameon=False)
+
+    ax.axvspan(*line.v_window_kms, color="C1", alpha=0.08)
+    ax.axhline(0.0, color="k", lw=0.5)
+    ax.set_xlabel("velocity [km/s]")
+    ax.set_ylabel(f"flux density at b = 0 [{_unit(unit)}]")
+    theta = result.summary.get("theta_fwhm_arcsec", float("nan"))
+    ax.set_title(f"size held at theta = {theta:.2f} arcsec", fontsize=10)
+    limits = _velocity_limits(result, line, v_limits)
+    if limits:
+        ax.set_xlim(*limits)
+
+    if path:
+        figure.savefig(path, dpi=dpi)
+        print(f"[plot] {path}")
+        plt.close(figure)
+    return figure
+
+
 def plot_all(result: ExtractionResult, line: LineConfig, prefix: str,
              unit: Optional[str] = None, dpi: int = 150,
              v_limits=None) -> List[str]:
@@ -472,8 +534,13 @@ def plot_all(result: ExtractionResult, line: LineConfig, prefix: str,
     plot_uv_profile(result, path=written[0], unit=unit, dpi=dpi)
     plot_spectrum(result, line, path=written[1], unit=unit, dpi=dpi,
                   v_limits=v_limits)
+    if result.spectrum_zero_baseline is not None:
+        path = f"{prefix}_lineprofile.png"
+        plot_line_profile(result, line, path=path, unit=unit, dpi=dpi,
+                          v_limits=v_limits)
+        written.append(path)
     return written
 
 
-__all__ = ["plot_uv_profile", "plot_spectrum", "plot_joint", "plot_all",
-           "fit_summary_lines"]
+__all__ = ["plot_uv_profile", "plot_spectrum", "plot_line_profile",
+           "plot_joint", "plot_all", "fit_summary_lines"]
