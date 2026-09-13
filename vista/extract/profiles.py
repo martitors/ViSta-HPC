@@ -21,6 +21,7 @@ would introduce.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
@@ -175,39 +176,70 @@ def fit_line_shape(spectrum, weights, freq_hz, line: LineConfig,
     a0 = float(np.nanmax(y)) if np.isfinite(np.nanmax(y)) else 1.0
     dummy = np.arange(int(use.sum()))
 
+    # Bounds from the data, not from a fixed idea of how wide a line is.  A
+    # channel sets the floor, since no fit can resolve a width below it, and
+    # the fitted span sets the ceiling.  Hardcoded limits would silently pin
+    # the solution to a bound for a narrow line or a narrow band.
+    dv_chan = float(np.median(np.abs(np.diff(np.sort(v1[np.isfinite(v1)])))))
+    if not np.isfinite(dv_chan) or dv_chan <= 0:
+        dv_chan = 1.0
+    sigma_lo = 0.5 * dv_chan
+    sigma_hi = max(4.0 * dv_chan, 0.5 * span)
+    centroid_bound = max(2.0 * dv_chan, 0.5 * span)
+
+    # Start from the moments of the data.  A fixed starting width is a poor
+    # guess when the line is only a few channels across: the optimiser can
+    # settle on a broad, shallow solution that fits the noise as well as the
+    # line, and never come back.
+    positive = np.clip(y - np.median(y), 0.0, None)
+    total = float(np.sum(positive))
+    if total > 0:
+        centroid_0 = float(np.sum(positive * x1) / total)
+        variance = float(np.sum(positive * (x1 - centroid_0) ** 2) / total)
+        sigma_0 = math.sqrt(variance) if variance > 0 else 2.0 * dv_chan
+    else:
+        centroid_0, sigma_0 = 0.0, 2.0 * dv_chan
+    sigma_0 = float(np.clip(sigma_0, 2.0 * sigma_lo, 0.8 * sigma_hi))
+    centroid_0 = float(np.clip(centroid_0, -centroid_bound, centroid_bound))
+    a0 = float(np.nanmax(y) - np.median(y))
+    if not np.isfinite(a0) or a0 <= 0:
+        a0 = 1.0
+
     # parameterisation: (initial guess, lower bound, upper bound, unpack)
     # unpack -> (c1, s1, A1, c2, s2, A2); the optional baseline is always the
     # last parameter, so the indices below never move.
     if not blend:
-        p0 = [a0, 0.0, 250.0]
-        lo = [-np.inf, -400.0, 50.0]
-        hi = [np.inf, 400.0, 900.0]
+        p0 = [a0, centroid_0, sigma_0]
+        lo = [-np.inf, -centroid_bound, sigma_lo]
+        hi = [np.inf, centroid_bound, sigma_hi]
         unpack = lambda p: (p[1], abs(p[2]), p[0], None, None, None)
 
         def components(p):
             return p[0] * _gaussian(x1, p[1], p[2])
     elif config.shape_tie == "free":
-        p0 = [a0, 0.0, 250.0, 0.3 * a0, 0.0, 250.0]
-        lo = [-np.inf, -400, 50, -np.inf, -400, 50]
-        hi = [np.inf, 400, 900, np.inf, 400, 900]
+        p0 = [a0, centroid_0, sigma_0, 0.3 * a0, centroid_0, sigma_0]
+        lo = [-np.inf, -centroid_bound, sigma_lo,
+              -np.inf, -centroid_bound, sigma_lo]
+        hi = [np.inf, centroid_bound, sigma_hi,
+              np.inf, centroid_bound, sigma_hi]
         unpack = lambda p: (p[1], abs(p[2]), p[0], p[4], abs(p[5]), p[3])
 
         def components(p):
             return (p[0] * _gaussian(x1, p[1], p[2])
                     + p[3] * _gaussian(x2, p[4], p[5]))
     elif config.shape_tie == "centroid":
-        p0 = [a0, 0.0, 250.0, 0.3 * a0, 250.0]
-        lo = [-np.inf, -400, 50, -np.inf, 50]
-        hi = [np.inf, 400, 900, np.inf, 900]
+        p0 = [a0, centroid_0, sigma_0, 0.3 * a0, sigma_0]
+        lo = [-np.inf, -centroid_bound, sigma_lo, -np.inf, sigma_lo]
+        hi = [np.inf, centroid_bound, sigma_hi, np.inf, sigma_hi]
         unpack = lambda p: (p[1], abs(p[2]), p[0], p[1], abs(p[4]), p[3])
 
         def components(p):
             return (p[0] * _gaussian(x1, p[1], p[2])
                     + p[3] * _gaussian(x2, p[1], p[4]))
     else:                                            # 'centroid+width'
-        p0 = [a0, 0.0, 250.0, 0.3 * a0]
-        lo = [-np.inf, -400, 50, -np.inf]
-        hi = [np.inf, 400, 900, np.inf]
+        p0 = [a0, centroid_0, sigma_0, 0.3 * a0]
+        lo = [-np.inf, -centroid_bound, sigma_lo, -np.inf]
+        hi = [np.inf, centroid_bound, sigma_hi, np.inf]
         unpack = lambda p: (p[1], abs(p[2]), p[0], p[1], abs(p[2]), p[3])
 
         def components(p):

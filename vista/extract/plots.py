@@ -277,6 +277,9 @@ def plot_spectrum(result: ExtractionResult, line: LineConfig,
         if shape.baseline is not None:
             ax.axhline(offset, color=_CONTINUUM_COLOUR, lw=1.0, ls=":",
                        label=f"continuum = {offset:.3g} {_unit(unit)}")
+        else:
+            ax.axhline(0.0, color=_MODEL_COLOUR, lw=0.8, ls=":",
+                       label="baseline fixed at 0")
 
     ax.axvspan(*line.v_window_kms, color="C1", alpha=0.08)
     ax.axhline(0.0, color="k", lw=0.5)

@@ -624,6 +624,7 @@ class ViSta:
         self.spw_list   = []
         self.norm_list  = []
         self.input_file = input_file
+        self.data_column = "auto"
         self._load_input(input_file)
 
     def _load_input(self, path):
@@ -928,7 +929,8 @@ class ViSta:
     # ------------------------------------------------------------------
 
     def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None,
-            velocity_range_kms=None, channel_width_hz=None):
+            velocity_range_kms=None, channel_width_hz=None,
+            data_column="auto"):
         """Run the stacking pipeline and write the output Measurement Set.
 
         Parameters
@@ -979,6 +981,7 @@ class ViSta:
              f"GPU={'yes' if _gpu_available else 'no'}")
         dask.config.set(scheduler="synchronous")
 
+        self.data_column = data_column
         t_start = time.perf_counter()
 
         # Determine working path (scratch) vs final destination
@@ -1210,8 +1213,18 @@ class ViSta:
                         if min(f_hi, _in_hi) > max(f_lo, _in_lo):
                             n_covered_global.add(j)
 
-                    # Prefer CORRECTED_DATA (calibrated ALMA MS), fall back to DATA
-                    if "CORRECTED_DATA" in ds.data_vars:
+                    # 'auto' prefers CORRECTED_DATA, as a calibrated ALMA MS
+                    # keeps the calibrated visibilities there; set
+                    # self.data_column to read a named column instead.
+                    _wanted = getattr(self, "data_column", "auto")
+                    if _wanted != "auto" and _wanted in ds.data_vars:
+                        _data_col = ds.data_vars[_wanted].data
+                    elif _wanted != "auto":
+                        _log(f"  WARNING: ddid={int(ddid)} has no {_wanted}, "
+                             f"falling back")
+                        _data_col = (ds.data_vars["DATA"].data
+                                     if "DATA" in ds.data_vars else None)
+                    elif "CORRECTED_DATA" in ds.data_vars:
                         _data_col = ds.data_vars["CORRECTED_DATA"].data
                     elif "DATA" in ds.data_vars:
                         _data_col = ds.data_vars["DATA"].data
