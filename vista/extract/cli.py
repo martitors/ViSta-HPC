@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 
+from .. import _say, _warn
 from .config import (BinningConfig, BootstrapConfig, ContinuumConfig,
                      LineConfig, ProfileConfig, UVFitConfig, WeightingConfig)
 
@@ -230,14 +231,14 @@ def main(argv=None) -> int:
         reference = previous.get("theta_fwhm_arcsec")
         if isinstance(reference, (int, float)) and reference > 0.05:
             theta_prior = (float(reference), args.theta_prior_sigma)
-            print(f"[theta-prior] from {args.theta_prior_from}: "
-                  f"theta_ref={reference:.3f}\" +- "
-                  f"{args.theta_prior_sigma:.2f} dex")
+            _say(f"Size prior from {args.theta_prior_from}: "
+                 f"theta_ref={reference:.3f}\" +- "
+                 f"{args.theta_prior_sigma:.2f} dex")
         else:
-            print(f"[theta-prior] no usable size in {args.theta_prior_from}: "
-                  f"prior off")
+            _warn(f"no usable source size in {args.theta_prior_from}: "
+                  f"size prior off")
     if theta_prior is not None and args.method == "continuum":
-        print("[theta-prior] the continuum is the reference: prior ignored")
+        _say("Size prior ignored: the continuum is the reference")
         theta_prior = None
 
     weighting = WeightingConfig(

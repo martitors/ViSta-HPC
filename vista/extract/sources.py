@@ -44,6 +44,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .. import _say
 from .config import ARCSEC_PER_RAD, WeightingConfig
 
 
@@ -232,8 +233,7 @@ def amplitude_factors(groups: Sequence[Sequence[Entry]],
     z_ref = weighting.z_ref
     if weighting.redshift_rescaling and z_ref is None:
         z_ref = float(np.median(redshifts))
-        if verbose:
-            print(f"[norm] z_ref = {z_ref:.4f} (median of the sample)")
+        _say(f"  redshift reference z_ref = {z_ref:.4f} (median of the sample)", verbose)
 
     values = []
     for group in groups:
@@ -250,10 +250,9 @@ def amplitude_factors(groups: Sequence[Sequence[Entry]],
                 "or switch the normalisation off")
         norm_ref = (float(weighting.norm_ref) if weighting.norm_ref is not None
                     else float(np.median(present)))
-        if verbose:
-            origin = ("given" if weighting.norm_ref is not None
-                      else "median of the sample")
-            print(f"[norm] norm_ref = {norm_ref:.4e} ({origin})")
+        origin = ("given" if weighting.norm_ref is not None
+                  else "median of the sample")
+        _say(f"  normalisation reference norm_ref = {norm_ref:.4e} ({origin})", verbose)
 
     factors, missing = [], []
     for k, group in enumerate(groups):

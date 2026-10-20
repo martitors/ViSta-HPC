@@ -30,12 +30,12 @@ every data descriptor, so an interrupted run resumes where it stopped.
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+from .. import _reset_clock, _say, _warn
 from .config import BinningConfig, C_MS, LineConfig
 from .sources import Entry, read_input_list
 
@@ -103,9 +103,8 @@ def build_global_grid(dd_frequencies: Dict[int, np.ndarray], verbose=True):
     worst = max(np.abs(f - grid[np.clip(np.rint((f - f0) / dnu).astype(int),
                                         0, n - 1)]).max()
                 for f in dd_frequencies.values() if len(f))
-    if verbose:
-        print(f"[grid] {n} channels, dnu={dnu / 1e6:.3f} MHz, "
-              f"max mapping error={100 * worst / dnu:.1f}% of a channel")
+    _say(f"  common grid: {n} channels of {dnu / 1e6:.3f} MHz "
+         f"(largest mapping error {100 * worst / dnu:.1f}% of a channel)", verbose)
     return grid, f0, dnu
 
 
@@ -244,6 +243,7 @@ def compress_visibilities(ms_path: str,
     dict
         Paths of the files written, keyed by ``'line'`` and ``'continuum'``.
     """
+    _reset_clock()
     entries = (read_input_list(input_list) if isinstance(input_list, str)
                else list(input_list))
     dd_frequencies = data_descriptor_frequencies(ms_path)
@@ -265,8 +265,8 @@ def compress_visibilities(ms_path: str,
                 stored[tag] = np.load(path, allow_pickle=True).item()
                 done = sum(isinstance(k, (int, np.integer))
                            for k in stored[tag])
-                if verbose:
-                    print(f"[resume] {path}: {done} data descriptors")
+                _say(f"Compression: resuming {path}, {done} data descriptors "
+                     f"already done", verbose)
             except Exception:
                 stored[tag] = {}
         stored[tag].setdefault("bin_edges_lambda", edges)
@@ -274,15 +274,6 @@ def compress_visibilities(ms_path: str,
         stored[tag]["format_version"] = FORMAT_VERSION
         if line is not None:
             stored[tag]["rest_freq_ghz"] = line.rest_freq_ghz
-
-    if "freq_grid" in stored["line"]:
-        grid = np.asarray(stored["line"]["freq_grid"])
-        f0, dnu = float(grid[0]), float(grid[1] - grid[0])
-    else:
-        grid, f0, dnu = build_global_grid(dd_frequencies, verbose)
-    n_grid = len(grid)
-    for tag in stored:
-        stored[tag]["freq_grid"] = grid
 
     tb = _table()
     tb.open(ms_path)                                  # read-only
@@ -296,11 +287,18 @@ def compress_visibilities(ms_path: str,
         raise RuntimeError(f"continuum column {continuum_column!r} is missing "
                            f"from {ms_path}: run the continuum subtraction "
                            f"first, or drop out_continuum")
-    if verbose:
-        print(f"[compress] {os.path.basename(ms_path)}  n_dd={n_dd}  "
-              f"line={line_column}"
-              + (f"  continuum={continuum_column}" if do_continuum else "")
-              + "  (read-only)")
+    _say(f"Compression: {os.path.basename(ms_path)} (read-only), {n_dd} data "
+         f"descriptors, {n_bins} uv annuli; line from {line_column}"
+         + (f", continuum from {continuum_column}" if do_continuum else ""), verbose)
+
+    if "freq_grid" in stored["line"]:
+        grid = np.asarray(stored["line"]["freq_grid"])
+        f0, dnu = float(grid[0]), float(grid[1] - grid[0])
+    else:
+        grid, f0, dnu = build_global_grid(dd_frequencies, verbose)
+    n_grid = len(grid)
+    for tag in stored:
+        stored[tag]["freq_grid"] = grid
 
     n_rejected_total = 0
     for dd in range(n_dd):
@@ -396,18 +394,15 @@ def compress_visibilities(ms_path: str,
             stored[tag][dd] = {"sums": accumulator.reshape(n_grid, n_bins, 5),
                                "freq": freq, "meta": meta}
             _checkpoint(outputs[tag], stored[tag])
-        if verbose:
-            note = (f"  rejected={n_rejected:,}" if n_rejected else "")
-            print(f"  dd={dd:>3} z={entry.z:<7.4f} rows={n_rows:>9,}{note}"
-                  f"  [checkpoint]")
-            sys.stdout.flush()
+        note = (f", {n_rejected:,} samples rejected" if n_rejected else "")
+        _say(f"  [{dd + 1:>{len(str(n_dd))}}/{n_dd}] dd {dd}  z={entry.z:.4f}  "
+             f"{n_rows:,} rows{note}  (saved)", verbose)
 
     tb.close()
-    if verbose:
-        if n_rejected_total:
-            print(f"[compress] {n_rejected_total:,} corrupt or out-of-range "
-                  f"samples discarded")
-        print("[compress] done -> " + ", ".join(outputs.values()))
+    if n_rejected_total:
+        _warn(f"compression: {n_rejected_total:,} corrupt or out-of-range "
+              f"samples discarded")
+    _say("Compression done: " + ", ".join(outputs.values()), verbose)
     return outputs
 
 

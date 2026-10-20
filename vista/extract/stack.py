@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+from .. import _reset_clock, _say, _warn
 from .config import (BootstrapConfig, LineConfig, ProfileConfig, UVFitConfig,
                      WeightingConfig)
 from .profiles import (LineShape, fit_line_shape, flux_per_annulus_continuum,
@@ -102,9 +103,9 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
     groups, centres = group_by_position(available, match_tol_arcsec)
     factors, z_ref, norm_ref, missing = amplitude_factors(groups, weighting,
                                                           verbose=verbose)
-    if missing and verbose:
-        dropped = ", ".join(f"dd={groups[k][0].dd}" for k in missing)
-        print(f"[norm] no normalisation value, dropped: {dropped}")
+    if missing:
+        dropped = ", ".join(f"dd {groups[k][0].dd}" for k in missing)
+        _warn(f"extraction: no normalisation value, sources dropped: {dropped}")
     keep = [k for k in range(len(groups)) if k not in set(missing)]
     if not keep:
         raise RuntimeError("every source was dropped by the normalisation")
@@ -121,12 +122,10 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
         raise ValueError(f"the statistics were compressed on different grids: "
                          f"shapes {sorted(shapes)}")
 
-    if verbose:
-        n_multi = sum(1 for k in keep if len(groups[k]) > 1)
-        print(f"[stack] {len(keep)} sources from {len(available)} entries "
-              f"({n_multi} observed more than once)  "
-              f"scheme={weighting.scheme}  "
-              f"flux-normalised={'yes' if norm_ref else 'no'}")
+    n_multi = sum(1 for k in keep if len(groups[k]) > 1)
+    _say(f"  {len(keep)} sources from {len(available)} entries "
+         f"({n_multi} observed more than once), {weighting.scheme} weighting, "
+         f"flux normalisation {'on' if norm_ref else 'off'}", verbose)
 
     return StackInput(
         sums=np.stack(stacked),
@@ -352,6 +351,10 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
     -------
     ExtractionResult
     """
+    _reset_clock()
+    source = statistics if isinstance(statistics, str) else "statistics in memory"
+    _say(f"Extraction: {source}, {profile.method} line profile, {uvfit.model} "
+         f"uv model, {bootstrap.n_realisations} bootstrap realisations", verbose)
     data = build_stack_input(statistics, input_list, weighting,
                              match_tol_arcsec=match_tol_arcsec,
                              verbose=verbose)
@@ -380,15 +383,13 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
         continuum_mask = per_channel >= needed
         if not continuum_mask.any():
             best = int(per_channel.max())
-            if verbose:
-                print(f"[continuum] no channel covered by {needed} sources, "
-                      f"falling back to the best coverage ({best})")
+            _warn(f"extraction: no channel is covered by {needed} sources, "
+                  f"the continuum uses the best coverage ({best} sources)")
             continuum_mask = per_channel >= best
         effective_freq = float(np.nansum(freq[continuum_mask])
                                / continuum_mask.sum())
-        if verbose:
-            print(f"[continuum] {int(continuum_mask.sum())} channels, "
-                  f"nu_eff = {effective_freq / 1e9:.2f} GHz")
+        _say(f"  continuum: {int(continuum_mask.sum())} channels, "
+             f"effective frequency {effective_freq / 1e9:.2f} GHz", verbose)
 
     def measure(real_part, weight_part, spectrum_part, shape_start=None):
         """One realisation: (line flux, second line, continuum, mask, shape)."""
@@ -419,11 +420,11 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
 
     flux, flux_second, flux_continuum, used_channels, shape = measure(
         real, weight, spectrum)
-    if profile.method == "template" and shape is None and verbose:
-        print("[shape] the profile fit did not converge, falling back to the "
-              "boxcar integration")
-    if verbose and shape is not None:
-        message = (f"[shape] centroid={shape.centroid_kms:+.0f} km/s  "
+    if profile.method == "template" and shape is None:
+        _warn("extraction: the line-profile fit did not converge, the flux is "
+              "integrated over the velocity window instead")
+    if shape is not None:
+        message = (f"  line shape: centroid={shape.centroid_kms:+.0f} km/s  "
                    f"FWHM={shape.fwhm_kms:.0f} km/s  "
                    f"chi2r={shape.chi2_reduced:.2f}")
         if shape.blended:
@@ -431,7 +432,7 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
                         f"FWHM={2.3548 * shape.sigma2_kms:.0f} km/s")
         if shape.baseline is not None:
             message += f" | continuum level={shape.baseline:.4g}"
-        print(message)
+        _say(message, verbose)
 
     # the imaginary part: the null test follows exactly the same path
     second_imaginary = continuum_imaginary = None
@@ -606,13 +607,13 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
                                     profile,
                                     start=None if shape is None
                                     else shape.raw_params)
-        if verbose and zero_shape is not None:
+        if zero_shape is not None:
             integral = (zero_shape.amplitude * zero_shape.sigma_kms
                         * np.sqrt(2.0 * np.pi))
-            print(f"[zero-b] peak = {zero_shape.amplitude:.4g}  "
+            _say(f"  zero-baseline spectrum: peak = {zero_shape.amplitude:.4g}  "
                   f"FWHM = {zero_shape.fwhm_kms:.0f} km/s  "
                   f"integral = {integral:.4g} "
-                  f"({100 * integral / fit.flux:.0f}% of F)")
+                 f"({100 * integral / fit.flux:.0f}% of F)", verbose)
 
     # ---- summary ---------------------------------------------------------
     null_test = np.isfinite(flux_imaginary) & bin_ok
@@ -695,18 +696,16 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
 
     if output_prefix:
         written = result.save(output_prefix)
-        if verbose:
-            print("[output] " + ", ".join(written))
-    if verbose:
-        print(f"[result] F = {fit.flux:.4g} "
-              f"+- {summary['flux_total_error']:.3g}   "
-              f"theta = {fit.theta_arcsec:.3f}\" "
-              f"+- {summary['theta_error_arcsec']:.3f}\"   "
-              f"chi2r = {fit.chi2_reduced:.2f}")
-        if continuum is not None:
-            print(f"[result] continuum S = {continuum['flux_total']:.4g} "
-                  f"+- {continuum['flux_total_error']:.3g}   "
-                  f"theta = {continuum['theta_fwhm_arcsec']:.3f}\"")
+        _say("  written: " + ", ".join(written), verbose)
+    _say(f"Extraction done: F = {fit.flux:.4g} "
+         f"+- {summary['flux_total_error']:.3g}   "
+         f"theta = {fit.theta_arcsec:.3f}\" "
+         f"+- {summary['theta_error_arcsec']:.3f}\"   "
+         f"chi2r = {fit.chi2_reduced:.2f}", verbose)
+    if continuum is not None:
+        _say(f"  continuum: S = {continuum['flux_total']:.4g} "
+             f"+- {continuum['flux_total_error']:.3g}   "
+             f"theta = {continuum['theta_fwhm_arcsec']:.3f}\"", verbose)
     return result
 
 

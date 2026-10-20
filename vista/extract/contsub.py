@@ -23,13 +23,9 @@ from typing import Iterable, Optional, Sequence
 
 import numpy as np
 
+from .. import _reset_clock, _say, _warn
 from .config import ContinuumConfig, LineConfig
 from .profiles import line_free_mask
-
-
-def _log(*args, verbose=True):
-    if verbose:
-        print(*args, flush=True)
 
 
 def _bic(rss: float, n: int, k: int) -> float:
@@ -105,6 +101,7 @@ def subtract_continuum(ms_path: str,
         raise FileNotFoundError(f"{ms_path!r} does not exist "
                                 f"(cwd={os.getcwd()})")
     wanted = set(only_dd) if only_dd else set()
+    _reset_clock()
 
     tb = table()
     tb.open(f"{ms_path}/SPECTRAL_WINDOW")
@@ -118,8 +115,9 @@ def subtract_continuum(ms_path: str,
     use_bic = config.order == -1
     label = (f"BIC (delta={config.delta_bic:.1f})" if use_bic
              else str(config.order))
-    _log(f"[contsub] {ms_path}: {len(dd_to_spw)} data descriptors, "
-         f"order={label}", verbose=verbose)
+    _say(f"Continuum subtraction: {ms_path}, {len(dd_to_spw)} data descriptors, "
+         f"polynomial order {label}; {config.data_column} -> continuum in "
+         f"{config.model_column}, line in {config.line_column}", verbose)
 
     # output columns, created on the fly if missing
     tb.open(ms_path, nomodify=False)
@@ -149,8 +147,8 @@ def subtract_continuum(ms_path: str,
         n_fit = int(fit_mask.sum())
         min_chan = 2 if use_bic else config.order + 1
         if n_fit < min_chan:
-            _log(f"  [dd {dd} spw {spw}] only {n_fit} line-free channels "
-                 f"- skipped", verbose=verbose)
+            _warn(f"continuum subtraction: dd {dd} (SPW {spw}) has only {n_fit} "
+                  f"line-free channels, left unchanged")
             continue
 
         x0 = chan_freq[fit_mask].mean()
@@ -163,8 +161,8 @@ def subtract_continuum(ms_path: str,
         rows = np.where(dd_column == dd)[0]
         if rows.size == 0:
             continue
-        _log(f"  [dd {dd} spw {spw}] fit channels={n_fit}/{nchan}  "
-             f"rows={rows.size}", verbose=verbose)
+        _say(f"  dd {dd} (SPW {spw}): fit on {n_fit}/{nchan} line-free channels, "
+             f"{rows.size:,} rows", verbose)
 
         order = None if use_bic else config.order
         tb.open(ms_path, nomodify=False)
@@ -188,9 +186,8 @@ def subtract_continuum(ms_path: str,
                 order = select_order(x_fit, x_all, y, valid,
                                      config.delta_bic,
                                      config.require_positive_slope)
-                _log(f"    [BIC] order chosen on the mean spectrum "
-                     f"({int(valid.sum())} channels) = {order}",
-                     verbose=verbose)
+                _say(f"    order {order}, chosen by BIC on the mean spectrum "
+                     f"({int(valid.sum())} channels)", verbose)
 
             need = order + 1
             for c in range(ncorr):
@@ -210,7 +207,7 @@ def subtract_continuum(ms_path: str,
         tb.close()
         orders_used[dd] = order
 
-    _log("[contsub] done.", verbose=verbose)
+    _say(f"Continuum subtraction done: {len(orders_used)} data descriptors", verbose)
     return orders_used
 
 

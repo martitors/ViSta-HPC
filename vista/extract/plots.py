@@ -31,6 +31,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from .. import _say
 from .config import LineConfig
 from .stack import ExtractionResult
 from .uvfit import gaussian_visibility, two_gaussian_visibility
@@ -213,7 +214,7 @@ def plot_uv_profile(result: ExtractionResult, path: Optional[str] = None,
 
     if path:
         figure.savefig(path, dpi=dpi)
-        print(f"[plot] {path}")
+        _say(f"  plot written: {path}")
         plt.close(figure)
     return figure
 
@@ -301,7 +302,7 @@ def plot_spectrum(result: ExtractionResult, line: LineConfig,
 
     if path:
         figure.savefig(path, dpi=dpi)
-        print(f"[plot] {path}")
+        _say(f"  plot written: {path}")
         plt.close(figure)
     return figure
 
@@ -440,7 +441,7 @@ def plot_joint(result: ExtractionResult, line: LineConfig,
 
     if path:
         figure.savefig(path, dpi=dpi)
-        print(f"[plot] {path}")
+        _say(f"  plot written: {path}")
         plt.close(figure)
     return figure
 
@@ -502,7 +503,7 @@ def plot_line_profile(result: ExtractionResult, line: LineConfig,
 
     if path:
         figure.savefig(path, dpi=dpi)
-        print(f"[plot] {path}")
+        _say(f"  plot written: {path}")
         plt.close(figure)
     return figure
 
