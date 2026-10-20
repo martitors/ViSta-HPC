@@ -16,10 +16,11 @@ This repository contains the HPC reimplementation (ViSta v2), which replaces the
 
 ## Features
 
-- **>10× faster** than the original CASA-based pipeline on a single CPU node
-- **No intermediate data products** written to disk
-- **Multi-threaded** read/compute/write pipeline (producer–consumer model)
-- **Optional GPU acceleration** via CUDA (transparent fallback to CPU if no GPU is available)
+- **15–30× faster** than the original CASA-based pipeline (ViSta 1.0) on one node, on the same data (see [Performance](#performance))
+- **No intermediate data products** written to disk: one pass over the data
+- **Parallel pipeline**: reader processes, a GIL-free C++/OpenMP kernel and a single writer work at the same time
+- **Optional GPU acceleration** via CUDA (`device="gpu"`): many chunks per launch, automatic split to the GPU memory
+- **Clear log** for the whole package: elapsed time on every line, what each dataset contributes, warnings for suspicious inputs
 - Supports any telescope using the **Measurement Set** format (ALMA, VLA, MeerKAT, eMERLIN, NOEMA, ...)
 - Each input MS can have a different redshift, array configuration, spectral setup, and phase centre
 
@@ -33,6 +34,10 @@ numpy >= 1.21
 dask >= 2022.1
 dask-ms >= 0.2.18
 xarray >= 0.19
+python-casacore >= 3.5
+astropy >= 5.0
+scipy >= 1.7          # vista.extract
+matplotlib >= 3.4     # vista.extract, optional plots
 ```
 
 ### Build dependencies
@@ -70,13 +75,18 @@ cd ..
 **With GPU (CUDA) support:**
 ```bash
 mkdir build && cd build
-cmake .. -DWITH_CUDA=ON
+cmake .. -DWITH_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80   # 80 = A100 (default)
 make -j$(nproc)
 make install
 cd ..
 ```
 
-The compiled module (`ms_ops.so`) will be installed into the `vista/` directory automatically.
+The compiled module (`ms_ops.so`) will be installed into the `vista/` directory
+automatically. Set `CMAKE_CUDA_ARCHITECTURES` to the compute capability of your
+GPU (70 V100, 80 A100, 86 RTX 30xx, 89 L40, 90 H100). The CUDA runtime is
+linked statically, so the module runs on compute nodes without
+`LD_LIBRARY_PATH` settings. A CUDA build also runs on machines without a GPU,
+with `device="cpu"`.
 
 ---
 
@@ -125,16 +135,20 @@ from vista import ViSta
 
 pipeline = ViSta(
     input_file="input_list.txt",   # one line per MS / field / spw
-    chunk_rows=50_000,             # rows read per processing chunk
-    verbose=True,
+    chunk_rows=5000,               # rows read per processing chunk
+    verbose=True,                  # or "debug"
 )
 
-pipeline.run(
+result = pipeline.run(
     ms_out="stacked_output.ms",
     central_freq=345.7959899e9,    # rest frequency of the line [Hz]
     velocity_range_kms=2000.0,     # output bandwidth, ±km/s
+    device="cpu",                  # "gpu" with a CUDA build
 )
 ```
+
+A script that calls `run()` does not need an `if __name__ == "__main__":`
+guard: the reader processes do not re-run it.
 
 The output is a standard Measurement Set with one spectral window per line of
 the input list, which you can image with `tclean`, fit with any
@@ -146,7 +160,7 @@ visibility-domain tool, or hand to `vista.extract`.
 |---|---|---|---|
 | `input_file` | `str` | required | Path to the input list |
 | `chunk_rows` | `int` | `5000` | Rows read and processed per chunk. Bounds the memory footprint; the code lowers it automatically when the input has many channels. Raise it on a machine with plenty of RAM, lower it if the run is killed |
-| `verbose` | `bool` | `True` | Progress and diagnostics on stdout |
+| `verbose` | `bool` or `"debug"` | `True` | `True`: one line per step and per dataset, with the elapsed time, and the warnings. `False`: warnings and errors only. `"debug"`: also metadata, grids per dataset, queues, GPU buffers (see [The log](#the-log)) |
 
 #### `ViSta.run(...)` — the stacking itself
 
@@ -159,15 +173,109 @@ visibility-domain tool, or hand to `vista.extract`.
 | `channel_width_hz` | `float` or `None` | `None` | Common rest-frame channel width, in Hz. `None` uses the widest rest-framed channel of the sample, which is the finest grid every dataset supports; a finer value is refused with an error naming the dataset that sets the floor |
 | `data_column` | `str` | `"auto"` | Column read from each input MS. `"auto"` prefers `CORRECTED_DATA` and falls back to `DATA`. Name the column explicitly when `CORRECTED_DATA` holds something you do not want, as in a simulation whose corrupted copy lives there |
 | `scratch_dir` | `str` or `None` | `None` | Build the MS here and move it to `ms_out` at the end. Use a local NVMe or `$TMPDIR` when the destination is on a network filesystem |
+| `device` | `"cpu"` or `"gpu"` | `"cpu"` | Where the kernel runs. `"gpu"` needs a CUDA build and a visible GPU; if the GPU fails during the run, the run continues on the CPU with a warning |
+| `n_readers` | `int` | `2` | Reader processes, each reading a different MS at the same time. More readers help only on fast filesystems: the run is usually limited by the writing |
+| `n_threads` | `int` or `None` | `None` | OpenMP threads of the CPU kernel. `None` keeps `OMP_NUM_THREADS`, else `SLURM_CPUS_PER_TASK`, else all cores |
+| `gpu_batch` | `int` | `8` | GPU only: maximum chunks per GPU launch. The compute takes the chunks already read, without waiting for more; larger values use more host memory |
+| `timing` | `bool` | `False` | At the end, also log how long setup, reading, computing and writing took, and which stage limited the run |
+| `log_file` | `str` or `None` | `None` | Also append the log to this file |
+| `reader_mode` | `"process"` or `"thread"` | `"process"` | `"thread"` avoids shared memory (`/dev/shm`), e.g. in containers where it is small, at the cost of reads taking turns |
+| `chunk_queue`, `out_queue` | `int` | `n_readers+1`, `3` | Advanced: chunks waiting for the compute and for the writer. They bound the memory in use |
 
-Threading is set from the environment: `SLURM_CPUS_PER_TASK` when present,
-otherwise half the logical cores, exported as `OMP_NUM_THREADS`. GPU dispatch,
-when the CUDA kernel was built, is automatic; the batch size, the number of
-datasets sent per CUDA kernel launch, is set inside the pipeline and defaults
-to 20. Larger batches improve the overlap between GPU compute and I/O, but a
-batch larger than the sample removes the overlap altogether.
+`run()` returns a dictionary with `ms_out`, `n_rows`, `n_spw`, `nchan`,
+`df_hz`, `flagged_fraction`, `skipped` (indices of the input lines that gave no
+data) and `seconds`.
+
+**CPU or GPU?** On the benchmarks below the run is limited by the writing of
+the output MS (a table is written by one thread), so the GPU gives the same
+time as the CPU. It pays off when the computation dominates: many input
+channels and rows per dataset, a fast output filesystem.
 
 See `examples/run_vista.py` for a complete example.
+
+### How the stacking works
+
+```
+setup:  metadata of every MS → common output grid → output subtables
+
+        readers (processes) ──► chunks ──► compute (main thread) ──► results ──► writer (thread)
+        one MS each,            bounded     C++ kernel, GIL released  bounded     appends to the
+        shared memory           queue       OpenMP or CUDA            queue       output MS
+```
+
+- **Readers** read each MS chunk by chunk with python-casacore, only the
+  rows of the requested field and of the target scans (`OBSERVE_TARGET`), and
+  only the channels that fall in the output window. Separate processes are
+  needed because python-casacore holds the Python GIL while reading.
+- **Compute** rest-frames UVW (×1/(1+z)), rotates them to the stacking
+  position, phase-shifts the visibilities in double precision and rebins them
+  onto the output grid with channel-overlap weights, as CASA `mstransform`.
+  On the GPU, all the chunks already read (up to `gpu_batch`) go in one
+  launch, into reused page-locked buffers.
+- **Writer** appends every processed chunk to the output MS. The rows are in
+  the order the chunks are processed, not in the input order; the content does
+  not depend on it.
+
+### The log
+
+Every line carries the time since the start of the step. A run on four test
+datasets on a 2-core machine, with `timing=True` (one input line has wrong
+coordinates):
+
+```
+[ViSta       0.0s] ViSta 2.3.0 · 4 MS from input_list.txt → stacked.ms · CPU (2 threads) · 2 readers
+[ViSta       1.0s] Output grid: 480 channels × 5625.0 kHz (7.31 km/s), ±1756 km/s around 230.5380 GHz
+[ViSta       1.0s]   (width: the coarsest rest-frame channel of the sample; channels: automatic, the MS fill 210-480 of them)
+[ViSta       1.0s]   4 of 4 MS do not cover the whole window around 230.5380 GHz: their window is moved to the edge of their band (shift in the lines below), so their channel frequencies differ from the others
+[ViSta       1.7s] Setup done (48 antennas in total); stacking 4 MS...
+[ViSta       4.4s] [2/4] ms_001.ms  z=1.1600  3,960 rows  CORRECTED_DATA  2 SPWs, 480 ch  covers 75% of the grid  offset 1.7"  window +411.1 MHz
+[ViSta       4.4s] [1/4] ms_000.ms  z=0.8000  3,960 rows  DATA  1 SPW, 480 ch  covers 62% of the grid  offset 0.3"  window +526.1 MHz
+[ViSta       4.5s] [3/4] ms_002.ms  z=1.5200  3,168/3,960 rows (target scans)  DATA  1 SPW, 480 ch  covers 44% of the grid  offset 464.3"  window +755.7 MHz
+[ViSta       4.5s] WARNING: ms_002.ms: the stacking position is 464.3" from the phase centre, beyond half the primary beam (FWHM ~ 64" at 91.5 GHz): check RA/Dec in the input list
+[ViSta       4.8s] [4/4] ms_003.ms  z=1.8800  3,960 rows  CORRECTED_DATA  1 SPW, 480 ch  covers 100% of the grid  offset 3.5"  window +20.3 MHz
+[ViSta       6.2s] Timing: setup 1.7 s · stacking 3.8 s · subtables and closing 0.8 s
+[ViSta       6.2s]   during the stacking (overlapping): reading 0.4 s per reader · computing 0.3 s · writing 0.8 s  → no stage busy for half of the time: the first data arrived after 2.7 s (start of the readers)
+[ViSta       6.2s] Done in 6.2 s: stacked.ms · 4 SPW × 480 channels · 15,048 rows · 124.3 MB · 28.5% of the output flagged (no data)
+```
+
+For each dataset: the rows used (and how many the field / target-scan
+selection removed), the column read (`DATA` or `CORRECTED_DATA`), the spectral
+windows and input channels used, the fraction of the output grid it covers
+(the rest is flagged), the distance between its phase centre and the stacking
+position, and the shift of its output window when it does not cover the
+window centred on the line. Warnings are always shown: stacking position
+outside half the primary beam, a missing `data_column`, spectral windows
+dropped, datasets skipped and why, a GPU error.
+
+`timing=True` adds, at the end, the time of each stage and the one that
+limited the run (`→ limited by writing (95% busy)` on a long run; on a short
+one like this, the start of the reader processes dominates). `verbose="debug"`
+adds the metadata and grid of every dataset, the weight scale, the queues and
+the GPU buffers. The extraction steps (`vista.extract`) write to the same log,
+in the same format; `vista.set_verbosity(verbose, log_file)` sets the level
+and an optional log file for the whole package.
+
+### Performance
+
+Leonardo (CINECA), one node: 32-core Intel Xeon Platinum 8358 and an NVIDIA
+A100; input and output on Lustre. 50 datasets, 1000 output channels,
+2 readers, 32 OpenMP threads (GPU: 20 chunks per launch); medians of 3 runs.
+ViSta 1.0 is the CASA pipeline of the paper (restframing, centering,
+rebinning, stacking) on the same data: median of 3 runs (200 channels) and
+mean of 2 runs (2048 channels).
+
+| Sample | ViSta 1.0 (CASA) | ViSta-HPC, CPU | ViSta-HPC, GPU |
+|---|---|---|---|
+| 50 MS × 200 channels, one setup | 308.5 s | 18.5 s (×16.7) | 18.9 s (×16.3) |
+| 50 MS × 2048 channels, mixed telescopes, redshifts and channel widths | 833.5 s | 27.4 s (×30) | 28.6 s (×29) |
+
+Adding OpenMP threads, readers or a larger GPU batch does not shorten these
+runs: the single writer sets the pace.
+
+The output is the same as the previous version: bit-identical on the CPU
+(compared column by column, subtables included, independently of the row
+order); on the GPU a few values differ in the last float32 digit, because the
+phase is computed per channel instead of by recurrence.
 
 ---
 
@@ -188,9 +296,10 @@ ViSta-HPC/
 │       ├── uvfit.py     # circular Gaussian / point-source model
 │       ├── plots.py     # diagnostic figure
 │       └── cli.py       # python -m vista.extract
-├── src/                 # C++ / CUDA kernel
-│   ├── ms_ops.cpp       # OpenMP kernel (+ GPU dispatch)
-│   └── ms_ops_cuda.cu   # CUDA kernel
+├── src/                 # C++ / CUDA kernel (Python module ms_ops)
+│   ├── ms_ops.cpp       # OpenMP kernel + Python bindings (+ GPU dispatch)
+│   ├── ms_ops_cuda.cu   # CUDA engine
+│   └── ms_ops_cuda.h    # CPU/GPU interface and shared formulas
 ├── examples/
 │   ├── run_vista.py
 │   └── example_input_list.txt
@@ -293,6 +402,11 @@ python -m vista.extract flux     line_stats.npy --input input_list.txt \
 
 `casatools` is needed only by the two steps that read the MS; the extraction
 itself runs in a plain numpy/scipy environment. See `docs/extraction.md` for the full parameter reference.
+
+The three steps write to the same log as the stacking (see [The log](#the-log)):
+one line per data descriptor, the results, and warnings for what was skipped
+or fell back (too few line-free channels, a profile fit that did not converge,
+sources without a normalisation value).
 
 ---
 
@@ -422,6 +536,29 @@ If you use ViSta in your research, please cite:
 This project is licensed under the MIT License.
 
 ---
+
+## Changelog — v2.3
+
+**Stacking engine** (same results, faster and lighter):
+- **Reader processes**: `n_readers` processes read different MSs at the same time with python-casacore; visibilities and flags reach the main process through shared memory, without copies. `reader_mode="thread"` keeps everything in one process
+- **GIL-free kernel**: the C++ kernel releases the Python GIL, so reading, computing and writing overlap; the rebinning plan is computed once per chunk and the work buffers once per thread (output bit-identical to v2.2)
+- **Single direct writer**: the output main table is opened once and written with `addrows`/`putcol`, no dask graph and no global lock; the subtables are still written with dask-ms
+- **Bounded queues** between the stages (`chunk_queue`, `out_queue`) cap the memory in use
+- **New GPU engine** (`device="gpu"`): many chunks of different MSs and shapes in one launch, input→output channel map built on the host with the CPU formulas (decreasing or gapped SPWs handled exactly), automatic split into passes that fit the free GPU memory, persistent device buffers, page-locked reused output buffers; on a GPU error the run continues on the CPU with a warning. Built without `--use_fast_math`
+- **One kernel module**: `ms_ops` holds the CPU kernel and, with `-DWITH_CUDA=ON`, the GPU path; CUDA runtime linked statically
+- **Fixes**: `OMP_NUM_THREADS` set by the user is respected (it was overwritten at import, and the value set in `run()` had no effect); the GPU is detected by asking the module (`gpu_available()`), not from the presence of a function
+- Scripts without an `if __name__ == "__main__":` guard work with the reader processes (they do not re-run the script)
+
+**New `run()` parameters**: `device`, `n_readers`, `n_threads`, `gpu_batch`, `timing`, `log_file`, `reader_mode`, `chunk_queue`, `out_queue`. `run()` now returns a summary dictionary. Default `chunk_rows` in `run_vista.sh` and in the examples: 5000.
+
+**Log** (whole package):
+- one format, `[ViSta  elapsed s] message`, for stacking, continuum subtraction, compression and extraction, written immediately (not buffered) through the logger `"vista"`
+- three levels: `verbose=True` (progress and results), `False` (warnings only), `"debug"` (details); `vista.set_verbosity()` and `log_file` for a copy on file
+- new per-dataset information: rows used and removed by the field / target-scan selection, column read, SPWs and channels used, coverage of the output grid, phase-centre offset, shift of the output window
+- new warnings: stacking position outside half the primary beam, window moved off the line, missing `data_column`, skipped datasets with the reason, GPU error; final summary with the flagged fraction of the output
+- `timing=True`: time of each stage and the stage that limited the run
+
+**`run_vista.sh`**: new options `--device`, `--readers`, `--threads`, `--gpu-batch`, `--timing`, `--debug`.
 
 ## Changelog — v2.1
 

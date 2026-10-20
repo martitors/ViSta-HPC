@@ -64,10 +64,16 @@ VELOCITY_RANGE=2000         # half-width of the output band, km/s ("" to use NCH
 NCHAN=""                    # fixed number of output channels, alternative
 WIDTH=""                    # common rest-frame channel width, Hz; empty =
                             # widest rest-framed channel of the sample
-CHUNK_ROWS=50000
+CHUNK_ROWS=5000             # rows per chunk (bounds the memory in use)
 SCRATCH="${TMPDIR:-}"       # build the MS on fast local disk, then move it
 IN_COLUMN="auto"            # column read from each input MS: auto prefers
                             # CORRECTED_DATA, or name one (DATA, ...)
+DEVICE="cpu"                # cpu | gpu (needs a CUDA build of the kernel)
+READERS=2                   # reader processes
+THREADS=""                  # OpenMP threads; empty = OMP_NUM_THREADS or all cores
+GPU_BATCH=8                 # GPU: chunks per launch
+TIMING=0                    # 1 = log how long each stage took
+VERBOSE="true"              # true | debug
 
 # --- 2. continuum subtraction ---------------------------------------------
 CONT_ORDER=0                # 0 constant, 1 linear, -1 chosen per spw by BIC
@@ -141,12 +147,18 @@ Options
                           the widest rest-framed channel of the sample, the
                           finest grid every dataset supports.  A finer value
                           is refused.
-  --chunk-rows N          rows per chunk while reading              (default 50000)
+  --chunk-rows N          rows per chunk while reading              (default 5000)
   --scratch DIR           build the MS here, then move it           (default $TMPDIR)
   --in-column NAME        column read from each input MS.  'auto' (default)
                           prefers CORRECTED_DATA and falls back to DATA; give
                           DATA explicitly when CORRECTED_DATA holds something
                           you do not want, as in a corrupted simulation.
+  --device {cpu,gpu}      where the stacking kernel runs            (default cpu)
+  --readers N             reader processes                          (default 2)
+  --threads N             OpenMP threads of the CPU kernel  (default: all cores)
+  --gpu-batch N           GPU: chunks per launch                    (default 8)
+  --timing                log how long reading, computing and writing took
+  --debug                 detailed log (metadata, queues, buffers)
 
   --cont-order {0,1,-1}   continuum: constant, linear, or BIC       (default 0)
   --exclude LO HI         asymmetric velocity window to exclude from the
@@ -232,6 +244,12 @@ while [ $# -gt 0 ]; do
         --chunk-rows)         CHUNK_ROWS="$2"; shift 2;;
         --scratch)            SCRATCH="$2"; shift 2;;
         --in-column)          IN_COLUMN="$2"; shift 2;;
+        --device)             DEVICE="$2"; shift 2;;
+        --readers)            READERS="$2"; shift 2;;
+        --threads)            THREADS="$2"; shift 2;;
+        --gpu-batch)          GPU_BATCH="$2"; shift 2;;
+        --timing)             TIMING=1; shift;;
+        --debug)              VERBOSE="debug"; shift;;
 
         --cont-order)         CONT_ORDER="$2"; shift 2;;
         --exclude)            EXCLUDE_LO="$2"; EXCLUDE_HI="$3"; shift 3;;
@@ -300,6 +318,7 @@ esac
 echo "  continuum : $CONT_NOTE"
 echo "  weighting : $WEIGHTING"
 echo "  in column : $IN_COLUMN"
+echo "  device    : $DEVICE"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
@@ -308,13 +327,15 @@ echo "============================================================"
 if [ "$SKIP_STACK" = 0 ]; then
     echo; echo "== [1/4] stacking =="
     python - "$INPUT" "$MS" "$RESTHZ" "$CHUNK_ROWS" "$VELOCITY_RANGE" \
-             "$NCHAN" "$SCRATCH" "$WIDTH" "$IN_COLUMN" \
+             "$NCHAN" "$SCRATCH" "$WIDTH" "$IN_COLUMN" "$DEVICE" "$READERS" \
+             "$THREADS" "$GPU_BATCH" "$TIMING" "$VERBOSE" \
              <<'PY' 2>&1 | tee "$OUTDIR/${TAG}_stack.log"
 import sys
 from vista import ViSta
 
 (input_file, ms_out, restfreq, chunk_rows, vrange, nchan, scratch,
- width, in_column) = sys.argv[1:10]
+ width, in_column, device, readers, threads, gpu_batch, timing,
+ verbose) = sys.argv[1:16]
 
 kwargs = {}
 if vrange:
@@ -326,8 +347,15 @@ if scratch:
 if width:
     kwargs["channel_width_hz"] = float(width)
 kwargs["data_column"] = in_column or "auto"
+kwargs["device"] = device
+kwargs["n_readers"] = int(readers)
+kwargs["gpu_batch"] = int(gpu_batch)
+kwargs["timing"] = timing == "1"
+if threads:
+    kwargs["n_threads"] = int(threads)
 
-ViSta(input_file=input_file, chunk_rows=int(chunk_rows), verbose=True).run(
+ViSta(input_file=input_file, chunk_rows=int(chunk_rows),
+      verbose="debug" if verbose == "debug" else True).run(
     ms_out=ms_out, central_freq=float(restfreq), **kwargs)
 PY
     [ ${PIPESTATUS[0]} -eq 0 ] || { echo "stacking failed" >&2; exit 1; }

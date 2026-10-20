@@ -57,7 +57,7 @@ binning = BinningConfig(b_min_klambda=3.0, b_max_klambda=3000.0, n_bins=18)
 # 1. stacking
 # ---------------------------------------------------------------------------
 if not args.skip_stack:
-    ViSta(input_file=args.input, chunk_rows=50_000, verbose=True).run(
+    ViSta(input_file=args.input, chunk_rows=5000, verbose=True).run(
         ms_out=MS,
         central_freq=line.rest_freq_hz,
         velocity_range_kms=2000.0)
