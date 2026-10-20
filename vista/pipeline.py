@@ -16,145 +16,98 @@ different redshifts and combines them in the visibility (uv) plane by:
      frequency grid using an overlap-weighted scheme identical to that of
      CASA's mstransform.
 
-The pipeline is organised as a producer-consumer model with three
-concurrent threads (reader, compute, writer) communicating through
-bounded queues, keeping all stages continuously busy and hiding I/O
-latency behind compute.
+How the work is organised
+-------------------------
+Setup (once): the spectral metadata of every MS are read, the common output
+grid is computed and the output subtables are prepared.
 
-The C++/OpenMP (and optionally CUDA) kernel is provided by the compiled
-extension module ms_ops.so, built from src/ms_ops.cpp and src/ms_ops_cuda.cu.
+Main loop, three stages connected by bounded queues::
 
+    readers (N processes) ──► chunks ──► compute ──► results ──► writer (1 thread)
+
+  * Readers: each reader process takes the next MS and reads it chunk by
+    chunk with python-casacore, only the channels that fall in the output
+    window.  The visibilities and flags go through shared memory, without
+    copies.  Separate processes are needed because python-casacore holds the
+    Python GIL while reading: threads would read one at a time.
+  * Compute (main thread): the C++ kernel ``ms_ops`` (rest-framing, phase
+    shift, rebinning).  On the CPU it runs with OpenMP, one chunk per call; on
+    the GPU it takes all the chunks already waiting (up to ``gpu_batch``) in
+    one launch, and writes into reused, page-locked output buffers.  The
+    kernel releases the GIL, so reading and writing never stop.
+  * Writer (one thread): appends every processed chunk to the output MS
+    with python-casacore.  A table can be written by one thread only, so the
+    writer usually sets the pace of the whole run (the run is I/O bound).
+
+The output holds one spectral window per input MS.  Its rows are in the
+order the chunks are processed, not in the input order; the content does not
+depend on it.
+
+The C++/OpenMP (and optionally CUDA) kernel is the extension module
+``ms_ops``, built from src/ms_ops.cpp and src/ms_ops_cuda.cu.
 """
 
 import os
 
 # ── Threading environment (set before any NumPy / OpenBLAS / MKL import) ──
+# A value already set by the user (or by SLURM) is kept.  OpenMP reads it once,
+# when ms_ops is imported; run(n_threads=...) changes it afterwards.
 _n_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or (os.cpu_count() or 4)
-os.environ["OMP_NUM_THREADS"]        = str(_n_threads)
-os.environ["OPENBLAS_NUM_THREADS"]   = str(_n_threads)
-os.environ["MKL_NUM_THREADS"]        = str(_n_threads)
-os.environ["NUMEXPR_NUM_THREADS"]    = str(_n_threads)
-os.environ["VECLIB_MAXIMUM_THREADS"] = str(_n_threads)
+os.environ.setdefault("OMP_NUM_THREADS",        str(_n_threads))
+os.environ.setdefault("OPENBLAS_NUM_THREADS",   os.environ["OMP_NUM_THREADS"])
+os.environ.setdefault("MKL_NUM_THREADS",        os.environ["OMP_NUM_THREADS"])
+os.environ.setdefault("NUMEXPR_NUM_THREADS",    os.environ["OMP_NUM_THREADS"])
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", os.environ["OMP_NUM_THREADS"])
 os.environ.setdefault("OMP_PROC_BIND", "close")
 os.environ.setdefault("OMP_PLACES",    "cores")
 
-import shutil
+import contextlib
+import gc
 import math
-import time
+import shutil
+import sys
 import threading
-from queue import Queue
+import time
+from collections import Counter
+from queue import Queue, Empty, Full
+
 import numpy as np
 import dask
 import dask.array as da
-from collections import Counter
-from daskms import xds_from_ms, xds_from_table, xds_to_table, Dataset
+from daskms import xds_from_table, xds_to_table, Dataset
+
+from . import __version__, _say, _detail, _warn, _reset_clock, set_verbosity
 
 try:
     from . import ms_ops     # installed into vista/ by 'make install'
 except ImportError:          # or found on PYTHONPATH
     import ms_ops
 
-# ---------------------------------------------------------------------------
-# GPU availability check
-# ---------------------------------------------------------------------------
-# Try to call cuda_available() exposed by the CUDA-enabled ms_ops module.
-# If the module was compiled without CUDA or no device is present, fall back
-# to CPU-only mode transparently.
-try:
-    import ctypes
-    _lib = ctypes.CDLL(ms_ops.__file__)
-    _gpu_available = bool(_lib.cuda_available())
-except Exception:
-    _gpu_available = hasattr(ms_ops, 'full_pipeline_batch')
-
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 _C_LIGHT_KMS = 299792.458   # speed of light in km/s
-
-# ---------------------------------------------------------------------------
-# Logging helpers
-# ---------------------------------------------------------------------------
-# All log messages are buffered and flushed together to avoid interleaved
-# output from concurrent threads.
-
-import sys as _sys
-import threading as _threading
-import time as _time_module
-
-_log_lock   = _threading.Lock()
-_log_buffer = []
-_t0_global  = _time_module.perf_counter()
-_verbose_global = True
+_C_LIGHT_MS  = 299792458.0  # speed of light in m/s
+_RAD2ARCSEC  = 180.0 / math.pi * 3600.0
 
 
-def _log(msg, flush=False):
-    """Append a timestamped message to the log buffer.
-
-    Messages are only printed when verbose mode is active.  The timestamp
-    is relative to the start of the current run (seconds elapsed).  If
-    *flush* is True the entire buffer is printed to stdout immediately.
-    """
-    if not _verbose_global:
-        return
-    ts = _time_module.perf_counter() - _t0_global
-    line = f"[ViSta  {ts:7.2f}s]  {msg}"
-    with _log_lock:
-        _log_buffer.append(line)
-        if flush:
-            _flush_log()
-
-
-def _flush_log():
-    """Flush the log buffer to stdout (must be called with _log_lock held)."""
-    if _log_buffer:
-        _sys.stdout.write("\n".join(_log_buffer) + "\n")
-        _sys.stdout.flush()
-        _log_buffer.clear()
-
-
-def _flush_log_unlocked():
-    """Flush the log buffer to stdout, acquiring the lock internally."""
-    with _log_lock:
-        _flush_log()
+def _log(msg):
+    """Progress line of the stacking (stdout, through the 'vista' logger)."""
+    _say(msg)
 
 
 # ---------------------------------------------------------------------------
-# Thread safety: Casacore Table Data System locks
+# Thread safety: Casacore Table Data System lock
 # ---------------------------------------------------------------------------
-# See module docstring for rationale.
+# The metadata and the subtables are read and written with dask-ms from
+# thread pools; every access to the CTDS goes through this lock.
 
-_casacore_lock = _threading.Lock()
-_ms_locks: dict = {}
-_ms_locks_mutex = _threading.Lock()
-
-
-def _get_ms_lock(ms_path: str) -> _threading.Lock:
-    """Return a per-file lock: different MS files can be read in parallel,
-    but concurrent access to the *same* MS is serialised.
-    """
-    with _ms_locks_mutex:
-        if ms_path not in _ms_locks:
-            _ms_locks[ms_path] = _threading.Lock()
-        return _ms_locks[ms_path]
-
+_casacore_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Coordinate / frequency helpers
+# Coordinate helpers
 # ---------------------------------------------------------------------------
-
-def _vrange_to_freqrange(restfreq_hz, vmin_kms, vmax_kms):
-    """Convert an optical velocity range [vmin, vmax] (km/s) to a frequency
-    range in Hz using the optical convention:
-
-        v_opt = c * (f_rest - f) / f_rest   =>   f = f_rest * (1 - v/c)
-
-    Returns (freq_lo_hz, freq_hi_hz) with freq_lo < freq_hi.
-    """
-    f_at_vmax = restfreq_hz * (1.0 - vmax_kms / _C_LIGHT_KMS)
-    f_at_vmin = restfreq_hz * (1.0 - vmin_kms / _C_LIGHT_KMS)
-    return min(f_at_vmax, f_at_vmin), max(f_at_vmax, f_at_vmin)
 
 
 def _wrap_dra(ra_new, ra_old):
@@ -187,10 +140,10 @@ def _parse_ra_dec(ra_str, dec_str):
     c = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
     return float(c.ra.rad), float(c.dec.rad)
 
+# ---------------------------------------------------------------------------
+# Array utilities
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Array / chunk utilities
-# ---------------------------------------------------------------------------
 
 def _rename_duplicates(names):
     """Append an index suffix to duplicate strings in a list.
@@ -227,15 +180,6 @@ def _to_dask(arr, chunks=None):
     return da.from_array(arr, chunks=chunks, name=name)
 
 
-def _make_row_chunks(nrow, chunk_size):
-    """Return a tuple of chunk sizes that partition *nrow* rows into blocks
-    of at most *chunk_size*, with the remainder as the last (smaller) block.
-    """
-    n_full = nrow // chunk_size
-    n_rem  = nrow %  chunk_size
-    return (chunk_size,) * n_full + ((n_rem,) if n_rem else ())
-
-
 def _fmt_size(nbytes):
     """Format a byte count as a human-readable string (B / KB / MB / GB / TB)."""
     for unit in ("B", "KB", "MB", "GB"):
@@ -243,7 +187,6 @@ def _fmt_size(nbytes):
             return f"{nbytes:.1f} {unit}"
         nbytes /= 1024
     return f"{nbytes:.1f} TB"
-
 
 # ---------------------------------------------------------------------------
 # Output subtable builders
@@ -255,6 +198,7 @@ def _fmt_size(nbytes):
 #
 # Thread safety: every call that touches CTDS (xds_from_table, dask.compute
 # materialising columns read from disk) is wrapped in _casacore_lock.
+
 
 def _build_antenna_table(ms_list, z_list):
     """Build the ANTENNA subtable for the output MS.
@@ -514,38 +458,6 @@ def _build_observation_table(ms_list):
     return all_ds
 
 
-def _build_history_table(first_ms):
-    """Copy the HISTORY subtable from the first input MS."""
-    with _casacore_lock:
-        try: rows = xds_from_table(f"{first_ms}::HISTORY", group_cols="__row__")
-        except Exception: return []
-        return [Dataset({v:(r[v].dims,_to_dask(np.asarray(r[v].data))) for v in r.data_vars}) for r in rows]
-
-
-def _build_feed_table(ms_list, ant_offsets):
-    """Build the FEED subtable by concatenating FEED tables from all input MSs.
-
-    Antenna IDs are remapped using *ant_offsets* so they point to the correct
-    rows in the combined ANTENNA table.  All CTDS access is serialised via
-    ``_casacore_lock``.
-    """
-    all_ds = []
-    for ms, offset in zip(ms_list, ant_offsets):
-        with _casacore_lock:
-            try: rows = xds_from_table(f"{ms}::FEED", group_cols="__row__")
-            except Exception: continue
-            for r in rows:
-                vnames   = list(r.data_vars)
-                computed = dask.compute(*[r[v].data for v in vnames])
-                data_vars = {}
-                for v, arr in zip(vnames, computed):
-                    arr = np.asarray(arr)
-                    if v == "ANTENNA_ID": arr = arr + offset
-                    data_vars[v] = (r[v].dims, _to_dask(arr))
-                all_ds.append(Dataset(data_vars))
-    return all_ds
-
-
 def _build_source_table(first_ms, central_freq_hz):
     """Build a minimal SOURCE subtable for the output MS.
 
@@ -578,6 +490,464 @@ def _build_source_table(first_ms, central_freq_hz):
 
 
 # ===========================================================================
+# Readers: one MS -> context + chunks
+# ===========================================================================
+# The same generator is used by the reader processes (arrays in shared memory)
+# and by the reader threads of reader_mode="thread" (plain NumPy arrays).
+# Messages to the main process: (kind, reader_id, ms_idx, obj, read_seconds)
+#   kind = "ctx"   once per MS: what the kernel needs + what the log reports
+#          "chunk" vis, flag, uvw, antennas and scalar columns of a chunk
+#          "skip"  the MS gives no usable data (obj = the reason)
+#          "error" unexpected exception in the reader (obj = traceback)
+#          "done"  the reader has no more MSs
+_SCALAR_COLS = ["TIME", "EXPOSURE", "INTERVAL", "WEIGHT", "SIGMA",
+                "SCAN_NUMBER", "STATE_ID", "FLAG_ROW"]
+
+
+def _angular_sep(ra0, dec0, ra1, dec1):
+    """Angular distance between two directions (radians, haversine)."""
+    h = (math.sin(0.5 * (dec1 - dec0)) ** 2
+         + math.cos(dec0) * math.cos(dec1) * math.sin(0.5 * (ra1 - ra0)) ** 2)
+    return 2.0 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _iter_ms_chunks(job, alloc):
+    """Read one MS: yield ("ctx", ms_idx, ctx, t) once, then ("chunk", ...).
+
+    ``alloc(shape, dtype)`` returns the array VIS/FLAG are read into.
+    ``t`` = seconds spent reading since the previous message.
+    Raises RuntimeError when the MS gives no usable data (it is skipped).
+    """
+    from casacore.tables import table
+
+    t0 = time.perf_counter()
+    ms_idx = job["ms_idx"]
+    ms = job["ms"]
+    z = job["z"]
+    freq_old_list = job["freq_old_list"]
+    width_old_list = job["width_old_list"]
+    ddids = job["ddids"]
+    req_field = job["field"]
+    freq_new_ms = job["freq_new"]
+    df_new = job["df_new"]
+    ra0_rad, dec0_rad = job["phase_dir"]
+    ra1_rad, dec1_rad = _parse_ra_dec(job["ra"], job["dec"])
+    ra1_rad = _wrap_dra(ra1_rad, ra0_rad)
+
+    # weight scale R = df_new / df_old_rf (as CASA mstransform)
+    df_old_rf_chan0 = float(abs(width_old_list[0][0])) * (1.0 + z)
+    weight_scale = df_new / df_old_rf_chan0
+    sigma_scale = 1.0 / np.sqrt(weight_scale) if weight_scale > 0.0 else 1.0
+
+    tab = table(ms, readonly=True, ack=False)
+    subs = []
+    warnings = []
+    try:
+        colnames = set(tab.colnames())
+
+        # rows: the requested field, target scans only (when the MS has a STATE table)
+        conditions, filters = [], []
+        if req_field is not None:
+            conditions.append(f"FIELD_ID=={int(req_field)}")
+            filters.append(f"field {int(req_field)}")
+        try:
+            with table(f"{ms}::STATE", readonly=True, ack=False) as st:
+                if st.nrows() > 0:
+                    modes = st.getcol("OBS_MODE")
+                    ids = [i for i, m in enumerate(modes) if "OBSERVE_TARGET" in str(m)]
+                    if ids:
+                        conditions.append(f"STATE_ID IN [{','.join(map(str, ids))}]")
+                        filters.append("target scans")
+        except Exception:
+            pass
+        where = " AND ".join(conditions)
+
+        # visibility column: "auto" prefers CORRECTED_DATA (calibrated ALMA MS)
+        want = job.get("data_column") or "auto"
+        if want != "auto":
+            if want in colnames:
+                dcol = want
+            else:
+                dcol = "DATA" if "DATA" in colnames else None
+                warnings.append(f"no {want} column, {dcol or 'no DATA either'} used instead")
+        elif "CORRECTED_DATA" in colnames:
+            dcol = "CORRECTED_DATA"
+        elif "DATA" in colnames:
+            dcol = "DATA"
+        else:
+            dcol = None
+        if dcol is None:
+            raise RuntimeError("neither DATA nor CORRECTED_DATA in the MS")
+
+        def _spw_centre_rf(pos):
+            f = freq_old_list[pos]
+            return float(f[len(f) // 2]) * (1.0 + z)
+        spw_order = sorted(range(len(ddids)), key=_spw_centre_rf)
+
+        f_lo_win = freq_new_ms[0] - df_new
+        f_hi_win = freq_new_ms[-1] + df_new
+        pieces = []
+        ref = None
+        n_cov = set()
+        rows_all = None
+        for pos in spw_order:
+            ddid = int(ddids[pos])
+            q = f"DATA_DESC_ID=={ddid}" + (f" AND ({where})" if where else "")
+            sub = tab.query(q)
+            subs.append(sub)
+            if sub.nrows() == 0:
+                continue
+            freq_old_rf = freq_old_list[pos] * (1.0 + z)
+            useful = np.where((freq_old_rf >= f_lo_win) & (freq_old_rf <= f_hi_win))[0]
+            if len(useful) == 0:
+                continue
+            ch_lo, ch_hi = int(useful[0]), int(useful[-1]) + 1
+            fsl = freq_old_rf[ch_lo:ch_hi]
+            half = 0.5 * float(abs(width_old_list[pos][0])) * (1.0 + z)
+            in_lo, in_hi = float(fsl.min()) - half, float(fsl.max()) + half
+            for j in range(len(freq_new_ms)):
+                if min(freq_new_ms[j] + 0.5 * df_new, in_hi) > \
+                   max(freq_new_ms[j] - 0.5 * df_new, in_lo):
+                    n_cov.add(j)
+            pieces.append((sub, dcol, ch_lo, ch_hi, fsl))
+            if ref is None:
+                ref = sub
+                if where:
+                    with tab.query(f"DATA_DESC_ID=={ddid}") as t_all:
+                        rows_all = t_all.nrows()
+
+        if not pieces or ref is None:
+            raise RuntimeError(
+                f"no rows or channels in the output window "
+                f"(field={req_field}, SPWs {list(ddids)}): check the field, "
+                f"the SPWs and the frequency coverage")
+
+        nrows_list = [p[0].nrows() for p in pieces]
+        nrows = nrows_list[0]
+        if len(set(nrows_list)) > 1:
+            keep = [p for p, n in zip(pieces, nrows_list) if n == nrows]
+            warnings.append(f"{len(pieces) - len(keep)} SPW(s) dropped: their number of "
+                            f"rows differs from the first one ({nrows_list})")
+            pieces = keep
+
+        freq_merged = np.concatenate([p[4] for p in pieces])
+        nchan_tot = int(sum(p[3] - p[2] for p in pieces))
+        ncorr = int(np.asarray(ref.getcell(pieces[0][1], 0)).shape[-1])
+        adaptive = max(1000, (512 * 1024 * 1024) // max(1, nchan_tot * 2 * 8))
+        eff_chunk = min(job["chunk_rows"], adaptive)
+
+        uvw_all = ref.getcol("UVW").astype(np.float64)
+        ant1_all = ref.getcol("ANTENNA1")
+        ant2_all = ref.getcol("ANTENNA2")
+        scal = {}
+        for c in _SCALAR_COLS:
+            if c in colnames:
+                try:
+                    scal[c] = ref.getcol(c)
+                except Exception:
+                    pass
+
+        # distance of the stacking position from the phase centre, and the
+        # primary beam at the observed frequency (sanity check of RA/Dec)
+        offset = _angular_sep(ra0_rad, dec0_rad, ra1_rad, dec1_rad) * _RAD2ARCSEC
+        nu_obs = float(np.median(freq_merged)) / (1.0 + z)
+        fwhm = None
+        try:
+            with table(f"{ms}::ANTENNA", readonly=True, ack=False) as at:
+                dish = at.getcol("DISH_DIAMETER")
+            dish = float(np.median(dish[dish > 0])) if np.any(dish > 0) else 0.0
+            if dish > 0:
+                fwhm = 1.13 * (_C_LIGHT_MS / nu_obs) / dish * _RAD2ARCSEC
+        except Exception:
+            pass
+        if fwhm is not None and offset > 0.5 * fwhm:
+            warnings.append(f"the stacking position is {offset:.1f}\" from the phase "
+                            f"centre, beyond half the primary beam (FWHM ~ {fwhm:.0f}\" "
+                            f"at {nu_obs / 1e9:.1f} GHz): check RA/Dec in the input list")
+
+        ctx = {
+            "z": z, "ra0": ra0_rad, "dec0": dec0_rad, "ra1": ra1_rad, "dec1": dec1_rad,
+            "freq_old": freq_merged, "freq_new": freq_new_ms,
+            "ant_offset": job["ant_offset"],
+            "weight_scale": weight_scale, "sigma_scale": sigma_scale,
+            "rows": nrows, "rows_all": rows_all, "filters": filters,
+            "data_column": dcol, "n_spw": len(pieces), "nchan_in": nchan_tot,
+            "ncorr": ncorr, "coverage": len(n_cov), "nchan_out": len(freq_new_ms),
+            "offset_arcsec": offset, "pb_fwhm_arcsec": fwhm, "chunk_rows": eff_chunk,
+            "warnings": warnings,
+        }
+        t = time.perf_counter()
+        yield ("ctx", ms_idx, ctx, t - t0)
+
+        for row0 in range(0, nrows, eff_chunk):
+            t0 = time.perf_counter()
+            n = min(eff_chunk, nrows - row0)
+            vis = alloc((n, nchan_tot, ncorr), np.complex64)
+            flag = alloc((n, nchan_tot, ncorr), np.bool_)
+            c0 = 0
+            for (sub, col, lo, hi, _f) in pieces:
+                w = hi - lo
+                blc, trc = [lo, 0], [hi - 1, ncorr - 1]
+                if len(pieces) == 1:
+                    tv, tf = vis, flag
+                else:
+                    tv = np.empty((n, w, ncorr), np.complex64)
+                    tf = np.empty((n, w, ncorr), np.bool_)
+                try:
+                    sub.getcolslicenp(col, tv, blc, trc, startrow=row0, nrow=n)
+                except Exception:
+                    tv[...] = sub.getcolslice(col, blc, trc, startrow=row0, nrow=n)
+                sub.getcolslicenp("FLAG", tf, blc, trc, startrow=row0, nrow=n)
+                if len(pieces) > 1:
+                    vis[:, c0:c0 + w, :] = tv
+                    flag[:, c0:c0 + w, :] = tf
+                c0 += w
+            payload = {
+                "vis": vis, "flag": flag,
+                "uvw": uvw_all[row0:row0 + n],
+                "ant1": ant1_all[row0:row0 + n], "ant2": ant2_all[row0:row0 + n],
+                "scal": {c: a[row0:row0 + n] for c, a in scal.items()},
+                "last": row0 + n >= nrows,
+            }
+            yield ("chunk", ms_idx, payload, time.perf_counter() - t0)
+    finally:
+        for s in subs:
+            try:
+                s.close()
+            except Exception:
+                pass
+        tab.close()
+
+
+# ---------------------------------------------------------------------------
+# Reader processes: VIS / FLAG in shared memory
+# ---------------------------------------------------------------------------
+
+def _shm_create(nbytes):
+    from multiprocessing import shared_memory
+    try:
+        # Python >= 3.13: no resource tracker, the main process frees the segment
+        return shared_memory.SharedMemory(create=True, size=max(1, nbytes), track=False)
+    except TypeError:
+        shm = shared_memory.SharedMemory(create=True, size=max(1, nbytes))
+        try:
+            from multiprocessing import resource_tracker
+            resource_tracker.unregister(shm._name, "shared_memory")
+        except Exception:
+            pass
+        return shm
+
+
+def _shm_attach(name):
+    """Map a segment created by a reader.  (Python < 3.13: attaching registers
+    the segment in the resource tracker and unlink() unregisters it.)"""
+    from multiprocessing import shared_memory
+    try:
+        return shared_memory.SharedMemory(name=name, track=False)
+    except TypeError:
+        return shared_memory.SharedMemory(name=name)
+
+
+def _shm_unlink_untracked(shm):
+    """Remove a segment that is not in the resource tracker (created by a reader)."""
+    try:
+        import _posixshmem
+        _posixshmem.shm_unlink(shm._name)
+    except ImportError:
+        shm.unlink()
+
+
+def _reader_process(worker_id, task_q, out_q, stop_ev):
+    """Entry point of the reader processes (module level, for 'spawn').
+
+    For "chunk" messages obj["vis"] and obj["flag"] are (shm name, shape,
+    dtype): the main process maps them, uses them and unlinks them.
+    """
+    import queue as _queue
+    import casacore.tables  # noqa: F401  (heavy imports while the parent does the setup)
+    import astropy.coordinates  # noqa: F401
+
+    fresh = []          # segments created for the current chunk
+    pending = []        # segments already sent, local mapping still to close
+
+    def alloc(shape, dtype):
+        nbytes = int(np.prod(shape)) * np.dtype(dtype).itemsize
+        shm = _shm_create(nbytes)
+        fresh.append(shm)
+        return np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+
+    def try_close():
+        still = []
+        for shm in pending:
+            try:
+                shm.close()
+            except BufferError:          # the generator still holds a view
+                still.append(shm)
+        pending[:] = still
+
+    def put(msg):
+        while not stop_ev.is_set():
+            try:
+                out_q.put(msg, timeout=0.2)
+                break
+            except _queue.Full:
+                continue
+
+    try:
+        while not stop_ev.is_set():
+            try:
+                job = task_q.get(timeout=0.2)
+            except _queue.Empty:
+                continue
+            if job is None:
+                break
+            try:
+                for kind, ms_idx, obj, t in _iter_ms_chunks(job, alloc):
+                    if kind == "chunk":
+                        shm_v, shm_f = fresh[0], fresh[1]
+                        obj = dict(obj)
+                        obj["vis"] = (shm_v.name, obj["vis"].shape, "complex64")
+                        obj["flag"] = (shm_f.name, obj["flag"].shape, "bool")
+                        pending.extend(fresh)
+                        fresh.clear()
+                    put((kind, worker_id, ms_idx, obj, t))
+                    try_close()
+            except RuntimeError as e:
+                put(("skip", worker_id, job["ms_idx"], str(e), 0.0))
+    except Exception:
+        import traceback
+        put(("error", worker_id, None, traceback.format_exc(), 0.0))
+    finally:
+        for shm in fresh:                 # created but never sent: removed here
+            try:
+                _shm_unlink_untracked(shm)
+            except Exception:
+                pass
+            try:
+                shm.close()
+            except Exception:
+                pass
+        try_close()
+        put(("done", worker_id, None, None, 0.0))
+
+
+@contextlib.contextmanager
+def _spawn_without_main():
+    """Start 'spawn' processes without re-running the user's script in them.
+
+    A spawned child normally imports the parent's __main__ module again: a
+    script that calls ViSta.run() without an ``if __name__ == "__main__":``
+    guard would start the whole run in every reader.  The readers need only
+    this module, so __main__ is hidden while they start.
+    """
+    main = sys.modules.get("__main__")
+    saved = {}
+    if main is not None:
+        for attr in ("__file__", "__spec__"):
+            if hasattr(main, attr):
+                saved[attr] = getattr(main, attr)
+        if "__file__" in saved:
+            del main.__file__
+        if "__spec__" in saved:
+            main.__spec__ = None
+    try:
+        yield
+    finally:
+        for attr, value in saved.items():
+            setattr(main, attr, value)
+
+
+# ===========================================================================
+# Output
+# ===========================================================================
+
+# columns with the same value in every row, written with each chunk
+_CONSTANT_COLS = {"FEED1": np.int32, "FEED2": np.int32, "PROCESSOR_ID": np.int32,
+                  "ARRAY_ID": np.int32, "OBSERVATION_ID": np.int32,
+                  "TIME_CENTROID": np.float64}
+_DONE = object()          # end-of-stream marker
+
+
+class _Abort(Exception):
+    pass
+
+
+def _output_dminfo(nchan, ncorr):
+    """Storage managers of the output main table (the layout dask-ms uses)."""
+    ch_tile = min(nchan, 16)
+    data_rows = max(1, (1 << 20) // (ncorr * ch_tile * 8))
+    return {
+        "*1": {"TYPE": "IncrementalStMan", "NAME": "IndexingGroup", "SPEC": {},
+               "COLUMNS": ["ARRAY_ID", "DATA_DESC_ID", "FIELD_ID", "OBSERVATION_ID",
+                           "PROCESSOR_ID", "SCAN_NUMBER", "STATE_ID"]},
+        "*2": {"TYPE": "StandardStMan", "NAME": "StandardStMan", "SPEC": {},
+               "COLUMNS": ["ANTENNA1", "ANTENNA2", "EXPOSURE", "FEED1", "FEED2",
+                           "FLAG_CATEGORY", "FLAG_ROW", "INTERVAL", "TIME",
+                           "TIME_CENTROID"]},
+        "*3": {"TYPE": "TiledColumnStMan", "NAME": "UVW_GROUP",
+               "SPEC": {"DEFAULTTILESHAPE": np.array([3, 65536], np.int32)},
+               "COLUMNS": ["UVW"]},
+        "*4": {"TYPE": "TiledColumnStMan", "NAME": "WEIGHT_GROUP",
+               "SPEC": {"DEFAULTTILESHAPE": np.array([ncorr, 131072], np.int32)},
+               "COLUMNS": ["WEIGHT"]},
+        "*5": {"TYPE": "TiledColumnStMan", "NAME": "SIGMA_GROUP",
+               "SPEC": {"DEFAULTTILESHAPE": np.array([ncorr, 131072], np.int32)},
+               "COLUMNS": ["SIGMA"]},
+        "*6": {"TYPE": "TiledColumnStMan", "NAME": "FLAG_GROUP",
+               "SPEC": {"DEFAULTTILESHAPE": np.array([ncorr, ch_tile, 32768], np.int32)},
+               "COLUMNS": ["FLAG"]},
+        "*7": {"TYPE": "TiledColumnStMan", "NAME": "DATA_GROUP",
+               "SPEC": {"DEFAULTTILESHAPE": np.array([ncorr, ch_tile, data_rows], np.int32)},
+               "COLUMNS": ["DATA"]},
+    }
+
+
+class _OutPool:
+    """Reused output buffers of the GPU path.
+
+    A fixed set of slots (vis, flag, uvw) as large as a chunk, allocated once
+    and page-locked: the GPU copies the results straight into them (DMA) and
+    no new memory pages are created for every chunk.  The compute takes a
+    free slot, the writer gives it back once written; with no free slot the
+    compute waits for the writer.
+    """
+
+    def __init__(self, nslots, rows, nchan, ncorr, pin=True):
+        self.rows = rows
+        self.slots = []
+        self.free = Queue()
+        self.pinned = 0
+        for k in range(nslots):
+            sl = (np.zeros((rows, nchan, ncorr), np.complex64),   # zeros: pages touched
+                  np.zeros((rows, nchan, ncorr), np.bool_),
+                  np.zeros((rows, 3), np.float64))
+            if pin:
+                self.pinned += int(all(ms_ops.pin_host(a) for a in sl))
+            self.slots.append(sl)
+            self.free.put(k)
+
+    def views(self, k, n):
+        v, f, u = self.slots[k]
+        return v[:n], f[:n], u[:n]
+
+    def close(self):
+        if self.pinned:
+            for sl in self.slots:
+                for a in sl:
+                    try:
+                        ms_ops.unpin_host(a)
+                    except Exception:
+                        pass
+        self.slots = []
+
+
+def _fmt_time(seconds):
+    if seconds < 120:
+        return f"{seconds:.1f} s"
+    return f"{seconds / 60:.1f} min"
+
+
+# ===========================================================================
 # ViSta — main pipeline class
 # ===========================================================================
 
@@ -589,10 +959,10 @@ class ViSta:
     rest-frames and phase-shifts each dataset, regrids all visibilities onto
     a common spectral grid, and writes the result as a single stacked MS.
 
-    The pipeline uses three concurrent threads (reader, compute, writer)
-    connected by bounded queues, effectively hiding I/O latency behind
-    compute and vice versa.  The compute kernel (``ms_ops.so``) is written
-    in C++/OpenMP and optionally dispatched to a CUDA GPU when available.
+    Reader processes, the compute kernel and a single writer run at the same
+    time, connected by bounded queues (see the module docstring).  The
+    compute kernel (``ms_ops``) is written in C++/OpenMP; with a CUDA build
+    it can run on a GPU (``run(device="gpu")``).
 
     Parameters
     ----------
@@ -604,13 +974,16 @@ class ViSta:
 
         RA and Dec are parsed by astropy (sexagesimal or decimal).
         FIELD_ID defaults to 0.  SPW_IDs is a comma-separated list of
-        spectral window indices (default: all).
+        spectral window indices (default: all).  An optional last value is
+        the normalisation factor used by :mod:`vista.extract`.
     chunk_rows : int
         Number of baseline rows processed per chunk.  Larger values reduce
         Python overhead but increase peak memory usage.  An adaptive mechanism
         may lower this at runtime if the input channel count is very large.
-    verbose : bool
-        If True, print timestamped progress messages to stdout.
+    verbose : bool or "debug"
+        ``True`` (default): one line per step and per MS, with the elapsed
+        time, plus the warnings.  ``False``: warnings and errors only.
+        ``"debug"``: also the details (metadata, queues, GPU buffers).
     """
 
     def __init__(self, input_file, chunk_rows=5000, verbose=True):
@@ -728,6 +1101,8 @@ class ViSta:
         self._cache_phase_dir = {}
         self._cache_ddids     = {}
         self._freq_range_hz   = None  # not used in this mode
+        self._grid_shift      = {}    # ms_idx -> shift of its window (Hz), 0 = centred
+        self._grid_note       = ""
 
         def _read_meta_daskms(i, ms, req_field, req_spws):
             """Read SPECTRAL_WINDOW, FIELD, and DATA_DESCRIPTION for one MS.
@@ -781,21 +1156,21 @@ class ViSta:
             return result
 
         n_ms = len(self.ms_list)
-        _log(f"Reading metadata from {n_ms} MSs (SPECTRAL_WINDOW / FIELD / DATA_DESCRIPTION)...")
+        _detail(f"Reading metadata from {n_ms} MSs (SPECTRAL_WINDOW / FIELD / DATA_DESCRIPTION)...")
 
         def _load_one(arg):
             i, ms = arg
             req_field = self.field_list[i]
             req_spws  = self.spw_list[i]
-            _log(f"  [{i+1}/{n_ms}]  {os.path.basename(ms)}")
+            _detail(f"  [{i+1}/{n_ms}]  {os.path.basename(ms)}")
             r = _read_meta_daskms(i, ms, req_field, req_spws)
-            _log(f"  [{i+1}/{n_ms}]  done  spw={r['spws_used']}  "
+            _detail(f"  [{i+1}/{n_ms}]  done  spw={r['spws_used']}  "
                  f"{sum(len(f) for f in r['freq_per_spw'])} channels")
             return r
 
         with ThreadPoolExecutor(max_workers=min(4, n_ms)) as pool:
             meta_list = list(pool.map(_load_one, enumerate(self.ms_list)))
-        _log("Metadata read. Computing per-MS output grids...")
+        _detail("Metadata read. Computing per-MS output grids...")
 
         # ------------------------------------------------------------------
         # Step 1: collect df_max and nchan per MS
@@ -827,7 +1202,7 @@ class ViSta:
             freq_rf = freq_all * (1.0 + z)
             freq_ranges.append((float(freq_rf.min()), float(freq_rf.max())))
 
-            _log(f"  [{ms_idx+1}/{n_ms}]  {os.path.basename(self.ms_list[ms_idx])}  "
+            _detail(f"  [{ms_idx+1}/{n_ms}]  {os.path.basename(self.ms_list[ms_idx])}  "
                  f"z={z:.5f}  nchan={len(freq_all)}  df_rf={df_rf/1e3:.3f} kHz  "
                  f"range=[{freq_rf.min()/1e6:.3f}, {freq_rf.max()/1e6:.3f}] MHz")
 
@@ -839,10 +1214,12 @@ class ViSta:
         df_floor = max(spectral_res_list)
         if channel_width_hz is None:
             df_new = df_floor
-            _log(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
+            self._width_note = "width: the coarsest rest-frame channel of the sample"
+            _detail(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
                  f"(widest rest-framed channel of the sample)")
         else:
             df_new = float(channel_width_hz)
+            self._width_note = "width: channel_width_hz"
             if df_new < df_floor:
                 worst = int(np.argmax(spectral_res_list))
                 raise ValueError(
@@ -853,7 +1230,7 @@ class ViSta:
                     f"z={self.z_list[worst]:.4f}).  Use a width >= "
                     f"{df_floor:.6g} Hz, or drop that dataset."
                 )
-            _log(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
+            _detail(f"Common channel width (df_new) = {df_new/1e3:.3f} kHz "
                  f"(user-set; sample floor is {df_floor/1e3:.3f} kHz)")
 
         # Maximum output channels each MS can contribute
@@ -871,27 +1248,32 @@ class ViSta:
             dv_total = v_hi - v_lo
             bw_vel   = central_freq * dv_total / C_KMS
             nn = max(2, int(np.ceil(bw_vel / df_new)))
-            _log(f"Velocity range requested: [{v_lo:.0f}, {v_hi:.0f}] km/s "
+            self._grid_note = f"channels: velocity range {v_lo:+.0f} to {v_hi:+.0f} km/s"
+            _detail(f"Velocity range requested: [{v_lo:.0f}, {v_hi:.0f}] km/s "
                  f"(dv={dv_total:.0f} km/s)")
-            _log(f"  -> bandwidth = {bw_vel/1e6:.3f} MHz / "
+            _detail(f"  -> bandwidth = {bw_vel/1e6:.3f} MHz / "
                  f"df_new={df_new/1e3:.3f} kHz => nn = {nn} channels")
         elif nchan_out is None:
             nn = max(nn_per_ms)
-            _log(f"Output channels (auto): {nn}  "
+            self._grid_note = (f"channels: automatic, the MS fill "
+                               f"{min(nn_per_ms)}-{max(nn_per_ms)} of them")
+            _detail(f"Output channels (auto): {nn}  "
                  f"[per-MS coverage: {min(nn_per_ms)}-{max(nn_per_ms)}]")
         else:
             nn = int(nchan_out)
-            _log(f"Output channels (user-set): {nn}  "
+            self._grid_note = (f"channels: nchan_out, the MS can fill "
+                               f"{min(nn_per_ms)}-{max(nn_per_ms)} of them")
+            _detail(f"Output channels (user-set): {nn}  "
                  f"[per-MS available: {min(nn_per_ms)}-{max(nn_per_ms)}]")
 
         if nn % 2 != 0:
             nn -= 1
-        _log(f"Final output channels: {nn}")
+        _detail(f"Final output channels: {nn}")
 
         bandwidth    = nn * df_new
         start_ideal  = central_freq - bandwidth / 2.0
         end_ideal    = central_freq + bandwidth / 2.0
-        _log(f"Target window: [{start_ideal/1e6:.6f}, {end_ideal/1e6:.6f}] MHz")
+        _detail(f"Target window: [{start_ideal/1e6:.6f}, {end_ideal/1e6:.6f}] MHz")
 
         # ------------------------------------------------------------------
         # Step 2: place output window for each MS (shift to edge if needed)
@@ -915,7 +1297,8 @@ class ViSta:
             end    = start + bandwidth
             center = 0.5 * (start + end)
             offset = center - central_freq
-            _log(f"  [{ms_idx+1}/{n_ms}]  {os.path.basename(ms)}  "
+            self._grid_shift[ms_idx] = 0.0 if reason == "ideal window fits" else offset
+            _detail(f"  [{ms_idx+1}/{n_ms}]  {os.path.basename(ms)}  "
                  f"start={start/1e6:.6f} MHz  end={end/1e6:.6f} MHz  "
                  f"offset={offset:+.3e} Hz  ({reason})")
 
@@ -930,7 +1313,9 @@ class ViSta:
 
     def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None,
             velocity_range_kms=None, channel_width_hz=None,
-            data_column="auto"):
+            data_column="auto", device="cpu", n_readers=2, n_threads=None,
+            gpu_batch=8, timing=False, log_file=None,
+            reader_mode="process", chunk_queue=None, out_queue=3):
         """Run the stacking pipeline and write the output Measurement Set.
 
         Parameters
@@ -955,1032 +1340,624 @@ class ViSta:
 
             ``int`` — fix the number of output channels explicitly.  Can be
             larger or smaller than the automatic value.
-        channel_width_hz : float or None
-            Common rest-frame channel width, in Hz.  ``None`` uses the widest
-            rest-framed channel of the sample, which is the finest grid every
-            dataset supports; a finer value is refused.
         velocity_range_kms : float, tuple, or None
             If set, determines the output bandwidth from a velocity range
             (optical convention, km/s).  A scalar is interpreted as ±v;
             a 2-tuple as ``(v_lo, v_hi)``.  Overrides *nchan_out*.
-        """
-        global _verbose_global
-        _verbose_global = self.verbose
+        channel_width_hz : float or None
+            Common rest-frame channel width, in Hz.  ``None`` uses the widest
+            rest-framed channel of the sample, which is the finest grid every
+            dataset supports; a finer value is refused.
+        data_column : str
+            Visibility column to read: ``"auto"`` (default) prefers
+            ``CORRECTED_DATA`` and falls back to ``DATA``; any other name is
+            read when present, otherwise ``DATA`` is used (with a warning).
+        device : "cpu" or "gpu"
+            Where the kernel runs.  ``"gpu"`` needs a CUDA build
+            (``-DWITH_CUDA=ON``) and a visible GPU.  The run is usually
+            limited by the writing of the output MS, so the GPU pays off only
+            when the computation dominates (many channels, many rows).
+        n_readers : int
+            Reader processes reading different MSs at the same time
+            (default 2; more readers help only on fast filesystems).
+        n_threads : int or None
+            OpenMP threads of the CPU kernel.  ``None`` keeps
+            ``OMP_NUM_THREADS``, else ``SLURM_CPUS_PER_TASK``, else all cores.
+        gpu_batch : int
+            GPU only: maximum number of chunks per GPU launch (default 8).
+            The compute takes the chunks already read, without waiting for
+            more; larger values use more host memory.
+        timing : bool
+            At the end, also log how long setup, reading, computing and
+            writing took, and which stage limited the run.
+        log_file : str or None
+            Also append the log to this file.
+        reader_mode : "process" or "thread"
+            ``"process"`` (default) — parallel reads, data passed through
+            shared memory (``/dev/shm``).  ``"thread"`` — readers as threads:
+            no shared memory needed (e.g. containers with a small
+            ``/dev/shm``), but the reads take turns.
+        chunk_queue, out_queue : int or None
+            Advanced: chunks waiting for the compute (default
+            ``n_readers + 1``, at least ``gpu_batch`` on the GPU) and for the
+            writer (default 3).  They bound the memory in use.
 
-        # --- Threading coherence ------------------------------------------
-        import multiprocessing as _mp
-        _slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0))
-        if _slurm_cpus > 0:
-            _phys_cores = _slurm_cpus
-            _n_readers  = 3
-        else:
-            _phys_cores = max(1, _mp.cpu_count() // 2)
-            _n_readers  = 1
-        os.environ["OMP_NUM_THREADS"] = str(_phys_cores)
-        _log(f"OMP_NUM_THREADS={_phys_cores}  reader_threads={_n_readers}  "
-             f"GPU={'yes' if _gpu_available else 'no'}")
+        Returns
+        -------
+        dict
+            ``ms_out``, ``n_rows``, ``n_spw``, ``nchan``, ``df_hz``,
+            ``flagged_fraction``, ``skipped`` (input indices) and
+            ``seconds``.
+        """
+        set_verbosity(self.verbose, log_file)
+        _reset_clock()
+        t_start = time.perf_counter()
         dask.config.set(scheduler="synchronous")
 
-        self.data_column = data_column
-        t_start = time.perf_counter()
+        if device not in ("cpu", "gpu"):
+            raise ValueError("device must be 'cpu' or 'gpu'")
+        if reader_mode not in ("process", "thread"):
+            raise ValueError("reader_mode must be 'process' or 'thread'")
+        n_readers = max(1, int(n_readers))
+        gpu_batch = max(1, int(gpu_batch))
+        chunk_queue = int(chunk_queue) if chunk_queue else n_readers + 1
+        if n_threads:
+            ms_ops.omp_set_threads(int(n_threads))
+        n_omp = ms_ops.omp_max_threads()
+        use_gpu = device == "gpu"
+        if use_gpu:
+            if not ms_ops.built_with_cuda():
+                raise RuntimeError("device='gpu': the ms_ops kernel was built without "
+                                   "CUDA; rebuild it with cmake -DWITH_CUDA=ON")
+            if not ms_ops.gpu_available():
+                raise RuntimeError("device='gpu': no GPU visible to CUDA "
+                                   "(check CUDA_VISIBLE_DEVICES and the node)")
+            # the chunk queue must be able to hold a whole batch
+            chunk_queue = max(chunk_queue, gpu_batch)
 
-        # Determine working path (scratch) vs final destination
+        n_ms = len(self.ms_list)
         ms_final = ms_out
-        if scratch_dir is not None:
-            os.makedirs(scratch_dir, exist_ok=True)
-            ms_out = os.path.join(scratch_dir, os.path.basename(ms_final))
-            _log(f"Writing to scratch: {ms_out}")
-            _log(f"  Final destination: {ms_final}")
+        if use_gpu:
+            gfree, gtot = ms_ops.gpu_memory_info()
+            where = f"GPU ({gtot / 2**30:.0f} GB, up to {gpu_batch} chunks per launch)"
+        else:
+            where = f"CPU ({n_omp} thread{'s' if n_omp > 1 else ''})"
+        _log(f"ViSta {__version__} · {n_ms} MS from {os.path.basename(self.input_file)} "
+             f"→ {ms_final} · {where} · {n_readers} reader{'s' if n_readers > 1 else ''}")
+        _detail(f"chunk_rows={self.chunk_rows}  reader_mode={reader_mode}  "
+                f"chunk_queue={chunk_queue}  out_queue={out_queue}")
 
-        # Remove any existing output at both locations
-        for _p in ({ms_out, ms_final}):
-            if os.path.exists(_p):
-                _log(f"Removing existing output: {_p}")
-                shutil.rmtree(_p)
+        # The reader processes start now, so that they import numpy/casacore
+        # while the setup runs here; their jobs arrive later on task_q.
+        abort = threading.Event()
+        procs = []
+        if reader_mode == "process":
+            import multiprocessing as mp
+            mpc = mp.get_context("spawn")
+            task_q = mpc.Queue()
+            read_q = mpc.Queue(maxsize=chunk_queue)
+            stop_ev = mpc.Event()
+            procs = [mpc.Process(target=_reader_process, args=(k, task_q, read_q, stop_ev),
+                                 name=f"vista-reader-{k}", daemon=True)
+                     for k in range(n_readers)]
+            with _spawn_without_main():
+                for pr in procs:
+                    pr.start()
+        else:
+            task_q = Queue()
+            read_q = Queue(maxsize=chunk_queue)
+            stop_ev = abort
 
-        _log("Computing per-MS spectral grids...")
-        freq_new_per_ms, df_new = self._compute_per_ms_grids(
-            central_freq, nchan_out=nchan_out,
-            velocity_range_kms=velocity_range_kms,
-            channel_width_hz=channel_width_hz)
-        nchan_new = len(freq_new_per_ms[0])
+        def _stop_procs():
+            stop_ev.set()
+            for pr in procs:
+                pr.join(timeout=5)
+                if pr.is_alive():
+                    pr.terminate()
 
-        t_setup = time.perf_counter()
-        _log("Building ANTENNA table...")
-        ant_ds, ant_offsets = _build_antenna_table(self.ms_list, self.z_list)
-        _log(f"  {ant_ds.sizes['row']} antennas in combined table")
+        # ------------------------------------------------------------------
+        # Setup: output grid and subtables
+        # ------------------------------------------------------------------
+        try:
+            if scratch_dir is not None:
+                os.makedirs(scratch_dir, exist_ok=True)
+                ms_out = os.path.join(scratch_dir, os.path.basename(ms_final))
+                _log(f"Writing to the scratch directory {scratch_dir}, "
+                     f"moved to {ms_final} at the end")
+            for _p in {ms_out, ms_final}:
+                if os.path.exists(_p):
+                    _detail(f"Removing existing output: {_p}")
+                    shutil.rmtree(_p)
 
-        _log("Building output subtables...")
-        first_ms     = self.ms_list[0]
-        spw_ds       = _build_spw_table(freq_new_per_ms, df_new, self.ms_list)
-        field_ds     = _build_field_table(first_ms)
-        dd_ds        = _build_dd_table(first_ms, len(self.ms_list))
-        pol_ds       = _copy_subtable_first_row(first_ms, "POLARIZATION")
-        obs_ds_list  = _build_observation_table(self.ms_list)
-        hist_ds_list = []
-        nant_total   = ant_ds.sizes['row']
+            freq_new_per_ms, df_new = self._compute_per_ms_grids(
+                central_freq, nchan_out=nchan_out,
+                velocity_range_kms=velocity_range_kms,
+                channel_width_hz=channel_width_hz)
+            nchan_new = len(freq_new_per_ms[0])
+            dv = df_new / central_freq * _C_LIGHT_KMS
+            half_v = 0.5 * nchan_new * dv
+            _log(f"Output grid: {nchan_new} channels × {df_new / 1e3:.1f} kHz "
+                 f"({dv:.2f} km/s), ±{half_v:.0f} km/s around "
+                 f"{central_freq / 1e9:.4f} GHz")
+            _log(f"  ({self._width_note}; {self._grid_note})")
+            n_shift = sum(1 for s in self._grid_shift.values() if s)
+            if n_shift:
+                _log(f"  {n_shift} of {n_ms} MS do not cover the whole window around "
+                     f"{central_freq / 1e9:.4f} GHz: their window is moved to the edge "
+                     f"of their band (shift in the lines below), so their channel "
+                     f"frequencies differ from the others")
 
-        # Build a minimal FEED table covering all antennas
-        feed_ds_list = [Dataset({
-            'ANTENNA_ID':        (('row',),           _to_dask(np.arange(nant_total, dtype=np.int32))),
-            'FEED_ID':           (('row',),           _to_dask(np.zeros(nant_total, dtype=np.int32))),
-            'SPECTRAL_WINDOW_ID':(('row',),           _to_dask(np.full(nant_total, -1, dtype=np.int32))),
-            'TIME':              (('row',),           _to_dask(np.zeros(nant_total, dtype=np.float64))),
-            'INTERVAL':          (('row',),           _to_dask(np.zeros(nant_total, dtype=np.float64))),
-            'NUM_RECEPTORS':     (('row',),           _to_dask(np.full(nant_total, 2, dtype=np.int32))),
-            'POLARIZATION_TYPE': (('row','receptors'),_to_dask(np.array([['X','Y']]*nant_total, dtype=object))),
-            'POL_RESPONSE':      (('row','receptors','receptors2'),
-                                  _to_dask(np.tile(np.eye(2, dtype=complex), (nant_total,1,1)))),
-            'POSITION':          (('row','xyz'),      _to_dask(np.zeros((nant_total,3), dtype=np.float64))),
-            'BEAM_OFFSET':       (('row','receptors','radec'),
-                                  _to_dask(np.zeros((nant_total,2,2), dtype=np.float64))),
-            'RECEPTOR_ANGLE':    (('row','receptors'),_to_dask(np.zeros((nant_total,2), dtype=np.float64))),
-            'BEAM_ID':           (('row',),           _to_dask(np.full(nant_total, -1, dtype=np.int32))),
-        })]
-        src_ds_list = _build_source_table(first_ms, central_freq)
+            _detail("Building output subtables...")
+            ant_ds, ant_offsets = _build_antenna_table(self.ms_list, self.z_list)
+            first_ms     = self.ms_list[0]
+            spw_ds       = _build_spw_table(freq_new_per_ms, df_new, self.ms_list)
+            field_ds     = _build_field_table(first_ms)
+            dd_ds        = _build_dd_table(first_ms, n_ms)
+            pol_ds       = _copy_subtable_first_row(first_ms, "POLARIZATION")
+            obs_ds_list  = _build_observation_table(self.ms_list)
+            nant_total   = ant_ds.sizes['row']
+            # minimal FEED table covering all antennas
+            feed_ds_list = [Dataset({
+                'ANTENNA_ID':        (('row',),           _to_dask(np.arange(nant_total, dtype=np.int32))),
+                'FEED_ID':           (('row',),           _to_dask(np.zeros(nant_total, dtype=np.int32))),
+                'SPECTRAL_WINDOW_ID':(('row',),           _to_dask(np.full(nant_total, -1, dtype=np.int32))),
+                'TIME':              (('row',),           _to_dask(np.zeros(nant_total, dtype=np.float64))),
+                'INTERVAL':          (('row',),           _to_dask(np.zeros(nant_total, dtype=np.float64))),
+                'NUM_RECEPTORS':     (('row',),           _to_dask(np.full(nant_total, 2, dtype=np.int32))),
+                'POLARIZATION_TYPE': (('row','receptors'),_to_dask(np.array([['X','Y']]*nant_total, dtype=object))),
+                'POL_RESPONSE':      (('row','receptors','receptors2'),
+                                      _to_dask(np.tile(np.eye(2, dtype=complex), (nant_total,1,1)))),
+                'POSITION':          (('row','xyz'),      _to_dask(np.zeros((nant_total,3), dtype=np.float64))),
+                'BEAM_OFFSET':       (('row','receptors','radec'),
+                                      _to_dask(np.zeros((nant_total,2,2), dtype=np.float64))),
+                'RECEPTOR_ANGLE':    (('row','receptors'),_to_dask(np.zeros((nant_total,2), dtype=np.float64))),
+                'BEAM_ID':           (('row',),           _to_dask(np.full(nant_total, -1, dtype=np.int32))),
+            })]
+            src_ds_list = _build_source_table(first_ms, central_freq)
+        except BaseException:
+            _stop_procs()
+            raise
 
+        jobs = [{
+            "ms_idx": i, "ms": self.ms_list[i], "z": float(self.z_list[i]),
+            "freq_old_list": self._cache_freq_old[i],
+            "width_old_list": self._cache_width_old[i],
+            "ddids": [int(d) for d in self._cache_ddids[i]],
+            "field": self.field_list[i],
+            "phase_dir": self._cache_phase_dir[i],
+            "ra": self.ra_list[i], "dec": self.dec_list[i],
+            "freq_new": freq_new_per_ms[i], "df_new": float(df_new),
+            "chunk_rows": int(self.chunk_rows), "ant_offset": int(ant_offsets[i]),
+            "data_column": data_column,
+        } for i in range(n_ms)]
+        for j in jobs:
+            task_q.put(j)
+        for _ in range(n_readers):
+            task_q.put(None)
+
+        t_loop = time.perf_counter()
+        _log(f"Setup done ({nant_total} antennas in total); stacking {n_ms} MS...")
+
+        out_q  = Queue(maxsize=out_queue)
+        ctx    = {}
+        pools  = {}           # GPU: ncorr -> _OutPool
+        errors = []
+        stats  = {"rows": 0, "bytes": 0, "flagged": 0, "values": 0, "skipped": {},
+                  "ms_done": 0, "t_read": 0.0, "t_compute": 0.0, "t_write": 0.0,
+                  "gpu_launches": 0, "gpu_chunks": 0, "gpu_error": False,
+                  "t_first": None}
+        progress_step = max(1, n_ms // 10) if n_ms >= 20 else None
+        width = len(str(n_ms))
+
+        def _put(q, item):
+            while True:
+                if abort.is_set():
+                    raise _Abort()
+                try:
+                    q.put(item, timeout=0.2)
+                    return
+                except Full:
+                    continue
+
+        def _get(q):
+            while True:
+                if abort.is_set():
+                    raise _Abort()
+                try:
+                    return q.get(timeout=0.2)
+                except Empty:
+                    continue
+
+        def _fail(e):
+            errors.append(e)
+            abort.set()
+
+        # ------------------------------------------------------------------
+        # Writer thread: the output table is opened once, then addrows + putcol
+        # ------------------------------------------------------------------
+        def _writer():
+            from casacore.tables import default_ms, makearrcoldesc, maketabdesc
+            tab = None
+            try:
+                while True:
+                    item = _get(out_q)
+                    if item is _DONE:
+                        break
+                    t0 = time.perf_counter()
+                    if tab is None:
+                        nchan, ncorr = item["DATA"].shape[1], item["DATA"].shape[2]
+                        desc = maketabdesc([
+                            makearrcoldesc("DATA", 0j, shape=[nchan, ncorr], valuetype="complex"),
+                            makearrcoldesc("FLAG", False, shape=[nchan, ncorr]),
+                            makearrcoldesc("WEIGHT", 0.0, shape=[ncorr], valuetype="float"),
+                            makearrcoldesc("SIGMA", 0.0, shape=[ncorr], valuetype="float"),
+                        ])
+                        tab = default_ms(ms_out, desc, _output_dminfo(nchan, ncorr))
+                        out_cols = set(tab.colnames())
+                    n = item["DATA"].shape[0]
+                    start = tab.nrows()
+                    tab.addrows(n)
+                    for col, arr in item.items():
+                        if col in out_cols:
+                            tab.putcol(col, arr, startrow=start, nrow=n)
+                    for col, dt in _CONSTANT_COLS.items():
+                        if col in out_cols:
+                            tab.putcol(col, np.zeros(n, dtype=dt), startrow=start, nrow=n)
+                    stats["t_write"] += time.perf_counter() - t0
+                    slot = item.get("_slot")
+                    if slot is not None:
+                        pools[slot[0]].free.put(slot[1])    # buffer free again
+                    if item["_last"]:
+                        stats["ms_done"] += 1
+                        k = stats["ms_done"]
+                        if progress_step and (k % progress_step == 0) and k < n_ms:
+                            el = time.perf_counter() - t_loop
+                            _log(f"Stacking: {k}/{n_ms} MS written "
+                                 f"({100 * k / n_ms:.0f}%), about "
+                                 f"{_fmt_time(el / k * (n_ms - k))} left")
+                if tab is not None:
+                    t0 = time.perf_counter()
+                    tab.flush()
+                    tab.close()
+                    tab = None
+                    stats["t_write"] += time.perf_counter() - t0
+            except _Abort:
+                pass
+            except Exception as e:
+                _fail(e)
+            finally:
+                if tab is not None:
+                    try:
+                        tab.close()
+                    except Exception:
+                        pass
+
+        # ------------------------------------------------------------------
+        # Reader threads (reader_mode="thread"), same messages as the processes
+        # ------------------------------------------------------------------
+        def _thread_reader(wid):
+            import traceback
+
+            def put(msg):
+                while not abort.is_set():
+                    try:
+                        read_q.put(msg, timeout=0.2)
+                        break
+                    except Full:
+                        continue
+            try:
+                while not abort.is_set():
+                    job = task_q.get()
+                    if job is None:
+                        break
+                    try:
+                        for kind, ms_idx, obj, t in _iter_ms_chunks(
+                                job, lambda shape, dt: np.empty(shape, dt)):
+                            put((kind, wid, ms_idx, obj, t))
+                    except RuntimeError as e:
+                        put(("skip", wid, job["ms_idx"], str(e), 0.0))
+            except Exception:
+                put(("error", wid, None, traceback.format_exc(), 0.0))
+            finally:
+                put(("done", wid, None, None, 0.0))
+
+        readers = []
+        if reader_mode == "thread":
+            readers = [threading.Thread(target=_thread_reader, args=(k,),
+                                        name=f"vista-reader-{k}", daemon=True)
+                       for k in range(n_readers)]
+            for t in readers:
+                t.start()
+        writer = threading.Thread(target=_writer, name="vista-writer", daemon=True)
+        writer.start()
+
+        def _chunk_arrays(obj):
+            """(vis, flag, shared-memory segments to release)."""
+            if reader_mode == "thread":
+                return obj["vis"], obj["flag"], []
+            shms, arrs = [], []
+            for key in ("vis", "flag"):
+                name, shape, dt = obj[key]
+                shm = _shm_attach(name)
+                shms.append(shm)
+                arrs.append(np.ndarray(shape, dtype=np.dtype(dt), buffer=shm.buf))
+            return arrs[0], arrs[1], shms
+
+        def _release(shms):
+            for shm in shms:
+                try:
+                    shm.close()
+                except Exception:
+                    pass
+                try:
+                    shm.unlink()
+                except Exception:
+                    pass
+
+        def _emit(ms_idx, obj, vis_out, flag_out, uvw_out, slot=None):
+            """Pack one processed chunk and hand it to the writer."""
+            c = ctx[ms_idx]
+            n = vis_out.shape[0]
+            out = {
+                "DATA": vis_out, "FLAG": flag_out, "UVW": uvw_out,
+                "ANTENNA1": obj["ant1"] + c["ant_offset"],
+                "ANTENNA2": obj["ant2"] + c["ant_offset"],
+                "DATA_DESC_ID": np.full(n, ms_idx, dtype=np.int32),
+                "FIELD_ID": np.zeros(n, dtype=np.int32),
+            }
+            for col, arr in obj["scal"].items():
+                if col == "WEIGHT":
+                    arr = arr * c["weight_scale"]
+                elif col == "SIGMA":
+                    arr = arr * c["sigma_scale"]
+                out[col] = arr
+            out["_slot"] = slot
+            out["_last"] = obj["last"]
+            stats["rows"] += n
+            stats["bytes"] += vis_out.nbytes + flag_out.nbytes + uvw_out.nbytes
+            stats["flagged"] += int(np.count_nonzero(flag_out))
+            stats["values"] += flag_out.size
+            _put(out_q, out)
+
+        def _acquire(ncorr, nrows):
+            """A free buffer of the pool for this ncorr: (pool key, index), or
+            None if the chunk is larger than the buffers."""
+            key = int(ncorr)
+            pool = pools.get(key)
+            if pool is None:
+                nslots = out_queue + gpu_batch + 2
+                pool = _OutPool(nslots, int(self.chunk_rows), int(nchan_new), key)
+                pools[key] = pool
+                _detail(f"GPU: {nslots} output buffers of {int(self.chunk_rows)} rows "
+                        f"({pool.pinned}/{nslots} page-locked)")
+            if nrows > pool.rows:
+                return None
+            return (key, _get(pool.free))      # waiting here = waiting for the writer
+
+        def _compute_cpu(ms_idx, obj):
+            vis, flag, shms = _chunk_arrays(obj)
+            c = ctx[ms_idx]
+            try:
+                t0 = time.perf_counter()
+                vo, fo, uo = ms_ops.full_pipeline(
+                    vis, flag, obj["uvw"], c["z"], c["freq_old"],
+                    c["ra0"], c["dec0"], c["ra1"], c["dec1"], c["freq_new"])
+                stats["t_compute"] += time.perf_counter() - t0
+            finally:
+                del vis, flag
+                _release(shms)
+            _emit(ms_idx, obj, vo, fo, uo)
+
+        def _compute_gpu(batch):
+            """batch = [(ms_idx, obj), ...] -> one GPU launch into pooled buffers."""
+            arrs, shms_all, slots = [], [], []
+            try:
+                for ms_idx, obj in batch:
+                    vis, flag, shms = _chunk_arrays(obj)
+                    shms_all += shms
+                    arrs.append((vis, flag))
+                outs = []
+                for (ms_idx, obj), (vis, flag) in zip(batch, arrs):
+                    n, ncorr = vis.shape[0], vis.shape[2]
+                    sl = _acquire(ncorr, n)
+                    slots.append(sl)
+                    if sl is None:            # chunk larger than the buffers: new arrays
+                        outs.append((np.empty((n, nchan_new, ncorr), np.complex64),
+                                     np.empty((n, nchan_new, ncorr), np.bool_),
+                                     np.empty((n, 3), np.float64)))
+                    else:
+                        outs.append(pools[sl[0]].views(sl[1], n))
+                cs = [ctx[i] for i, _ in batch]
+                t0 = time.perf_counter()
+                ms_ops.full_pipeline_batch_into(
+                    [a[0] for a in arrs], [a[1] for a in arrs],
+                    [o["uvw"] for _, o in batch], [c["z"] for c in cs],
+                    [c["freq_old"] for c in cs],
+                    [c["ra0"] for c in cs], [c["dec0"] for c in cs],
+                    [c["ra1"] for c in cs], [c["dec1"] for c in cs],
+                    [c["freq_new"] for c in cs],
+                    [o[0] for o in outs], [o[1] for o in outs], [o[2] for o in outs])
+                stats["t_compute"] += time.perf_counter() - t0
+                stats["gpu_launches"] += 1
+                stats["gpu_chunks"] += len(batch)
+                if not stats["gpu_error"] and not ms_ops.gpu_available():
+                    stats["gpu_error"] = True
+                    _warn(f"GPU error, the run continues on the CPU: "
+                          f"{ms_ops.gpu_last_error()}")
+            except BaseException:
+                for sl in slots:              # give back the buffers taken
+                    if sl is not None:
+                        pools[sl[0]].free.put(sl[1])
+                raise
+            finally:
+                del arrs
+                _release(shms_all)
+            for (ms_idx, obj), (vo, fo, uo), sl in zip(batch, outs, slots):
+                _emit(ms_idx, obj, vo, fo, uo, slot=sl)
+
+        def _handle(kind, wid, ms_idx, obj, t):
+            """Bookkeeping of a reader message; True if it is a chunk."""
+            stats["t_read"] += t
+            if stats["t_first"] is None and kind in ("ctx", "chunk"):
+                stats["t_first"] = time.perf_counter() - t_loop
+            if kind == "chunk":
+                return True
+            if kind == "done":
+                return False
+            if kind == "error":
+                raise RuntimeError(f"reader {wid} failed:\n{obj}")
+            name = os.path.basename(self.ms_list[ms_idx].rstrip("/"))
+            if kind == "skip":
+                stats["skipped"][ms_idx] = obj
+                _warn(f"[{ms_idx + 1:>{width}}/{n_ms}] {name} skipped: {obj}")
+            elif kind == "ctx":
+                ctx[ms_idx] = obj
+                self._log_ms(ms_idx, n_ms, width, name, obj)
+            return False
+
+        # ------------------------------------------------------------------
+        # Compute (main thread)
+        # ------------------------------------------------------------------
+        n_done = 0
+        try:
+            while n_done < n_readers:
+                msg = _get(read_q)
+                if msg[0] == "done":
+                    n_done += 1
+                if not _handle(*msg):
+                    continue
+                if not use_gpu:
+                    _compute_cpu(msg[2], msg[3])
+                    continue
+                # GPU: also take the chunks already waiting, without waiting
+                batch = [(msg[2], msg[3])]
+                while len(batch) < gpu_batch:
+                    try:
+                        m2 = read_q.get_nowait()
+                    except Empty:
+                        break
+                    if m2[0] == "done":
+                        n_done += 1
+                    if _handle(*m2):
+                        batch.append((m2[2], m2[3]))
+                _compute_gpu(batch)
+            _put(out_q, _DONE)
+        except _Abort:
+            pass
+        except Exception as e:
+            _fail(e)
+        finally:
+            if abort.is_set():
+                # free the shared-memory segments still in the queue
+                stop_ev.set()
+                while True:
+                    try:
+                        m = read_q.get_nowait()
+                    except Exception:
+                        break
+                    if reader_mode == "process" and m and m[0] == "chunk":
+                        for key in ("vis", "flag"):
+                            try:
+                                _release([_shm_attach(m[3][key][0])])
+                            except Exception:
+                                pass
+
+        writer.join()
+        t_loop_end = time.perf_counter()
+        for pool in pools.values():
+            pool.close()
+        pools.clear()
+        if reader_mode == "process":
+            _stop_procs()
+        else:
+            for t in readers:
+                t.join(timeout=5)
+        if errors:
+            raise RuntimeError(f"Pipeline failed: {errors[0]!r}") from errors[0]
+        if not os.path.isdir(ms_out):
+            raise RuntimeError(
+                f"Output table '{ms_out}' was not created: no MS gave usable data "
+                f"(see the warnings above for the field, SPW and coverage of each MS)")
+
+        # ------------------------------------------------------------------
+        # Subtables, then the optional move from the scratch directory
+        # ------------------------------------------------------------------
         def _write_sub(ds_or_list, subtable):
-            """Write a subtable Dataset (or list of Datasets) to ms_out."""
             lst = ds_or_list if isinstance(ds_or_list, list) else [ds_or_list]
             if lst:
                 with _casacore_lock:
                     dask.compute(*xds_to_table(lst, f"{ms_out}::{subtable}", "ALL"))
-                _log(f"  Written: {subtable}")
-
-        n_ms = len(self.ms_list)
-        _log(f"Starting main loop: {n_ms} MSs to process...")
-        total_rows  = 0
-        total_bytes = 0
-        t_loop_start = time.perf_counter()
-
-        # ------------------------------------------------------------------
-        # Inner function: read one MS from disk (runs in reader thread)
-        # ------------------------------------------------------------------
-
-        def _read_ms(ms_idx, ms, z, ra_str, dec_str):
-            """Read visibilities for one MS and return a processing package.
-
-            When multiple SPWs are requested (e.g. ``spw=[16,18]``), their
-            channels are concatenated in rest-frame frequency order before
-            being passed as a single array to the C++ kernel.  This means
-            the kernel sees ``N rows × (nchan_spw1 + nchan_spw2)`` channels
-            instead of ``2N rows × nchan_spw1`` channels, which is both more
-            correct (one row per baseline, full bandwidth) and twice as fast.
-
-            SPW ordering
-                The input list may specify SPWs in any order, and SPW
-                frequencies may increase or decrease across the list (e.g.
-                SPW 18 can cover lower frequencies than SPW 16).  We always
-                sort SPWs by their rest-framed centre frequency before
-                concatenating, so the merged frequency axis is monotonically
-                increasing.
-
-            Assumes rows are aligned across SPWs (same TIME / ANTENNA1 /
-            ANTENNA2 in the same order), which is guaranteed for standard
-            ALMA data where all SPWs are observed simultaneously on the same
-            baselines.
-
-            Returns
-            -------
-            dict
-                A processing package containing lazy dask arrays for the
-                visibilities and flags, plus materialised scalar columns.
-                The heavy data is *not* materialised here — that happens
-                one chunk at a time inside ``_process_ms`` to cap peak RAM.
-
-            Raises
-            ------
-            RuntimeError
-                If the MS contributes no valid rows.
-            """
-            _t_read_start = time.perf_counter()
-            from daskms import xds_from_ms
-
-            ant_offset     = ant_offsets[ms_idx]
-            freq_old_list  = self._cache_freq_old[ms_idx]
-            width_old_list = self._cache_width_old[ms_idx]
-            ddids          = self._cache_ddids[ms_idx]
-            req_field      = self.field_list[ms_idx]
-            ra0_rad, dec0_rad = self._cache_phase_dir[ms_idx]
-            ra1_rad, dec1_rad = _parse_ra_dec(ra_str, dec_str)
-            ra1_rad = _wrap_dra(ra1_rad, ra0_rad)
-
-            freq_new_ms = freq_new_per_ms[ms_idx]
-
-            SCALAR_COLS = ["TIME","EXPOSURE","INTERVAL","TIME_CENTROID",
-                           "SCAN_NUMBER","STATE_ID","ARRAY_ID","OBSERVATION_ID",
-                           "FEED1","FEED2","PROCESSOR_ID","WEIGHT","SIGMA","FLAG_ROW"]
-
-            n_covered_global = set()
-
-            # Weight / sigma scaling factor: R = df_new / df_old_rf
-            # Identical to the original CASA pipeline weight rescaling.
-            df_old_rf_chan0 = float(abs(width_old_list[0][0])) * (1.0 + z)
-            weight_scale = df_new / df_old_rf_chan0
-            sigma_scale  = 1.0 / np.sqrt(weight_scale) if weight_scale > 0.0 else 1.0
-            _log(f"  [{ms_idx+1}/{n_ms}] (read)  R = {weight_scale:.4f}  "
-                 f"(df_new={df_new:.1f} Hz, df_old_rf={df_old_rf_chan0:.1f} Hz)")
-
-            with _get_ms_lock(ms):
-                # ── Build TaQL filter ────────────────────────────────────
-                conditions = []
-                if req_field is not None:
-                    conditions.append(f"FIELD_ID=={int(req_field)}")
-                # Automatically filter for OBSERVE_TARGET state if available
-                try:
-                    state_ds_list = xds_from_table(f"{ms}::STATE", group_cols=[])
-                    if state_ds_list:
-                        (obs_modes_arr,) = dask.compute(
-                            state_ds_list[0].OBS_MODE.data,
-                            scheduler="synchronous"
-                        )
-                        target_state_ids = [
-                            i for i, m in enumerate(np.asarray(obs_modes_arr).ravel())
-                            if "OBSERVE_TARGET" in str(m)
-                        ]
-                        if target_state_ids:
-                            ids_str = ",".join(str(s) for s in target_state_ids)
-                            conditions.append(f"STATE_ID IN [{ids_str}]")
-                except Exception:
-                    pass
-
-                taql_where = " AND ".join(conditions)
-
-                datasets = xds_from_ms(
-                    ms,
-                    group_cols=["DATA_DESC_ID"],
-                    index_cols=[],
-                    chunks={"row": self.chunk_rows},
-                    taql_where=taql_where,
-                )
-
-                def _grp_val(ds, key):
-                    v = ds.attrs.get(key, None) if hasattr(ds, "attrs") else None
-                    if v is None:
-                        v = getattr(ds, key, None)
-                    return int(np.asarray(v).reshape(-1)[0])
-
-                by_ddid = {_grp_val(ds, "DATA_DESC_ID"): ds for ds in datasets}
-
-                # Sort SPWs by rest-framed centre frequency (ascending)
-                # so the merged frequency axis is monotonically increasing.
-                def _spw_centre_rf(spw_pos):
-                    f = freq_old_list[spw_pos]
-                    return float(f[len(f) // 2]) * (1.0 + z)
-
-                spw_order = sorted(range(len(ddids)), key=_spw_centre_rf)
-
-                # Accumulate lazy dask arrays (NOT materialised) per SPW.
-                # Data is materialised one chunk at a time later to cap RAM.
-                vis_da_per_spw  = []   # dask array (nrow, nchan_k, ncorr)
-                flag_da_per_spw = []
-                freq_per_spw    = []   # numpy (nchan_k,) — small, OK to materialise
-
-                ref_ds          = None
-                nrows           = 0
-
-                # Pre-slicing: only read channels that overlap with the
-                # output frequency window (± one channel margin).
-                _f_lo_win = freq_new_ms[0] - df_new
-                _f_hi_win = freq_new_ms[-1] + df_new
-
-                for spw_pos in spw_order:
-                    ddid        = ddids[spw_pos]
-                    freq_old    = freq_old_list[spw_pos]
-                    freq_old_rf = freq_old * (1.0 + z)
-
-                    ds = by_ddid.get(int(ddid))
-                    if ds is None:
-                        continue
-                    n = ds.sizes["row"]
-                    if n == 0:
-                        continue
-
-                    # Which input channels fall within the output window?
-                    useful = np.where((freq_old_rf >= _f_lo_win) & (freq_old_rf <= _f_hi_win))[0]
-                    if len(useful) == 0:
-                        continue
-                    ch_lo, ch_hi = int(useful[0]), int(useful[-1]) + 1
-                    freq_old_rf_sliced = freq_old_rf[ch_lo:ch_hi]
-
-                    # Track which output channels this SPW can contribute to
-                    _dfo_half = 0.5 * float(abs(width_old_list[spw_pos][0])) * (1.0 + z)
-                    _in_lo = float(freq_old_rf_sliced.min()) - _dfo_half
-                    _in_hi = float(freq_old_rf_sliced.max()) + _dfo_half
-                    for j in range(len(freq_new_ms)):
-                        f_lo = freq_new_ms[j] - 0.5 * df_new
-                        f_hi = freq_new_ms[j] + 0.5 * df_new
-                        if min(f_hi, _in_hi) > max(f_lo, _in_lo):
-                            n_covered_global.add(j)
-
-                    # 'auto' prefers CORRECTED_DATA, as a calibrated ALMA MS
-                    # keeps the calibrated visibilities there; set
-                    # self.data_column to read a named column instead.
-                    _wanted = getattr(self, "data_column", "auto")
-                    if _wanted != "auto" and _wanted in ds.data_vars:
-                        _data_col = ds.data_vars[_wanted].data
-                    elif _wanted != "auto":
-                        _log(f"  WARNING: ddid={int(ddid)} has no {_wanted}, "
-                             f"falling back")
-                        _data_col = (ds.data_vars["DATA"].data
-                                     if "DATA" in ds.data_vars else None)
-                    elif "CORRECTED_DATA" in ds.data_vars:
-                        _data_col = ds.data_vars["CORRECTED_DATA"].data
-                    elif "DATA" in ds.data_vars:
-                        _data_col = ds.data_vars["DATA"].data
-                    else:
-                        _log(f"  WARNING: ddid={int(ddid)} has neither DATA nor CORRECTED_DATA, skipping")
-                        continue
-                    vis_da_per_spw.append(
-                        _data_col[:, ch_lo:ch_hi].astype(np.complex64))
-                    flag_da_per_spw.append(ds.FLAG.data[:, ch_lo:ch_hi])
-                    freq_per_spw.append(freq_old_rf_sliced)
-
-                    if ref_ds is None:
-                        ref_ds = ds
-                        nrows  = n
-
-            if not vis_da_per_spw or ref_ds is None:
-                raise RuntimeError(
-                    f"MS {os.path.basename(ms)} (idx={ms_idx}): no valid data read. "
-                    f"vis_per_spw={len(vis_da_per_spw)}, ref_ds={'OK' if ref_ds else 'None'}. "
-                    f"Check that field={req_field} and the requested SPWs exist in the MS."
-                )
-
-            # Sanity check: nrows must match across SPWs (before reading data)
-            spw_nrows = [v.shape[0] for v in vis_da_per_spw]
-            if len(set(spw_nrows)) > 1:
-                ref_n     = spw_nrows[0]
-                compat    = [(v, f, fq) for v, f, fq, n in
-                             zip(vis_da_per_spw, flag_da_per_spw, freq_per_spw, spw_nrows)
-                             if n == ref_n]
-                n_dropped = len(vis_da_per_spw) - len(compat)
-                _log(f"  WARNING: {n_dropped} SPWs dropped (incompatible nrows, "
-                     f"ref={ref_n}).  Shapes: {spw_nrows}")
-                if not compat:
-                    raise RuntimeError(
-                        f"MS {os.path.basename(ms)}: no compatible SPWs.  nrows={spw_nrows}"
-                    )
-                vis_da_per_spw, flag_da_per_spw, freq_per_spw = zip(*compat)
-                nrows = ref_n
-
-            freq_merged = np.concatenate(freq_per_spw)
-            nchan_tot   = sum(v.shape[1] for v in vis_da_per_spw)
-            _log(f"  [{ms_idx+1}/{n_ms}] (read)  SPWs merged: {len(vis_da_per_spw)} x "
-                 f"{vis_da_per_spw[0].shape[1]} ch -> {nchan_tot} ch total")
-
-            # Adaptive chunk sizing: target ~512 MB per chunk to avoid OOM
-            # on MSs with very wide bandwidth.
-            _TARGET_CHUNK_BYTES = 512 * 1024 * 1024
-            ncorr_est   = 2
-            _adaptive_chunk = max(
-                1000,
-                _TARGET_CHUNK_BYTES // max(1, nchan_tot * ncorr_est * 8)
-            )
-            _effective_chunk = min(self.chunk_rows, _adaptive_chunk)
-            if _effective_chunk < self.chunk_rows:
-                _log(f"  chunk_rows adapted: {self.chunk_rows} -> {_effective_chunk} "
-                     f"(nchan_tot={nchan_tot}, target ~512 MB/chunk)")
-
-            # Read scalar columns in one shot (small: 1D/3D vectors per nrow).
-            # Split into "essential" (vary per row, written during processing)
-            # and "constant" (written once at the end via casacore putcol).
-            SCALAR_COLS_essential = ["TIME", "EXPOSURE", "INTERVAL",
-                                     "WEIGHT", "SIGMA", "SCAN_NUMBER",
-                                     "STATE_ID", "FLAG_ROW"]
-            SCALAR_COLS_constant  = ["FEED1", "FEED2", "PROCESSOR_ID",
-                                     "ARRAY_ID", "OBSERVATION_ID",
-                                     "TIME_CENTROID"]
-            with _get_ms_lock(ms):
-                scal_da   = {c: ref_ds[c].data for c in SCALAR_COLS_essential
-                             if c in ref_ds.data_vars}
-                scal_keys = list(scal_da.keys())
-                computed_scal = dask.compute(
-                    ref_ds.UVW.data.astype(np.float64),
-                    ref_ds.ANTENNA1.data,
-                    ref_ds.ANTENNA2.data,
-                    *[scal_da[c] for c in scal_keys],
-                    scheduler="synchronous"
-                )
-            uvw_all  = np.asarray(computed_scal[0])
-            ant1_all = np.asarray(computed_scal[1])
-            ant2_all = np.asarray(computed_scal[2])
-            scal_all = [np.asarray(computed_scal[3 + k]) for k in range(len(scal_keys))]
-
-            # NOTE: vis/flag dask arrays are kept LAZY in the package.
-            # Materialisation happens one chunk at a time inside _process_ms
-            # to cap peak RAM at ~effective_chunk rows × nchan_tot × 2 corr × 8 bytes.
-
-            _t_read_end = time.perf_counter()
-            with _timer_read_lock:
-                timers["read"] += _t_read_end - _t_read_start
-
-            return {
-                "ms_idx": ms_idx, "ms": ms, "z": z,
-                "ra0_rad": ra0_rad, "dec0_rad": dec0_rad,
-                "ra1_rad": ra1_rad, "dec1_rad": dec1_rad,
-                "n_covered": len(n_covered_global),
-                # Lazy dask arrays (not materialised)
-                "vis_da_per_spw":  vis_da_per_spw,
-                "flag_da_per_spw": flag_da_per_spw,
-                "freq_merged":     freq_merged,
-                "nchan_tot":       nchan_tot,
-                "nrows":           nrows,
-                "effective_chunk": _effective_chunk,
-                # Materialised scalar columns (small: only 1D/3D per nrow)
-                "uvw_all":   uvw_all,
-                "ant1_all":  ant1_all,
-                "ant2_all":  ant2_all,
-                "scal_keys": scal_keys,
-                "scal_all":  scal_all,
-                "ant_offset":    ant_offset,
-                "weight_scale":  weight_scale,
-                "sigma_scale":   sigma_scale,
-            }
-
-        # ------------------------------------------------------------------
-        # Inner function: apply C++ kernel to one MS (CPU path)
-        # ------------------------------------------------------------------
-
-        def _process_ms(pkg):
-            """Apply the C++/OpenMP kernel to one MS package.
-
-            Visibilities are materialised one chunk at a time from the lazy
-            dask arrays stored in the package.  Each chunk is processed by
-            ``ms_ops.full_pipeline()`` (rest-framing + phase shift + spectral
-            rebinning in a single in-memory pass) and immediately wrapped
-            in a dask-ms Dataset for writing.
-
-            Peak RAM usage is capped at::
-
-                effective_chunk × nchan_tot × ncorr × 8 bytes
-
-            Returns
-            -------
-            ms_datasets : list of Dataset
-                One Dataset per row chunk, ready for xds_to_table.
-            nrows_ms : int
-                Total rows processed for this MS.
-            bytes_ms : int
-                Total bytes of output data produced.
-            """
-            z         = pkg["z"]
-            ra0_rad   = pkg["ra0_rad"];  dec0_rad = pkg["dec0_rad"]
-            ra1_rad   = pkg["ra1_rad"];  dec1_rad = pkg["dec1_rad"]
-
-            ms_name  = os.path.basename(pkg["ms"])
-            ms_idx   = pkg["ms_idx"]
-            freq_new_ms = freq_new_per_ms[ms_idx]
-            nchan_ms    = len(freq_new_ms)
-
-            _log(f"[{ms_idx+1}/{n_ms}]  {ms_name}  z={z:.5f}  "
-                 f"coverage: {pkg['n_covered']}/{nchan_ms} channels")
-
-            # Recover lazy dask arrays and materialised scalars from package
-            vis_da_per_spw  = pkg["vis_da_per_spw"]
-            flag_da_per_spw = pkg["flag_da_per_spw"]
-            freq_merged     = pkg["freq_merged"]
-            nchan_tot       = pkg["nchan_tot"]
-            nrows           = pkg["nrows"]
-            eff_chunk       = pkg["effective_chunk"]
-            uvw_all         = pkg["uvw_all"]
-            ant1_all        = pkg["ant1_all"]
-            ant2_all        = pkg["ant2_all"]
-            scal_keys       = pkg["scal_keys"]
-            scal_all        = pkg["scal_all"]
-            ant_offset      = pkg["ant_offset"]
-            weight_scale    = pkg["weight_scale"]
-            sigma_scale     = pkg["sigma_scale"]
-            n_spw           = len(vis_da_per_spw)
-
-            freq_merged_use = freq_merged
-            if len(freq_merged_use) == 0:
-                raise RuntimeError(f"MS {ms_name}: no input channels in output window")
-
-            nrows_ms = 0
-            bytes_ms = 0
-            ms_datasets = []
-            ds_idx = 0
-
-            # Materialise one chunk at a time: peak RAM = 1 chunk × nchan_tot
-            for row0 in range(0, nrows, eff_chunk):
-                row1 = min(row0 + eff_chunk, nrows)
-
-                with _casacore_lock:
-                    chunk_computed = dask.compute(
-                        *[v[row0:row1] for v in vis_da_per_spw],
-                        *[f[row0:row1] for f in flag_da_per_spw],
-                        scheduler="synchronous"
-                    )
-                vis_chunks  = [np.asarray(chunk_computed[i])       for i in range(n_spw)]
-                flag_chunks = [np.asarray(chunk_computed[n_spw+i]) for i in range(n_spw)]
-
-                if n_spw == 1:
-                    vis_merged_chunk  = vis_chunks[0]
-                    flag_merged_chunk = flag_chunks[0]
-                else:
-                    vis_merged_chunk  = np.concatenate(vis_chunks,  axis=1)
-                    flag_merged_chunk = np.concatenate(flag_chunks, axis=1)
-
-                ant1 = ant1_all[row0:row1] + ant_offset
-                ant2 = ant2_all[row0:row1] + ant_offset
-                scalars = {}
-                for c, arr in zip(scal_keys, scal_all):
-                    sl   = arr[row0:row1]
-                    dims = ("row", "corr") if sl.ndim == 2 else ("row",)
-                    scalars[c] = (dims, sl)
-
-                t_proc = time.perf_counter()
-
-                vis_out, flag_out, uvw_out = ms_ops.full_pipeline(
-                    vis_merged_chunk, flag_merged_chunk,
-                    uvw_all[row0:row1],
-                    z, freq_merged_use,
-                    ra0_rad, dec0_rad,
-                    ra1_rad, dec1_rad,
-                    freq_new_ms,
-                )
-
-                # Free input buffers immediately
-                del vis_merged_chunk, flag_merged_chunk, vis_chunks, flag_chunks, chunk_computed
-
-                nchan_out_k = vis_out.shape[1]
-                _log(f"  [{ms_idx+1}/{n_ms}] (proc) chunk {ds_idx}: "
-                     f"{vis_out.shape[0]}r x {nchan_tot}ch  R={weight_scale:.4f}  "
-                     f"pipeline [{time.perf_counter()-t_proc:.1f}s] -> "
-                     f"{nchan_out_k}/{nchan_ms}ch")
-
-                nrow  = vis_out.shape[0]
-                ncorr = vis_out.shape[2]
-                nrows_ms += nrow
-                bytes_ms += vis_out.nbytes + flag_out.nbytes + uvw_out.nbytes
-
-                row_ch = _make_row_chunks(nrow, eff_chunk)
-                ch_3d  = (row_ch, (nchan_ms,), (ncorr,))
-                ch_uvw = (row_ch, (3,))
-                ch_1d  = (row_ch,)
-
-                data_vars = {
-                    "DATA":         (("row","chan","corr"), _to_dask(vis_out,  ch_3d)),
-                    "FLAG":         (("row","chan","corr"), _to_dask(flag_out, ch_3d)),
-                    "UVW":          (("row","uvw"),         _to_dask(uvw_out,  ch_uvw)),
-                    "ANTENNA1":     (("row",),              _to_dask(ant1,     ch_1d)),
-                    "ANTENNA2":     (("row",),              _to_dask(ant2,     ch_1d)),
-                    "DATA_DESC_ID": (("row",),              _to_dask(np.full(nrow, ms_idx, dtype=np.int32), ch_1d)),
-                    "FIELD_ID":     (("row",),              _to_dask(np.zeros(nrow, dtype=np.int32), ch_1d)),
-                }
-
-                for col, (dims, arr) in scalars.items():
-                    if col == "WEIGHT":
-                        arr = arr * weight_scale
-                    elif col == "SIGMA":
-                        arr = arr * sigma_scale
-                    if arr.ndim == 1:   ch = ch_1d
-                    elif arr.ndim == 2: ch = (row_ch, (arr.shape[1],))
-                    elif arr.ndim == 3: ch = ch_3d
-                    else:               ch = None
-                    data_vars[col] = (dims, _to_dask(arr, ch))
-
-                ms_datasets.append(Dataset(data_vars))
-                ds_idx += 1
-
-            if not ms_datasets:
-                raise RuntimeError(
-                    f"MS {ms_name} (idx={ms_idx}): no chunks generated.  nrows={nrows}"
-                )
-
-            return ms_datasets, nrows_ms, bytes_ms
-
-        # ------------------------------------------------------------------
-        # Inner function: GPU batch processing
-        # ------------------------------------------------------------------
-
-        def _process_ms_gpu_batch(pkgs):
-            """Process a batch of MS packages on the GPU in a single kernel launch.
-
-            Packs all MSs in *pkgs* into the argument lists expected by
-            ``ms_ops.full_pipeline_batch()``, which processes them in one
-            CUDA kernel launch.  The results are then unpacked and wrapped
-            in dask-ms Datasets for writing.
-
-            On CPU (or for single-MS batches), falls through to the
-            sequential ``_process_ms`` path.
-
-            Parameters
-            ----------
-            pkgs : list of dict
-                Processing packages as returned by ``_read_ms``.
-
-            Returns
-            -------
-            list of (ms_datasets, nrows_ms, bytes_ms)
-                One tuple per input package.
-            """
-            results_out = []
-
-            if not pkgs:
-                return results_out
-
-            # For GPU batch we need to materialise all data for the batch
-            # first, then launch a single kernel.
-            t_ms = time.perf_counter()
-
-            # Materialise all lazy dask arrays for every package in the batch
-            materialised = []
-            for pkg in pkgs:
-                vis_da_per_spw  = pkg["vis_da_per_spw"]
-                flag_da_per_spw = pkg["flag_da_per_spw"]
-                n_spw           = len(vis_da_per_spw)
-                nrows           = pkg["nrows"]
-
-                with _casacore_lock:
-                    chunk_computed = dask.compute(
-                        *[v[:nrows] for v in vis_da_per_spw],
-                        *[f[:nrows] for f in flag_da_per_spw],
-                        scheduler="synchronous"
-                    )
-                vis_chunks  = [np.asarray(chunk_computed[i])       for i in range(n_spw)]
-                flag_chunks = [np.asarray(chunk_computed[n_spw+i]) for i in range(n_spw)]
-
-                if n_spw == 1:
-                    vis_all  = vis_chunks[0]
-                    flag_all = flag_chunks[0]
-                else:
-                    vis_all  = np.concatenate(vis_chunks,  axis=1)
-                    flag_all = np.concatenate(flag_chunks, axis=1)
-
-                materialised.append((vis_all, flag_all))
-
-            # Build argument lists for the batch kernel
-            vis_list      = [m[0] for m in materialised]
-            flag_list     = [m[1] for m in materialised]
-            uvw_list      = [pkg["uvw_all"]  for pkg in pkgs]
-            z_list        = [pkg["z"]        for pkg in pkgs]
-            freq_old_list = [pkg["freq_merged"] for pkg in pkgs]
-            ra_old_list   = [pkg["ra0_rad"]  for pkg in pkgs]
-            dec_old_list  = [pkg["dec0_rad"] for pkg in pkgs]
-            ra_new_list   = [pkg["ra1_rad"]  for pkg in pkgs]
-            dec_new_list  = [pkg["dec1_rad"] for pkg in pkgs]
-            freq_new_list = [freq_new_per_ms[pkg["ms_idx"]] for pkg in pkgs]
-
-            gpu_results = ms_ops.full_pipeline_batch(
-                vis_list, flag_list, uvw_list,
-                z_list, freq_old_list,
-                ra_old_list, dec_old_list,
-                ra_new_list, dec_new_list,
-                freq_new_list,
-            )
-            dt_batch = time.perf_counter() - t_ms
-            _log(f"  GPU batch: {len(pkgs)} MSs processed in {dt_batch:.1f}s")
-
-            # Free materialised input buffers
-            del materialised, vis_list, flag_list
-
-            # Unpack results and build Datasets
-            for pkg, (vis_out, flag_out, uvw_out) in zip(pkgs, gpu_results):
-                ms_idx       = pkg["ms_idx"]
-                nchan_ms     = len(freq_new_per_ms[ms_idx])
-                ant_offset   = pkg["ant_offset"]
-                weight_scale = pkg["weight_scale"]
-                sigma_scale  = pkg["sigma_scale"]
-                ant1_all     = pkg["ant1_all"]
-                ant2_all     = pkg["ant2_all"]
-                scal_keys    = pkg["scal_keys"]
-                scal_all     = pkg["scal_all"]
-                nrows        = pkg["nrows"]
-                eff_chunk    = pkg["effective_chunk"]
-
-                nrow  = vis_out.shape[0]
-                ncorr = vis_out.shape[2]
-                nrows_ms = nrow
-                bytes_ms = vis_out.nbytes + flag_out.nbytes + uvw_out.nbytes
-
-                ant1 = ant1_all[:nrow] + ant_offset
-                ant2 = ant2_all[:nrow] + ant_offset
-                scalars = {}
-                for c, arr in zip(scal_keys, scal_all):
-                    sl   = arr[:nrow]
-                    dims = ("row", "corr") if sl.ndim == 2 else ("row",)
-                    scalars[c] = (dims, sl)
-
-                row_ch = _make_row_chunks(nrow, eff_chunk)
-                ch_3d  = (row_ch, (nchan_ms,), (ncorr,))
-                ch_uvw = (row_ch, (3,))
-                ch_1d  = (row_ch,)
-
-                data_vars = {
-                    "DATA":         (("row","chan","corr"), _to_dask(vis_out,  ch_3d)),
-                    "FLAG":         (("row","chan","corr"), _to_dask(flag_out, ch_3d)),
-                    "UVW":          (("row","uvw"),         _to_dask(uvw_out,  ch_uvw)),
-                    "ANTENNA1":     (("row",),              _to_dask(ant1,     ch_1d)),
-                    "ANTENNA2":     (("row",),              _to_dask(ant2,     ch_1d)),
-                    "DATA_DESC_ID": (("row",),              _to_dask(np.full(nrow, ms_idx, dtype=np.int32), ch_1d)),
-                    "FIELD_ID":     (("row",),              _to_dask(np.zeros(nrow, dtype=np.int32), ch_1d)),
-                }
-                for col, (dims, arr) in scalars.items():
-                    if col == "WEIGHT":
-                        arr = arr * weight_scale
-                    elif col == "SIGMA":
-                        arr = arr * sigma_scale
-                    if arr.ndim == 1:   ch = ch_1d
-                    elif arr.ndim == 2: ch = (row_ch, (arr.shape[1],))
-                    elif arr.ndim == 3: ch = ch_3d
-                    else:               ch = None
-                    data_vars[col] = (dims, _to_dask(arr, ch))
-
-                ms_datasets = [Dataset(data_vars)]
-                results_out.append((ms_datasets, nrows_ms, bytes_ms))
-
-            return results_out
-
-        # ------------------------------------------------------------------
-        # Inner function: fill constant columns once after all rows are written
-        # ------------------------------------------------------------------
-
-        def _fill_constant_cols(ms_out, total_rows):
-            """Write constant scalar columns (FEED1, FEED2, PROCESSOR_ID,
-            ARRAY_ID, OBSERVATION_ID, TIME_CENTROID) in a single putcol per
-            column — much faster than writing them row-chunk by row-chunk.
-            """
-            try:
-                from casacore.tables import table as _cctable
-                with _cctable(ms_out, readonly=False, ack=False) as t:
-                    nrows = t.nrows()
-                    existing = set(t.colnames())
-                    zeros_i32 = np.zeros(nrows, dtype=np.int32)
-                    zeros_f64 = np.zeros(nrows, dtype=np.float64)
-                    fills = {
-                        "FEED1":           zeros_i32,
-                        "FEED2":           zeros_i32,
-                        "PROCESSOR_ID":    zeros_i32,
-                        "ARRAY_ID":        zeros_i32,
-                        "OBSERVATION_ID":  zeros_i32,
-                        "TIME_CENTROID":   zeros_f64,
-                    }
-                    for col, arr in fills.items():
-                        if col not in existing:
-                            continue
-                        t.putcol(col, arr)
-                _log(f"  Constant columns filled ({total_rows} rows)")
-            except Exception as e:
-                _log(f"  WARNING: _fill_constant_cols failed: {e}")
-
-        # ------------------------------------------------------------------
-        # Inner function: write one MS to disk (runs in writer thread)
-        # ------------------------------------------------------------------
-
-        def _write_ms(ms_datasets, nrows_ms, bytes_ms, ms_out):
-            """Write the processed datasets for one MS to the output table.
-
-            Uses ``xds_to_table`` (dask-ms) to write all columns, appending
-            rows to the existing MAIN table.  CTDS access is serialised via
-            ``_casacore_lock``.
-            """
-            if not ms_datasets:
-                return
-            t_write = time.perf_counter()
-            _log(f"  Writing {nrows_ms:,} rows ({_fmt_size(bytes_ms)}) to disk...")
-            with _casacore_lock:
-                dask.compute(*xds_to_table(ms_datasets, ms_out, "ALL", descriptor="ms"))
-            dt = time.perf_counter() - t_write
-            throughput = _fmt_size(bytes_ms / dt) if dt > 0 else "n/a"
-            _log(f"  Done in {dt:.1f}s  ({throughput}/s)")
-
-        # ------------------------------------------------------------------
-        # Memory-aware queue sizing
-        # ------------------------------------------------------------------
-        import psutil as _psutil
-
-        _slurm_mem_mb = int(os.environ.get("SLURM_MEM_PER_NODE", 0))
-        if _slurm_mem_mb > 0:
-            _ram_usable_gb = _slurm_mem_mb / 1024.0 * 0.80
-        else:
-            _ram_usable_gb = _psutil.virtual_memory().available / 1e9 * 0.80
-
-        # Estimate size of one MS package in RAM using INPUT channel count
-        # (not output nchan_new, which is much smaller and would overestimate
-        # how many MS packages fit in RAM simultaneously).
-        _nrow_est   = 10_000
-        _ncorr_est  = 2
-        _nchan_input_wc = max(
-            sum(len(f) for f in self._cache_freq_old.get(i, [[]]))
-            for i in range(n_ms)
-        ) if n_ms > 0 else nchan_new
-        # 8 bytes/vis (complex64) + 1 byte/flag + ~20% overhead
-        _ms_size_gb = max(0.05, _nchan_input_wc * _nrow_est * _ncorr_est * 10 / 1e9)
-
-        _buf_by_ram = max(1, int(_ram_usable_gb / _ms_size_gb / 2))
-        READ_BUF    = min(n_ms, max(2, _buf_by_ram))
-        # Small WRITE_BUF = backpressure: the compute thread can run ahead by
-        # at most 2 MSs while the writer writes, preventing the entire dataset
-        # from accumulating in RAM.
-        WRITE_BUF   = 2
-        _log(f"  Available RAM: {_ram_usable_gb:.1f} GB  |  "
-             f"estimated MS size (input worst-case): {_ms_size_gb*1e3:.0f} MB  "
-             f"|  nchan_input_wc: {_nchan_input_wc}  "
-             f"|  read buffer: {READ_BUF}  |  write buffer: {WRITE_BUF}")
-
-        # ------------------------------------------------------------------
-        # Thread timing counters
-        # ------------------------------------------------------------------
-        timers = {
-            "read":       0.0,
-            "read_wait":  0.0,
-            "compute":    0.0,
-            "write_wait": 0.0,
-            "write":      0.0,
-        }
-        _timer_read_lock = threading.Lock()
-
-        read_q  = Queue(maxsize=READ_BUF)
-        write_q = Queue(maxsize=WRITE_BUF)
-        read_exc  = [None]
-        write_exc = [None]
-
-        # Each entry is processed independently — grouping caused aliasing
-        # of lazy dask arrays when the same MS had different z values.
-        ms_groups = [
-            (ms, [(_i, _z, _ra, _dec)])
-            for _i, (ms, _z, _ra, _dec) in enumerate(zip(
-                self.ms_list, self.z_list, self.ra_list, self.dec_list))
-        ]
-
-        def _read_ms_group(ms_path, entries):
-            """Read one or more entries from a single MS file.
-
-            Each entry corresponds to one (ms, z, ra, dec) tuple from the
-            input list.  Failed entries are logged and skipped; if all entries
-            for an MS fail, an empty list is returned.
-            """
-            pkgs = []
-            for (ms_idx, z, ra_str, dec_str) in entries:
-                try:
-                    pkg = _read_ms(ms_idx, ms_path, z, ra_str, dec_str)
-                    pkgs.append(pkg)
-                except RuntimeError as e:
-                    _log(f"  [{ms_idx+1}/{n_ms}] WARNING: entry skipped: {e}")
-            if not pkgs:
-                _log(f"  WARNING: MS {os.path.basename(ms_path)} skipped "
-                     f"(all {len(entries)} entries failed) — continuing")
-                return []
-            return pkgs
-
-        def _reader_thread():
-            """Read all MSs using a thread pool and push packages onto read_q.
-
-            Multiple reader workers (``_n_readers``) are used on SLURM to
-            overlap filesystem latency; on a laptop, a single reader is used.
-            """
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            try:
-                with ThreadPoolExecutor(max_workers=_n_readers) as pool:
-                    futures = {}
-                    idx = 0
-                    while idx < len(ms_groups) and len(futures) < _n_readers:
-                        _ms_path, _entries = ms_groups[idx]
-                        f = pool.submit(_read_ms_group, _ms_path, _entries)
-                        futures[f] = idx; idx += 1
-                    while futures:
-                        for f in as_completed(futures):
-                            del futures[f]
-                            exc = f.exception()
-                            if exc is not None:
-                                read_exc[0] = exc
-                                read_q.put(None)
-                                return
-                            pkgs = f.result()
-                            if not pkgs:
-                                # All entries failed — submit next MS
-                                if idx < len(ms_groups):
-                                    _ms_path2, _entries2 = ms_groups[idx]
-                                    nf = pool.submit(_read_ms_group, _ms_path2, _entries2)
-                                    futures[nf] = idx; idx += 1
-                                break
-                            for pkg in pkgs:
-                                read_q.put(pkg)
-                            if idx < len(ms_groups):
-                                _ms_path2, _entries2 = ms_groups[idx]
-                                nf = pool.submit(_read_ms_group, _ms_path2, _entries2)
-                                futures[nf] = idx; idx += 1
-                            break
-            except Exception as e:
-                read_exc[0] = e
-            finally:
-                read_q.put(None)
-
-        def _writer_thread():
-            """Pop processed packages from write_q and write them to disk."""
-            try:
-                while True:
-                    _tw = time.perf_counter()
-                    item = write_q.get()
-                    timers["write_wait"] += time.perf_counter() - _tw
-                    if item is None:
-                        break
-                    ms_datasets, nrows_ms, bytes_ms = item
-                    _t = time.perf_counter()
-                    _write_ms(ms_datasets, nrows_ms, bytes_ms, ms_out)
-                    timers["write"] += time.perf_counter() - _t
-            except Exception as e:
-                write_exc[0] = e
-
-        reader = threading.Thread(target=_reader_thread, daemon=True)
-        writer = threading.Thread(target=_writer_thread, daemon=True)
-        reader.start()
-        writer.start()
-
-        # ------------------------------------------------------------------
-        # GPU batch configuration
-        # ------------------------------------------------------------------
-        # On GPU: accumulate up to GPU_BATCH MS packages and process them in
-        # a single CUDA kernel launch via ms_ops.full_pipeline_batch().
-        # On CPU: GPU_BATCH=1, fall through to the sequential _process_ms path.
-        GPU_BATCH  = 20 if _gpu_available else 1
-        processed  = 0
-        batch_pkgs = []
-
-        def _flush_batch(pkgs):
-            """Process a batch of MS packages and push results to write_q.
-
-            On GPU: packs all MSs in the batch into a single kernel launch
-            (``ms_ops.full_pipeline_batch``), then unpacks the results.
-            On CPU: processes each MS sequentially with ``ms_ops.full_pipeline``.
-            """
-            nonlocal processed, total_rows, total_bytes
-
-            if not pkgs:
-                return
-
-            t_batch = time.perf_counter()
-
-            if GPU_BATCH > 1 and len(pkgs) > 1:
-                # ── GPU path: batch dispatch ──
-                batch_results = _process_ms_gpu_batch(pkgs)
-                timers["compute"] += time.perf_counter() - t_batch
-
-                for (ms_datasets, nrows_ms, bytes_ms) in batch_results:
-                    total_rows  += nrows_ms
-                    total_bytes += bytes_ms
-                    write_q.put((ms_datasets, nrows_ms, bytes_ms))
-                    processed += 1
-            else:
-                # ── CPU path: one MS at a time ──
-                for pkg in pkgs:
-                    t_one = time.perf_counter()
-                    ms_datasets, nrows_ms, bytes_ms = _process_ms(pkg)
-                    timers["compute"] += time.perf_counter() - t_one
-                    total_rows  += nrows_ms
-                    total_bytes += bytes_ms
-                    write_q.put((ms_datasets, nrows_ms, bytes_ms))
-                    processed += 1
-
-            # Progress report
-            elapsed   = time.perf_counter() - t_loop_start
-            done_frac = processed / n_ms
-            if done_frac > 0:
-                eta = elapsed / done_frac * (1 - done_frac)
-                _log(f"  Progress: {processed}/{n_ms} MSs  |  ETA: {eta/60:.1f} min")
-                _flush_log_unlocked()
-
-        # ------------------------------------------------------------------
-        # Main loop: drain read_q and dispatch to _flush_batch
-        # ------------------------------------------------------------------
-        while True:
-            _trw = time.perf_counter()
-            pkg = read_q.get()
-            timers["read_wait"] += time.perf_counter() - _trw
-
-            if pkg is None:
-                # Reader finished — check for errors, flush remaining batch
-                if read_exc[0]:
-                    raise RuntimeError(
-                        f"Reader thread failed: {read_exc[0]}"
-                    ) from read_exc[0]
-                _flush_batch(batch_pkgs)
-                batch_pkgs = []
-                break
-
-            if read_exc[0]:
-                raise RuntimeError(f"Reader thread failed: {read_exc[0]}") from read_exc[0]
-
-            batch_pkgs.append(pkg)
-            if len(batch_pkgs) >= GPU_BATCH:
-                _flush_batch(batch_pkgs)
-                batch_pkgs = []
-
-        write_q.put(None)   # sentinel to shut down the writer thread
-        writer.join()
-        if write_exc[0]:
-            raise RuntimeError(f"Writer thread failed: {write_exc[0]}") from write_exc[0]
-
-        # Fill constant columns once (much faster than per-chunk)
-        _fill_constant_cols(ms_out, total_rows)
-
-        _flush_log_unlocked()
-        if not os.path.isdir(ms_out):
-            raise RuntimeError(
-                f"Output table '{ms_out}' was not created: probably no rows "
-                f"were written (all MSs skipped?).  Check the log for spectral "
-                f"coverage and field/spw selection errors."
-            )
-
-        # ------------------------------------------------------------------
-        # Write output subtables
-        # ------------------------------------------------------------------
-        _log(f"Writing output subtables to {ms_out} ...")
-        _write_sub(spw_ds,       "SPECTRAL_WINDOW")
-        _write_sub(field_ds,     "FIELD")
-        _write_sub(dd_ds,        "DATA_DESCRIPTION")
-        _write_sub(ant_ds,       "ANTENNA")
+                _detail(f"  Written: {subtable}")
+
+        _detail(f"Writing output subtables to {ms_out} ...")
+        _write_sub(spw_ds,      "SPECTRAL_WINDOW")
+        _write_sub(field_ds,    "FIELD")
+        _write_sub(dd_ds,       "DATA_DESCRIPTION")
+        _write_sub(ant_ds,      "ANTENNA")
         if pol_ds:       _write_sub(pol_ds,       "POLARIZATION")
         if obs_ds_list:  _write_sub(obs_ds_list,  "OBSERVATION")
-        if hist_ds_list: _write_sub(hist_ds_list, "HISTORY")
         if feed_ds_list: _write_sub(feed_ds_list, "FEED")
         if src_ds_list:  _write_sub(src_ds_list,  "SOURCE")
-
-        # ------------------------------------------------------------------
-        # Optional staging: move from scratch to final destination
-        # ------------------------------------------------------------------
-        stage_dt = 0.0
+        gc.collect()          # dask-ms keeps tables cached: close them now
         if scratch_dir is not None and ms_out != ms_final:
-            t_stage = time.perf_counter()
-            _log(f"Moving completed MS from scratch to final destination...")
-            _log(f"  {ms_out}  ->  {ms_final}")
+            _log(f"Moving the output from the scratch directory to {ms_final}...")
             shutil.move(ms_out, ms_final)
-            stage_dt = time.perf_counter() - t_stage
-            throughput = _fmt_size(total_bytes / stage_dt) if stage_dt > 0 else "n/a"
-            _log(f"  Moved in {stage_dt:.1f}s  ({throughput}/s)")
 
         # ------------------------------------------------------------------
         # Summary
         # ------------------------------------------------------------------
-        t_total = time.perf_counter() - t_start
-        _log("=" * 60)
-        _log("Timing profile (cumulative per stage; threads run concurrently,")
-        _log("so the sum may exceed the wall-clock time):")
-        _log(f"  setup       (main thread)   : {t_loop_start - t_setup:7.1f}s   (antenna + subtables)")
-        _log(f"  read        (reader thread) : {timers['read']:7.1f}s")
-        _log(f"  read_wait   (main thread)   : {timers['read_wait']:7.1f}s"
-             f"   <- near zero means compute never waits for data")
-        _log(f"  compute     (main thread)   : {timers['compute']:7.1f}s"
-             f"   ({'GPU' if _gpu_available else 'CPU'})")
-        _log(f"  write_wait  (writer thread) : {timers['write_wait']:7.1f}s"
-             f"   <- near zero means writer is always busy (I/O bound)")
-        _eff = total_bytes / timers['write'] if timers['write'] > 0 else 0
-        _log(f"  write       (writer thread) : {timers['write']:7.1f}s"
-             f"   ({_fmt_size(_eff)}/s)")
-        if scratch_dir is not None:
-            _eff_s = total_bytes / stage_dt if stage_dt > 0 else 0
-            _log(f"  staging     (move)          : {stage_dt:7.1f}s"
-                 f"   ({_fmt_size(_eff_s)}/s) scratch -> final")
-        _log("=" * 60)
-        _log(f"Output MS        : {ms_final}")
-        _log(f"Total rows       : {total_rows:,}")
-        _log(f"Spectral windows : {n_ms}  (one per input MS, "
-             f"{nchan_new} channels, df={df_new/1e3:.3f} kHz)")
-        _log(f"Central frequency: {central_freq/1e6:.6f} MHz")
-        _log(f"Antennas         : {ant_ds.sizes['row']}")
-        _log(f"Data written     : {_fmt_size(total_bytes)}")
-        _log(f"Wall-clock time  : {t_total/60:.1f} min")
-        _log("=" * 60)
-        _flush_log_unlocked()
+        t_end = time.perf_counter()
+        total = t_end - t_start
+        flagged = stats["flagged"] / stats["values"] if stats["values"] else 0.0
+        n_spw = n_ms - len(stats["skipped"])
+        if stats["skipped"]:
+            names = ", ".join(os.path.basename(self.ms_list[i].rstrip("/"))
+                              for i in sorted(stats["skipped"]))
+            _warn(f"{len(stats['skipped'])} of {n_ms} MS skipped, no data in the "
+                  f"output: {names}")
+        if timing:
+            loop = t_loop_end - t_loop
+            busy = {"reading": stats["t_read"] / n_readers,
+                    "computing": stats["t_compute"], "writing": stats["t_write"]}
+            limit = max(busy, key=busy.get)
+            share = busy[limit] / max(loop, 1e-9)
+            _log(f"Timing: setup {_fmt_time(t_loop - t_start)} · stacking "
+                 f"{_fmt_time(loop)} · subtables and closing "
+                 f"{_fmt_time(t_end - t_loop_end)}")
+            _log(f"  during the stacking (overlapping): reading "
+                 f"{_fmt_time(busy['reading'])} per reader · computing "
+                 f"{_fmt_time(busy['computing'])} · writing {_fmt_time(busy['writing'])}"
+                 + (f"  → limited by {limit} ({100 * share:.0f}% busy)" if share >= 0.5 else
+                    f"  → no stage busy for half of the time: the first data arrived "
+                    f"after {_fmt_time(stats['t_first'] or 0.0)} (start of the readers)"))
+            if use_gpu and stats["gpu_launches"]:
+                _log(f"  GPU: {stats['gpu_launches']} launches, "
+                     f"{stats['gpu_chunks'] / stats['gpu_launches']:.1f} chunks per launch "
+                     f"on average")
+        _log(f"Done in {_fmt_time(total)}: {ms_final} · {n_spw} SPW × {nchan_new} channels · "
+             f"{stats['rows']:,} rows · {_fmt_size(stats['bytes'])} · "
+             f"{100 * flagged:.1f}% of the output flagged (no data)")
+        return {"ms_out": ms_final, "n_rows": stats["rows"], "n_spw": n_spw,
+                "nchan": nchan_new, "df_hz": float(df_new),
+                "flagged_fraction": flagged, "skipped": sorted(stats["skipped"]),
+                "seconds": total}
+
+    def _log_ms(self, ms_idx, n_ms, width, name, c):
+        """One line per MS: what it contributes to the stack."""
+        rows = f"{c['rows']:,} rows"
+        if c["rows_all"] is not None and c["rows_all"] != c["rows"]:
+            rows = f"{c['rows']:,}/{c['rows_all']:,} rows ({', '.join(c['filters'])})"
+        cov = 100.0 * c["coverage"] / max(1, c["nchan_out"])
+        spw = f"{c['n_spw']} SPW" + ("s" if c["n_spw"] > 1 else "")
+        line = (f"[{ms_idx + 1:>{width}}/{n_ms}] {name}  z={c['z']:.4f}  {rows}  "
+                f"{c['data_column']}  {spw}, {c['nchan_in']} ch  "
+                f"covers {cov:.0f}% of the grid  offset {c['offset_arcsec']:.1f}\"")
+        shift = self._grid_shift.get(ms_idx, 0.0)
+        if shift:
+            line += f"  window {shift / 1e6:+.1f} MHz"
+        _log(line)
+        _detail(f"    weight scale R={c['weight_scale']:.4f}  chunk={c['chunk_rows']} rows  "
+                f"ncorr={c['ncorr']}  primary beam FWHM="
+                + (f"{c['pb_fwhm_arcsec']:.1f}\"" if c["pb_fwhm_arcsec"] else "n/a"))
+        for w in c["warnings"]:
+            _warn(f"{name}: {w}")

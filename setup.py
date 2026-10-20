@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="vista-hpc",
-    version="2.0.0",
+    version="2.3.0",
     description="HPC-optimised visibility-domain stacking for interferometric data",
     author="Martina Torsello",
     packages=find_packages(),
@@ -14,10 +14,11 @@ setup(
         "dask>=2022.1",
         "dask-ms>=0.2.18",
         "xarray>=0.19",
-        "scipy>=1.7",          # vista.extract: profile and uv-plane fitting
+        "python-casacore>=3.5",  # stacking: reading and writing the MSs
+        "astropy>=5.0",          # stacking: coordinates; vista.extract: distances
+        "scipy>=1.7",            # vista.extract: profile and uv-plane fitting
     ],
     extras_require={
         "plots": ["matplotlib>=3.4"],
-        "cosmology": ["astropy>=5.0"],
     },
 )
