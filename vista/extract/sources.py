@@ -189,6 +189,21 @@ def group_by_position(entries: Sequence[Entry], tol_arcsec: float = 2.0):
                     for ra, dec in centres]
 
 
+def primary_beam_gain(theta_rad: float, nu_obs_hz: float,
+                      dish_m: float) -> float:
+    """Response of a Gaussian primary beam with FWHM = 1.2 c / (nu D).
+
+    ``A = exp(-4 ln2 * (theta * nu * D / (1.2 c))^2)``, as in the CASA-based
+    ViSta.  ``theta`` is the separation between the original phase centre and
+    the source, ``nu_obs_hz`` the observed frequency, ``dish_m`` the dish
+    diameter.  Returns 1 when the frequency or the diameter is unknown.
+    """
+    if nu_obs_hz <= 0 or dish_m <= 0:
+        return 1.0
+    x = theta_rad * nu_obs_hz * dish_m / (1.2 * 299792458.0)
+    return math.exp(-4.0 * math.log(2.0) * x * x)
+
+
 # ---------------------------------------------------------------------------
 # cosmology and flux normalisation  (Eq. 27)
 # ---------------------------------------------------------------------------
@@ -273,4 +288,4 @@ def amplitude_factors(groups: Sequence[Sequence[Entry]],
 __all__ = ["Entry", "read_input_list", "group_by_position", "parse_ra",
            "parse_dec", "separation_arcsec", "alpha_factor",
            "luminosity_distance_mpc", "amplitude_factors",
-           "split_trailing_columns"]
+           "split_trailing_columns", "primary_beam_gain"]

@@ -226,6 +226,7 @@ difference is itself informative about the depth distribution of the sample.
 | `flux_normalisation` | `False` | Rescales by `norm_ref / NORM` so that a bright minority cannot skew the stack. Needs the `NORM` column. Omit it when you want the total emission weighted by the true intrinsic luminosities |
 | `norm_ref` | `None` = sample median | **Fix it explicitly**, same reason as `z_ref` |
 | `already_applied` | `False` | `True` if the amplitudes on disk already carry alpha |
+| `primary_beam` | `True` | Corrects every line of the input list for the primary beam at the source position (Gaussian beam, FWHM = 1.2 c / ν D, D read from the original MS): amplitudes / A, weights × A², so an attenuated pointing is corrected and also counts less. A is computed during the compression, which therefore needs the original MSs to be readable. `--no-primary-beam` switches it off |
 | `H0`, `Om0` | 67.4, 0.315 | only for consistency with a different paper |
 
 ### Continuum subtraction
