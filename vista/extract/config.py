@@ -140,6 +140,12 @@ class WeightingConfig:
     already_applied
         Set to ``True`` if the amplitudes on disk already carry alpha, so
         that the factor is not applied twice.
+    primary_beam
+        Correct every entry for the primary beam attenuation at the source
+        position (default ``True``).  The response A is computed during the
+        compression, one value per line of the input list, and applied here:
+        the amplitudes are divided by A and the weights multiplied by A**2,
+        so an attenuated pointing is corrected and also counts less.
     H0, Om0
         Cosmology used for the luminosity distances in alpha.
     """
@@ -150,6 +156,7 @@ class WeightingConfig:
     flux_normalisation: bool = False
     norm_ref: Optional[float] = None
     already_applied: bool = False
+    primary_beam: bool = True
     H0: float = 67.4
     Om0: float = 0.315
 

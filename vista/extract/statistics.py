@@ -86,6 +86,35 @@ def data_descriptor_frequencies(ms_path: str) -> Dict[int, np.ndarray]:
     return {dd: per_spw[spw] for dd, spw in enumerate(dd_to_spw)}
 
 
+def primary_beam_of_entry(entry: Entry, nu_obs_hz: float):
+    """Primary beam response at the source position, for one input line.
+
+    The original phase centre (FIELD ``PHASE_DIR`` of the selected field) and
+    the dish diameter (median of ``DISH_DIAMETER``) are read from the
+    original MS of the entry.  Returns ``(A, theta_arcsec, dish_m)``, or
+    ``(1.0, nan, nan)`` if that MS cannot be read.
+    """
+    from .sources import primary_beam_gain
+    try:
+        tb = _table()
+        tb.open(_subtable_path(entry.ms, "FIELD"))
+        direction = np.asarray(tb.getcell("PHASE_DIR", entry.field or 0),
+                               dtype=float).ravel()
+        tb.close()
+        tb = _table()
+        tb.open(_subtable_path(entry.ms, "ANTENNA"))
+        dish = np.asarray(tb.getcol("DISH_DIAMETER"), dtype=float)
+        tb.close()
+    except Exception:
+        return 1.0, float("nan"), float("nan")
+    ra0, dec0 = float(direction[0]), float(direction[1])
+    h = (np.sin(0.5 * (entry.dec - dec0)) ** 2
+         + np.cos(dec0) * np.cos(entry.dec) * np.sin(0.5 * (entry.ra - ra0)) ** 2)
+    theta = 2.0 * float(np.arcsin(min(1.0, np.sqrt(h))))
+    d = float(np.median(dish[dish > 0])) if np.any(dish > 0) else 0.0
+    return primary_beam_gain(theta, nu_obs_hz, d), theta * 206264.806, d
+
+
 def build_global_grid(dd_frequencies: Dict[int, np.ndarray], verbose=True):
     """Common frequency grid onto which all the data descriptors are mapped.
 
@@ -388,6 +417,18 @@ def compress_visibilities(ms_path: str,
         selection.close()
 
         n_rejected_total += n_rejected
+        nu_obs = ((line.rest_freq_hz if line is not None
+                   else float(np.median(freq))) / (1.0 + entry.z))
+        pb_gain, pb_offset, pb_dish = primary_beam_of_entry(entry, nu_obs)
+        for tag in stored:
+            stored[tag].setdefault("primary_beam", {})[dd] = pb_gain
+        if verbose:
+            if np.isfinite(pb_offset):
+                print(f"  dd={dd:>3} primary beam A={pb_gain:.3f}  "
+                      f"offset={pb_offset:.1f}\"  D={pb_dish:.1f} m")
+            else:
+                print(f"  dd={dd:>3} WARNING: cannot read {entry.ms}, "
+                      f"primary beam not corrected (A=1)")
         meta = {"z": entry.z, "ms": entry.ms,
                 "ra_deg": entry.coordinates_deg[0],
                 "dec_deg": entry.coordinates_deg[1],

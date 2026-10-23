@@ -109,11 +109,28 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
     if not keep:
         raise RuntimeError("every source was dropped by the normalisation")
 
+    # primary beam: amplitudes / A, weights * A^2, entry by entry, so that
+    # different pointings of the same source are corrected separately
+    pb_gain = (stats.meta or {}).get("primary_beam", {})
+    if weighting.primary_beam and verbose:
+        if pb_gain:
+            values = [pb_gain.get(e.dd, 1.0) for e in available]
+            print(f"[pb] primary beam correction: A from {min(values):.3f} "
+                  f"to {max(values):.3f}")
+        else:
+            print("[pb] no primary beam values in the statistics file "
+                  "(compressed with an older version): not corrected")
+
     stacked, shapes = [], set()
     for k in keep:
         total = None
         for entry in groups[k]:
             block = np.asarray(stats.sums[entry.dd], dtype=np.float64)
+            gain = float(pb_gain.get(entry.dd, 1.0))
+            if weighting.primary_beam and gain > 0 and gain != 1.0:
+                block = block.copy()
+                block[..., 0:2] *= gain          # sum w Re, sum w Im
+                block[..., 2:4] *= gain * gain   # sum w, sum w b
             shapes.add(block.shape)
             total = block.copy() if total is None else total + block
         stacked.append(total)

@@ -125,6 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not transport the sources to a common redshift")
     p.add_argument("--z-ref", type=float, default=None,
                    help="reference redshift; default is the sample median")
+    p.add_argument("--no-primary-beam", dest="primary_beam",
+                   action="store_false", default=True,
+                   help="do not correct for the primary beam attenuation")
     p.add_argument("--flux-normalisation", action="store_true", default=False,
                    help="rescale the amplitudes by norm_ref/norm, using the "
                         "last column of the input list")
@@ -243,7 +246,8 @@ def main(argv=None) -> int:
     weighting = WeightingConfig(
         scheme=args.weighting, redshift_rescaling=args.redshift_rescaling,
         z_ref=args.z_ref, flux_normalisation=args.flux_normalisation,
-        norm_ref=args.norm_ref, already_applied=args.already_applied)
+        norm_ref=args.norm_ref, already_applied=args.already_applied,
+        primary_beam=args.primary_beam)
     profile = ProfileConfig(
         method=args.method, fit_span_kms=args.fit_span_kms,
         shape_tie=args.shape_tie,
