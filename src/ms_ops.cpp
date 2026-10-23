@@ -65,6 +65,34 @@ static constexpr double TWO_PI  = 2.0 * M_PI;
 // ===========================================================================
 // Helper: df mediano
 // ===========================================================================
+// ---------------------------------------------------------------------------
+// Primary beam
+// ---------------------------------------------------------------------------
+// Gaussian primary beam with FWHM = 1.2 c / (nu D), as in the CASA-based
+// ViSta (martitors/vista, primary_beam_from_centers):
+//
+//     A = exp(-4 ln2 * (theta * nu * D / (1.2 c))^2)
+//
+// theta is the separation between the original phase centre and the stacking
+// position, nu the observed frequency, D the dish diameter.
+static double angular_separation(double ra1, double dec1, double ra2, double dec2)
+{
+    const double sd = std::sin(0.5 * (dec2 - dec1));
+    const double sr = std::sin(0.5 * (ra2 - ra1));
+    const double h  = sd * sd + std::cos(dec1) * std::cos(dec2) * sr * sr;
+    return 2.0 * std::asin(std::min(1.0, std::sqrt(h)));
+}
+
+double primary_beam_gain(double ra_old, double dec_old,
+                         double ra_new, double dec_new,
+                         double nu_obs, double dish_diameter)
+{
+    if (nu_obs <= 0.0 || dish_diameter <= 0.0) return 1.0;
+    const double theta = angular_separation(ra_old, dec_old, ra_new, dec_new);
+    const double x = theta * nu_obs * dish_diameter / (1.2 * C_LIGHT);
+    return std::exp(-4.0 * std::log(2.0) * x * x);
+}
+
 static double median_df(const double* freq, ssize_t n)
 {
     if (n < 2) return 1.0;
@@ -545,7 +573,8 @@ full_pipeline(
     py::array_t<double,              py::array::c_style | py::array::forcecast> freq_old_rf_arr,
     double ra_old, double dec_old,
     double ra_new, double dec_new,
-    py::array_t<double,              py::array::c_style | py::array::forcecast> freq_new_arr
+    py::array_t<double,              py::array::c_style | py::array::forcecast> freq_new_arr,
+    double vis_scale = 1.0      // primary beam correction, 1/A (1 = none)
 )
 {
     // ------------------------------------------------------------------ dims
@@ -583,6 +612,13 @@ full_pipeline(
             reinterpret_cast<uint8_t*>(flag_out_gpu.mutable_data()),
             uvw_out_gpu.mutable_data()
         );
+        if (vis_scale != 1.0) {
+            std::complex<float>* v = vis_out_gpu.mutable_data();
+            const ssize_t n = nrow * nchan_new * ncorr;
+            const float g = static_cast<float>(vis_scale);
+            #pragma omp parallel for
+            for (ssize_t q = 0; q < n; ++q) v[q] *= g;
+        }
         return {vis_out_gpu, flag_out_gpu, uvw_out_gpu};
     }
 #endif
@@ -729,7 +765,7 @@ full_pipeline(
 
             for (ssize_t j = 0; j < nchan_new; ++j) {
                 if (out_wgt[j] > 0.0) {
-                    vout(i, j, c) = static_cast<std::complex<float>>(accum[j] / out_wgt[j]);
+                    vout(i, j, c) = static_cast<std::complex<float>>(accum[j] / out_wgt[j] * vis_scale);
                     fout(i, j, c) = false;
                 } else {
                     vout(i, j, c) = {0.0f, 0.0f};
@@ -777,10 +813,17 @@ PYBIND11_MODULE(ms_ops, m)
           py::arg("vis"), py::arg("flag"), py::arg("uvw"), py::arg("z"),
           py::arg("freq_old_rf"),
           py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"),
-          py::arg("freq_new"),
+          py::arg("freq_new"), py::arg("vis_scale") = 1.0,
           "Pipeline completa corretta: restframe -> centering -> rebinning overlap. "
           "Restituisce (vis_out, flag_out, uvw_out). "
           "vis_in complex64 convertito a float64 prima del phase-shift. "
-          "weight_scale calcolato in Python come R = df_new / df_old_obs.");
+          "weight_scale calcolato in Python come R = df_new / df_old_obs. "
+          "vis_scale moltiplica le visibilita' in uscita (correzione di primary beam, 1/A).");
+
+    m.def("primary_beam_gain", &primary_beam_gain,
+          py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"),
+          py::arg("nu_obs"), py::arg("dish_diameter"),
+          "Risposta del primary beam gaussiano (FWHM = 1.2 c / nu D) nella posizione "
+          "di stacking, rispetto al phase centre originale.");
 }
 

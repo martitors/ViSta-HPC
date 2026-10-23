@@ -125,6 +125,7 @@ See `examples/run_vista.py` for a complete example.
 | `chunk_rows` | Baseline rows processed per chunk | 5000 |
 | `nchan_out` | Number of output channels | auto (widest coverage) |
 | `central_freq` | Rest-frame central frequency of output grid [Hz] | required |
+| `pb_correction` | Correct each MS for the primary beam at the stacking position: visibilities / A, weights * A² (Gaussian beam, FWHM = 1.2 c / ν D, at ν = `central_freq`/(1+z), D from the MS) | `True` |
 | `OMP_NUM_THREADS` | Number of OpenMP threads (set as env variable) | all cores |
 
 For GPU runs, the batch size (number of MSs dispatched per CUDA kernel launch) is set inside the pipeline and defaults to 20. Larger batches improve overlap between GPU compute and I/O; very large batches (> sample size) reduce pipeline overlap.

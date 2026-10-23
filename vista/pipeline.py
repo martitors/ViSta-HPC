@@ -887,7 +887,8 @@ class ViSta:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None, velocity_range_kms=None):
+    def run(self, ms_out, central_freq, scratch_dir=None, nchan_out=None, velocity_range_kms=None,
+            pb_correction=True):
         """Run the stacking pipeline and write the output Measurement Set.
 
         Parameters
@@ -916,6 +917,12 @@ class ViSta:
             If set, determines the output bandwidth from a velocity range
             (optical convention, km/s).  A scalar is interpreted as ±v;
             a 2-tuple as ``(v_lo, v_hi)``.  Overrides *nchan_out*.
+        pb_correction : bool
+            Correct each dataset for the primary beam attenuation at the
+            stacking position (default True).  One factor per MS, evaluated
+            at the observed frequency of ``central_freq`` with the dish
+            diameter of that MS: the visibilities are divided by the beam
+            response A and the weights multiplied by A**2.
         """
         global _verbose_global
         _verbose_global = self.verbose
@@ -1070,6 +1077,28 @@ class ViSta:
             sigma_scale  = 1.0 / np.sqrt(weight_scale) if weight_scale > 0.0 else 1.0
             _log(f"  [{ms_idx+1}/{n_ms}] (read)  R = {weight_scale:.4f}  "
                  f"(df_new={df_new:.1f} Hz, df_old_rf={df_old_rf_chan0:.1f} Hz)")
+
+            # Primary beam: one factor per MS, at the observed frequency of the
+            # line and with the dish diameter of this MS.  The C++ kernel
+            # divides the visibilities by A; the weights scale by A**2.
+            vis_scale = 1.0
+            if pb_correction:
+                with _casacore_lock:
+                    ant = xds_from_table(f"{ms}::ANTENNA", group_cols=[])[0]
+                    dish = np.asarray(ant.DISH_DIAMETER.data.compute(
+                        scheduler="synchronous"), dtype=np.float64)
+                dish = float(np.median(dish[dish > 0])) if np.any(dish > 0) else 0.0
+                pb = ms_ops.primary_beam_gain(ra0_rad, dec0_rad, ra1_rad, dec1_rad,
+                                              central_freq / (1.0 + z), dish)
+                if pb > 0.0:
+                    vis_scale     = 1.0 / pb
+                    weight_scale *= pb * pb
+                    sigma_scale  /= pb
+                _log(f"  [{ms_idx+1}/{n_ms}] (read)  primary beam A = {pb:.3f}  "
+                     f"(D = {dish:.1f} m)")
+                if pb < 0.5:
+                    _log(f"  [{ms_idx+1}/{n_ms}] WARNING: the stacking position is "
+                         f"beyond half the primary beam (A = {pb:.3f})")
 
             with _get_ms_lock(ms):
                 # ── Build TaQL filter ────────────────────────────────────
@@ -1276,6 +1305,7 @@ class ViSta:
                 "ant_offset":    ant_offset,
                 "weight_scale":  weight_scale,
                 "sigma_scale":   sigma_scale,
+                "vis_scale":     vis_scale,
             }
 
         # ------------------------------------------------------------------
@@ -1379,6 +1409,7 @@ class ViSta:
                     ra0_rad, dec0_rad,
                     ra1_rad, dec1_rad,
                     freq_new_ms,
+                    pkg["vis_scale"],
                 )
 
                 # Free input buffers immediately
@@ -1518,6 +1549,8 @@ class ViSta:
 
             # Unpack results and build Datasets
             for pkg, (vis_out, flag_out, uvw_out) in zip(pkgs, gpu_results):
+                if pkg["vis_scale"] != 1.0:
+                    vis_out = vis_out * np.float32(pkg["vis_scale"])
                 ms_idx       = pkg["ms_idx"]
                 nchan_ms     = len(freq_new_per_ms[ms_idx])
                 ant_offset   = pkg["ant_offset"]
