@@ -188,6 +188,42 @@ def _parse_ra_dec(ra_str, dec_str):
     return float(c.ra.rad), float(c.dec.rad)
 
 
+def _snap_to_grid(start, start_ideal, df, side):
+    """Move a shifted window start onto the common grid ``start_ideal + k*df``.
+
+    ``side='left'`` rounds up (the window starts inside the coverage of the
+    MS), ``side='right'`` rounds down (it ends inside it).  Every output
+    spectral window then shares the same channel edges, so the channels of
+    different datasets line up exactly instead of being offset by a fraction
+    of a channel.
+    """
+    k = (start - start_ideal) / df
+    k = math.ceil(k - 1e-9) if side == "left" else math.floor(k + 1e-9)
+    return start_ideal + k * df
+
+
+def _match_spw_rows(keys, time_tol=1e-3):
+    """Check which SPWs of one MS have exactly the same rows.
+
+    *keys* holds one ``(TIME, ANTENNA1, ANTENNA2)`` triple of arrays per SPW.
+    The reference is the SPW with the most rows; an SPW can be merged with it
+    only if it has the same baselines at the same times, in the same order.
+
+    Returns ``(ref, same)``: the index of the reference and a list of
+    booleans, one per SPW.
+    """
+    sizes = [len(k[0]) for k in keys]
+    ref = int(np.argmax(sizes))
+    t0, a0, b0 = keys[ref]
+    same = []
+    for i, (t, a, b) in enumerate(keys):
+        same.append(i == ref or (
+            len(t) == len(t0)
+            and np.array_equal(a, a0) and np.array_equal(b, b0)
+            and np.allclose(t, t0, rtol=0.0, atol=time_tol)))
+    return ref, same
+
+
 # ---------------------------------------------------------------------------
 # Array / chunk utilities
 # ---------------------------------------------------------------------------
@@ -902,10 +938,10 @@ class ViSta:
                 start  = start_ideal
                 reason = "ideal window fits"
             elif msmin > start_ideal:
-                start  = msmin
+                start  = _snap_to_grid(msmin, start_ideal, df_new, "left")
                 reason = "shifted to left edge"
             elif msmax < end_ideal:
-                start  = msmax - bandwidth
+                start  = _snap_to_grid(msmax - bandwidth, start_ideal, df_new, "right")
                 reason = "shifted to right edge"
             else:
                 raise RuntimeError(
@@ -1175,6 +1211,9 @@ class ViSta:
                 vis_da_per_spw  = []   # dask array (nrow, nchan_k, ncorr)
                 flag_da_per_spw = []
                 freq_per_spw    = []   # numpy (nchan_k,) — small, OK to materialise
+                width_per_spw   = []   # channel widths (CHAN_WIDTH), rest frame
+                ds_per_spw      = []   # dask-ms dataset of each SPW (for the row check)
+                spwid_per_spw   = []   # SPW id, for the messages
 
                 ref_ds          = None
                 nrows           = 0
@@ -1235,6 +1274,13 @@ class ViSta:
                         _data_col[:, ch_lo:ch_hi].astype(np.complex64))
                     flag_da_per_spw.append(ds.FLAG.data[:, ch_lo:ch_hi])
                     freq_per_spw.append(freq_old_rf_sliced)
+                    width_per_spw.append(
+                        np.abs(np.asarray(width_old_list[spw_pos], dtype=np.float64)
+                               [ch_lo:ch_hi]) * (1.0 + z))
+                    ds_per_spw.append(ds)
+                    spwid_per_spw.append(
+                        self.spw_list[ms_idx][spw_pos]
+                        if self.spw_list[ms_idx] is not None else spw_pos)
 
                     if ref_ds is None:
                         ref_ds = ds
@@ -1247,25 +1293,72 @@ class ViSta:
                     f"Check that field={req_field} and the requested SPWs exist in the MS."
                 )
 
-            # Sanity check: nrows must match across SPWs (before reading data)
-            spw_nrows = [v.shape[0] for v in vis_da_per_spw]
-            if len(set(spw_nrows)) > 1:
-                ref_n     = spw_nrows[0]
-                compat    = [(v, f, fq) for v, f, fq, n in
-                             zip(vis_da_per_spw, flag_da_per_spw, freq_per_spw, spw_nrows)
-                             if n == ref_n]
-                n_dropped = len(vis_da_per_spw) - len(compat)
-                _log(f"  WARNING: {n_dropped} SPWs dropped (incompatible nrows, "
-                     f"ref={ref_n}).  Shapes: {spw_nrows}")
-                if not compat:
-                    raise RuntimeError(
-                        f"MS {os.path.basename(ms)}: no compatible SPWs.  nrows={spw_nrows}"
-                    )
-                vis_da_per_spw, flag_da_per_spw, freq_per_spw = zip(*compat)
-                nrows = ref_n
+            # Merging SPWs: the channels of the SPWs are put side by side row
+            # by row, with the UVW, TIME and WEIGHT of a single reference SPW.
+            # This is only correct if every SPW has the same rows (same
+            # baselines at the same times, in the same order).  SPWs that do
+            # not are left out, with a warning: list them on separate lines
+            # of the input file to keep them.
+            ref_pos = 0
+            if len(vis_da_per_spw) > 1:
+                with _get_ms_lock(ms):
+                    lazy = []
+                    for d in ds_per_spw:
+                        lazy += [d.TIME.data, d.ANTENNA1.data, d.ANTENNA2.data,
+                                 d.WEIGHT.data]
+                    got = dask.compute(*lazy, scheduler="synchronous")
+                keys = [(np.asarray(got[4*i]), np.asarray(got[4*i+1]),
+                         np.asarray(got[4*i+2])) for i in range(len(ds_per_spw))]
+                mean_w = [float(np.mean(got[4*i+3])) for i in range(len(ds_per_spw))]
+                ref_i, same = _match_spw_rows(keys)
+                if not all(same):
+                    dropped = [spwid_per_spw[i] for i, ok in enumerate(same) if not ok]
+                    shapes  = [len(k[0]) for k in keys]
+                    _log(f"  [{ms_idx+1}/{n_ms}] WARNING: SPW(s) {dropped} left out: "
+                         f"their rows (baselines/times) differ from SPW "
+                         f"{spwid_per_spw[ref_i]} (rows per SPW: {shapes}).  "
+                         f"To keep them, put each SPW on its own line of the "
+                         f"input list (same MS, RA/Dec, z and FIELD_ID).")
+                keep = [i for i, ok in enumerate(same) if ok]
+                vis_da_per_spw  = [vis_da_per_spw[i]  for i in keep]
+                flag_da_per_spw = [flag_da_per_spw[i] for i in keep]
+                freq_per_spw    = [freq_per_spw[i]    for i in keep]
+                width_per_spw   = [width_per_spw[i]   for i in keep]
+                kept_ids        = [spwid_per_spw[i]   for i in keep]
+                ref_ds  = ds_per_spw[ref_i]
+                nrows   = len(keys[ref_i][0])
+                ref_pos = keep.index(ref_i)
 
-            freq_merged = np.concatenate(freq_per_spw)
-            nchan_tot   = sum(v.shape[1] for v in vis_da_per_spw)
+                # merged SPWs share one WEIGHT per row and one width factor R:
+                # warn when they differ enough for that to matter
+                if len(keep) > 1:
+                    widths = [float(np.median(width_per_spw[j])) for j in range(len(keep))]
+                    if max(widths) > min(widths) * (1.0 + 1e-3):
+                        _log(f"  [{ms_idx+1}/{n_ms}] WARNING: merged SPWs {kept_ids} have "
+                             f"different channel widths: their weights are only "
+                             f"approximate.  Put each SPW on its own line of the "
+                             f"input list for exact weights.")
+                    w_kept = [mean_w[i] for i in keep]
+                    if min(w_kept) > 0 and max(w_kept) > 1.25 * min(w_kept):
+                        _log(f"  [{ms_idx+1}/{n_ms}] WARNING: merged SPWs {kept_ids} have "
+                             f"mean weights differing by "
+                             f"{max(w_kept) / min(w_kept):.2f}x, but share the weights "
+                             f"of SPW {spwid_per_spw[ref_i]}.  Put each SPW on its own "
+                             f"line of the input list for exact weights.")
+
+            # The width factor R must use the channel width of the SPW whose
+            # weights are kept (the reference), not of the first requested SPW.
+            w_ref = float(width_per_spw[ref_pos][0])
+            if w_ref > 0 and abs(w_ref - df_old_rf_chan0) > 1e-6 * w_ref:
+                fix = df_old_rf_chan0 / w_ref
+                weight_scale *= fix
+                sigma_scale  /= math.sqrt(fix)
+                _log(f"  [{ms_idx+1}/{n_ms}] (read)  R recomputed on the reference "
+                     f"SPW: R = {df_new / w_ref:.4f}")
+
+            freq_merged  = np.concatenate(freq_per_spw)
+            width_merged = np.concatenate(width_per_spw)
+            nchan_tot    = sum(v.shape[1] for v in vis_da_per_spw)
             _log(f"  [{ms_idx+1}/{n_ms}] (read)  SPWs merged: {len(vis_da_per_spw)} x "
                  f"{vis_da_per_spw[0].shape[1]} ch -> {nchan_tot} ch total")
 
@@ -1324,6 +1417,7 @@ class ViSta:
                 "vis_da_per_spw":  vis_da_per_spw,
                 "flag_da_per_spw": flag_da_per_spw,
                 "freq_merged":     freq_merged,
+                "width_merged":    width_merged,
                 "nchan_tot":       nchan_tot,
                 "nrows":           nrows,
                 "effective_chunk": _effective_chunk,
@@ -1439,6 +1533,7 @@ class ViSta:
                     ra0_rad, dec0_rad,
                     ra1_rad, dec1_rad,
                     freq_new_ms,
+                    width_old_rf=pkg["width_merged"],
                 )
 
                 # Free input buffers immediately
