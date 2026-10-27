@@ -5,7 +5,8 @@
 // For every row of a chunk of visibilities:
 //   1. rest-frame UVW:   u_rf = u_obs / (1 + z)
 //   2. rotation of UVW towards the new phase centre
-//   3. phase shift:      V * exp(-2 pi i nu_rf (u dl + v dm + w dn) / c),
+//   3. phase shift:      V * exp(-2 pi i nu_rf (w_new - w_old) / c),
+//                        exact: w_new - w_old = u l + v m + w (n - 1),
 //                        computed in float64 (the input is complex64)
 //   4. rebinning onto the output grid, weighted by the channel overlap, with
 //      the per-channel input width (centred difference) as CASA mstransform
@@ -118,10 +119,6 @@ inline void cpu_full_pipeline(
     build_basis(ra_old, dec_old, basis_old);
     build_basis(ra_new, dec_new, basis_new_m);
     mat_mul_BT(basis_new_m, basis_old, Rot);
-    const double dl  = (ra_new - ra_old) * std::cos(dec_old);
-    const double dm  = (dec_new - dec_old);
-    const double arg = 1.0 - dl*dl - dm*dm;
-    const double dn  = (arg > 0.0 ? std::sqrt(arg) : 0.0) - 1.0;
     const double inv_z = 1.0 / (1.0 + z);
 
     // ---- rebinning plan, once per call ----
@@ -171,7 +168,11 @@ inline void cpu_full_pipeline(
             uout[i*3+0] = Rot[0]*u_rf + Rot[1]*v_rf + Rot[2]*w_rf;
             uout[i*3+1] = Rot[3]*u_rf + Rot[4]*v_rf + Rot[5]*w_rf;
             uout[i*3+2] = Rot[6]*u_rf + Rot[7]*v_rf + Rot[8]*w_rf;
-            const double proj = u_rf*dl + v_rf*dm + w_rf*dn;
+            // exact delay difference between the old and the new phase centre:
+            //   u l + v m + w (n - 1) = w_new - w_old
+            // (l, m, n = direction cosines of the new centre in the old frame;
+            //  the former small-angle dl, dm gave an error ~ offset^2 tan(dec))
+            const double proj = uout[i*3+2] - w_rf;
 
             // 3. phase shift in float64
             const std::complex<float>* vrow = vin + (size_t)i * nchan_old * ncorr;
