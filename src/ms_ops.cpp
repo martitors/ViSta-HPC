@@ -49,7 +49,8 @@ extern "C" {
         double ra_new, double dec_new,
         float*   vis_out_h,
         uint8_t* flag_out_h,
-        double*  uvw_out_h
+        double*  uvw_out_h,
+        const double* width_old_h       // input channel widths, or nullptr
     );
 }
 static bool _gpu_available = (cuda_available() > 0);
@@ -567,7 +568,8 @@ full_pipeline(
     double ra_old, double dec_old,
     double ra_new, double dec_new,
     py::array_t<double,              py::array::c_style | py::array::forcecast> freq_new_arr,
-    double vis_scale = 1.0      // primary beam correction, 1/A (1 = none)
+    double vis_scale = 1.0,     // primary beam correction, 1/A (1 = none)
+    py::object width_old_rf = py::none()   // input channel widths (CHAN_WIDTH * (1+z))
 )
 {
     // ------------------------------------------------------------------ dims
@@ -582,6 +584,18 @@ full_pipeline(
 
     const double* freq_old_rf = static_cast<const double*>(fbuf_o.ptr);
     const double* freq_new    = static_cast<const double*>(fbuf_n.ptr);
+
+    // Channel widths from the SPECTRAL_WINDOW table, when given.  Without
+    // them the width is estimated from the neighbouring frequencies, which
+    // is wrong at the junction of two merged SPWs separated by a gap.
+    std::vector<double> width_in;
+    if (!width_old_rf.is_none()) {
+        auto w = py::cast<py::array_t<double, py::array::c_style | py::array::forcecast>>(width_old_rf);
+        if (w.size() != nchan_old)
+            throw std::invalid_argument("width_old_rf must have one value per input channel");
+        width_in.assign(w.data(), w.data() + nchan_old);
+    }
+    const double* width_ptr = width_in.empty() ? nullptr : width_in.data();
 
     // ----------------------------------------------------------------
     // GPU DISPATCH: se GPU disponibile, delega a full_pipeline_cuda e
@@ -603,7 +617,8 @@ full_pipeline(
             z, ra_old, dec_old, ra_new, dec_new,
             reinterpret_cast<float*>(vis_out_gpu.mutable_data()),
             reinterpret_cast<uint8_t*>(flag_out_gpu.mutable_data()),
-            uvw_out_gpu.mutable_data()
+            uvw_out_gpu.mutable_data(),
+            width_ptr
         );
         if (vis_scale != 1.0) {
             std::complex<float>* v = vis_out_gpu.mutable_data();
@@ -641,6 +656,8 @@ full_pipeline(
             df_old_k[k] = (freq_old_rf[k+1] - freq_old_rf[k-1]) * 0.5;
         df_old_k[nchan_old-1] = freq_old_rf[nchan_old-1] - freq_old_rf[nchan_old-2];
     }
+    if (width_ptr)                       // widths given: use them as they are
+        for (ssize_t k = 0; k < nchan_old; ++k) df_old_k[k] = width_ptr[k];
     // Assicura valori positivi (gestisce spw con freq decrescenti)
     for (ssize_t k = 0; k < nchan_old; ++k)
         df_old_k[k] = std::abs(df_old_k[k]);
@@ -807,6 +824,7 @@ PYBIND11_MODULE(ms_ops, m)
           py::arg("freq_old_rf"),
           py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"),
           py::arg("freq_new"), py::arg("vis_scale") = 1.0,
+          py::arg("width_old_rf") = py::none(),
           "Pipeline completa corretta: restframe -> centering -> rebinning overlap. "
           "Restituisce (vis_out, flag_out, uvw_out). "
           "vis_in complex64 convertito a float64 prima del phase-shift. "

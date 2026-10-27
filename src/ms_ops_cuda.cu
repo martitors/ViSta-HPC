@@ -297,7 +297,8 @@ void full_pipeline_cuda(
     double ra_new, double dec_new,
     float*   vis_out_h,           // complex64: [nrow, nchan_new, ncorr]
     uint8_t* flag_out_h,          // [nrow, nchan_new, ncorr]
-    double*  uvw_out_h            // [nrow, 3]
+    double*  uvw_out_h,           // [nrow, 3]
+    const double* width_old_h     // [nchan_old] input channel widths, or nullptr
 )
 {
     // --- Geometric parameters (host) ---
@@ -327,6 +328,8 @@ void full_pipeline_cuda(
             df_old_k_h[k] = (freq_old_h[k+1] - freq_old_h[k-1]) * 0.5;
         df_old_k_h[nchan_old-1] = freq_old_h[nchan_old-1] - freq_old_h[nchan_old-2];
     }
+    if (width_old_h)                     // widths given: use them as they are
+        for (int k = 0; k < nchan_old; ++k) df_old_k_h[k] = width_old_h[k];
     for (int k = 0; k < nchan_old; ++k)
         df_old_k_h[k] = fabs(df_old_k_h[k]);
 
