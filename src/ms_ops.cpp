@@ -91,21 +91,14 @@ inline void cpu_full_pipeline(
     double z, const double* freq_old_rf,
     double ra_old, double dec_old, double ra_new, double dec_new,
     const double* freq_new, ptrdiff_t nchan_new,
-    std::complex<float>* vout, bool* fout, double* uout)
+    std::complex<float>* vout, bool* fout, double* uout,
+    const double* width_old = nullptr)
 {
     typedef ptrdiff_t ssize_t;
 
-    // ---- per-channel width of the input grid ----
-    std::vector<double> df_old_k(nchan_old);
-    if (nchan_old == 1) {
-        df_old_k[0] = (nchan_new > 1) ? (freq_new[1] - freq_new[0]) : 1.0;
-    } else {
-        df_old_k[0] = freq_old_rf[1] - freq_old_rf[0];
-        for (ssize_t k = 1; k < nchan_old - 1; ++k)
-            df_old_k[k] = (freq_old_rf[k+1] - freq_old_rf[k-1]) * 0.5;
-        df_old_k[nchan_old-1] = freq_old_rf[nchan_old-1] - freq_old_rf[nchan_old-2];
-    }
-    for (ssize_t k = 0; k < nchan_old; ++k) df_old_k[k] = std::abs(df_old_k[k]);
+    // ---- per-channel width of the input grid (CHAN_WIDTH when given) ----
+    std::vector<double> df_old_k;
+    vista_df_old_k(freq_old_rf, nchan_old, freq_new, nchan_new, df_old_k, width_old);
     const double df_new = median_df(freq_new, nchan_new);
 
     // equally spaced input grid -> phase by recurrence
@@ -237,7 +230,7 @@ inline void cpu_run_item(const VistaItem& it)
         it.nrow, it.nchan_old, it.ncorr, it.z, it.freq_old,
         it.ra_old, it.dec_old, it.ra_new, it.dec_new, it.freq_new, it.nchan_new,
         reinterpret_cast<std::complex<float>*>(it.vis_out),
-        reinterpret_cast<bool*>(it.flag_out), it.uvw_out);
+        reinterpret_cast<bool*>(it.flag_out), it.uvw_out, it.width_old);
 }
 
 }  // namespace vista
@@ -258,7 +251,7 @@ using Result  = std::tuple<py::array_t<std::complex<float>>, py::array_t<bool>, 
 // =============================================================================
 Result full_pipeline(VisArr vis, FlagArr flag, DblArr uvw, double z, DblArr freq_old_rf,
                      double ra_old, double dec_old, double ra_new, double dec_new,
-                     DblArr freq_new)
+                     DblArr freq_new, py::object width_old_rf)
 {
     if (vis.ndim() != 3) throw std::invalid_argument("vis must be (nrow, nchan, ncorr)");
     const ssize_t nrow = vis.shape(0), nco = vis.shape(1), ncr = vis.shape(2);
@@ -271,6 +264,14 @@ Result full_pipeline(VisArr vis, FlagArr flag, DblArr uvw, double z, DblArr freq
     if (uvw.ndim() != 2 || uvw.shape(0) != nrow || uvw.shape(1) != 3)
         throw std::invalid_argument("uvw must be (nrow, 3)");
     const ssize_t ncn = freq_new.shape(0);
+    DblArr width;
+    const double* pw = nullptr;
+    if (!width_old_rf.is_none()) {
+        width = width_old_rf.cast<DblArr>();
+        if (width.ndim() != 1 || width.shape(0) != nco)
+            throw std::invalid_argument("width_old_rf must have vis.shape[1] elements");
+        pw = width.data();
+    }
 
     py::array_t<std::complex<float>> vo({nrow, ncn, ncr});
     py::array_t<bool>                fo({nrow, ncn, ncr});
@@ -286,7 +287,7 @@ Result full_pipeline(VisArr vis, FlagArr flag, DblArr uvw, double z, DblArr freq
     {
         py::gil_scoped_release nogil;
         vista::cpu_full_pipeline(pv, pf, pu, nrow, nco, ncr, z, pfo,
-                                 ra_old, dec_old, ra_new, dec_new, pfn, ncn, ov, of, ou);
+                                 ra_old, dec_old, ra_new, dec_new, pfn, ncn, ov, of, ou, pw);
     }
     return {vo, fo, uo};
 }
@@ -346,8 +347,10 @@ void full_pipeline_batch_into(
     py::list ra_old_list, py::list dec_old_list,
     py::list ra_new_list, py::list dec_new_list,
     py::list freq_new_list,
-    py::list vis_out_list, py::list flag_out_list, py::list uvw_out_list)
+    py::list vis_out_list, py::list flag_out_list, py::list uvw_out_list,
+    py::object width_old_list)
 {
+    const bool has_w = !width_old_list.is_none();
     const size_t n = py::len(vis_list);
     for (const py::list& l : {flag_list, uvw_list, z_list, freq_old_list, ra_old_list,
                               dec_old_list, ra_new_list, dec_new_list, freq_new_list,
@@ -356,7 +359,7 @@ void full_pipeline_batch_into(
             throw std::invalid_argument("full_pipeline_batch_into: the lists must have the same length");
 
     struct Arrays { VisArr vis; FlagArr flag; DblArr uvw; DblArr fo; DblArr fn;
-                    VisOut vo; FlagOut flo; DblOut uo; };
+                    VisOut vo; FlagOut flo; DblOut uo; DblArr w; };
     std::vector<Arrays>    arrays(n);       // keep inputs and outputs alive
     std::vector<VistaItem> items(n);
     for (size_t m = 0; m < n; ++m) {
@@ -397,6 +400,12 @@ void full_pipeline_batch_into(
         it.vis_out  = reinterpret_cast<float*>(a.vo.mutable_data());
         it.flag_out = reinterpret_cast<uint8_t*>(a.flo.mutable_data());
         it.uvw_out  = a.uo.mutable_data();
+        if (has_w) {
+            a.w = py::list(width_old_list)[m].cast<DblArr>();
+            if (a.w.ndim() != 1 || a.w.shape(0) != nco)
+                throw std::invalid_argument(tag + "width_old must have one value per input channel");
+            it.width_old = a.w.data();
+        }
     }
     py::gil_scoped_release nogil;
     run_items_nogil(items);
@@ -455,7 +464,7 @@ PYBIND11_MODULE(ms_ops, m)
     m.def("full_pipeline", &full_pipeline,
           py::arg("vis"), py::arg("flag"), py::arg("uvw"), py::arg("z"), py::arg("freq_old_rf"),
           py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"),
-          py::arg("freq_new"),
+          py::arg("freq_new"), py::arg("width_old_rf") = py::none(),
           "One chunk on the CPU (OpenMP, GIL released).  "
           "Returns (vis_out, flag_out, uvw_out).");
 
@@ -466,6 +475,7 @@ PYBIND11_MODULE(ms_ops, m)
           py::arg("ra_new_list"), py::arg("dec_new_list"),
           py::arg("freq_new_list"),
           py::arg("vis_out_list"), py::arg("flag_out_list"), py::arg("uvw_out_list"),
+          py::arg("width_old_list") = py::none(),
           "Several chunks (of any shape) in one call, written into the given "
           "output arrays: one GPU launch, split into passes if needed; on the "
           "CPU without a GPU or after a GPU error.");

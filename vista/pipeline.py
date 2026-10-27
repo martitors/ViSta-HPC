@@ -504,6 +504,38 @@ _SCALAR_COLS = ["TIME", "EXPOSURE", "INTERVAL", "WEIGHT", "SIGMA",
                 "SCAN_NUMBER", "STATE_ID", "FLAG_ROW"]
 
 
+def _snap_to_grid(start, start_ideal, df, side):
+    """Move a shifted window start onto the common grid ``start_ideal + k*df``.
+
+    ``side='left'`` rounds up (the window starts inside the coverage of the
+    MS), ``side='right'`` rounds down (it ends inside it), so the channels of
+    every dataset share the same edges.
+    """
+    k = (start - start_ideal) / df
+    k = math.ceil(k - 1e-9) if side == "left" else math.floor(k + 1e-9)
+    return start_ideal + k * df
+
+
+def _match_spw_rows(keys, time_tol=1e-3):
+    """Which SPWs of one MS have exactly the same rows.
+
+    *keys* holds one ``(TIME, ANTENNA1, ANTENNA2)`` triple per SPW.  The
+    reference is the SPW with the most rows; another SPW can be merged with it
+    only if it has the same baselines at the same times, in the same order.
+    Returns ``(ref, same)``.
+    """
+    sizes = [len(k[0]) for k in keys]
+    ref = int(np.argmax(sizes))
+    t0, a0, b0 = keys[ref]
+    same = []
+    for i, (t, a, b) in enumerate(keys):
+        same.append(i == ref or (
+            len(t) == len(t0)
+            and np.array_equal(a, a0) and np.array_equal(b, b0)
+            and np.allclose(t, t0, rtol=0.0, atol=time_tol)))
+    return ref, same
+
+
 def _angular_sep(ra0, dec0, ra1, dec1):
     """Angular distance between two directions (radians, haversine)."""
     h = (math.sin(0.5 * (dec1 - dec0)) ** 2
@@ -609,7 +641,10 @@ def _iter_ms_chunks(job, alloc):
                 if min(freq_new_ms[j] + 0.5 * df_new, in_hi) > \
                    max(freq_new_ms[j] - 0.5 * df_new, in_lo):
                     n_cov.add(j)
-            pieces.append((sub, dcol, ch_lo, ch_hi, fsl))
+            wsl = np.abs(np.asarray(width_old_list[pos], dtype=np.float64)[ch_lo:ch_hi]) * (1.0 + z)
+            spws = job.get("spws")
+            spw_id = spws[pos] if spws is not None else pos
+            pieces.append((sub, dcol, ch_lo, ch_hi, fsl, wsl, spw_id, ddid))
             if ref is None:
                 ref = sub
                 if where:
@@ -622,15 +657,55 @@ def _iter_ms_chunks(job, alloc):
                 f"(field={req_field}, SPWs {list(ddids)}): check the field, "
                 f"the SPWs and the frequency coverage")
 
-        nrows_list = [p[0].nrows() for p in pieces]
-        nrows = nrows_list[0]
-        if len(set(nrows_list)) > 1:
-            keep = [p for p, n in zip(pieces, nrows_list) if n == nrows]
-            warnings.append(f"{len(pieces) - len(keep)} SPW(s) dropped: their number of "
-                            f"rows differs from the first one ({nrows_list})")
-            pieces = keep
+        # Merging SPWs: their channels are put side by side row by row, with
+        # the UVW, TIME and WEIGHT of one reference SPW.  This is correct only
+        # if every SPW has the same rows (same baselines at the same times, in
+        # the same order); the others are left out with a warning.
+        ref_pos = 0
+        if len(pieces) > 1:
+            keys = [(p[0].getcol("TIME"), p[0].getcol("ANTENNA1"), p[0].getcol("ANTENNA2"))
+                    for p in pieces]
+            mean_w = [float(np.mean(p[0].getcol("WEIGHT"))) for p in pieces]
+            ref_i, same = _match_spw_rows(keys)
+            if not all(same):
+                warnings.append(
+                    f"SPW(s) {[p[6] for p, ok in zip(pieces, same) if not ok]} left out: "
+                    f"their rows (baselines/times) differ from SPW {pieces[ref_i][6]} "
+                    f"(rows per SPW: {[len(k[0]) for k in keys]}).  To keep them, put "
+                    f"each SPW on its own line of the input list (same MS, RA/Dec, z "
+                    f"and FIELD_ID)")
+            ref_piece = pieces[ref_i]
+            kept = [p for p, ok in zip(pieces, same) if ok]
+            kept_w = [w for w, ok in zip(mean_w, same) if ok]
+            pieces = kept
+            ref_pos = pieces.index(ref_piece)
+            if ref is not ref_piece[0]:
+                ref = ref_piece[0]
+                if where:
+                    with tab.query(f"DATA_DESC_ID=={ref_piece[7]}") as t_all:
+                        rows_all = t_all.nrows()
+            if len(pieces) > 1:
+                ids = [p[6] for p in pieces]
+                widths = [float(np.median(p[5])) for p in pieces]
+                if max(widths) > min(widths) * (1.0 + 1e-3):
+                    warnings.append(f"merged SPWs {ids} have different channel widths: "
+                                    f"their weights are only approximate.  Put each SPW "
+                                    f"on its own line of the input list for exact weights")
+                if min(kept_w) > 0 and max(kept_w) > 1.25 * min(kept_w):
+                    warnings.append(f"merged SPWs {ids} have mean weights differing by "
+                                    f"{max(kept_w) / min(kept_w):.2f}x, but share the "
+                                    f"weights of SPW {ref_piece[6]}.  Put each SPW on its "
+                                    f"own line of the input list for exact weights")
+        nrows = ref.nrows()
+
+        # R must use the channel width of the SPW whose weights are kept
+        w_ref = float(pieces[ref_pos][5][0])
+        if w_ref > 0 and abs(w_ref - df_old_rf_chan0) > 1e-6 * w_ref:
+            weight_scale = df_new / w_ref
+            sigma_scale = 1.0 / np.sqrt(weight_scale)
 
         freq_merged = np.concatenate([p[4] for p in pieces])
+        width_merged = np.concatenate([p[5] for p in pieces])
         nchan_tot = int(sum(p[3] - p[2] for p in pieces))
         ncorr = int(np.asarray(ref.getcell(pieces[0][1], 0)).shape[-1])
         adaptive = max(1000, (512 * 1024 * 1024) // max(1, nchan_tot * 2 * 8))
@@ -667,7 +742,7 @@ def _iter_ms_chunks(job, alloc):
 
         ctx = {
             "z": z, "ra0": ra0_rad, "dec0": dec0_rad, "ra1": ra1_rad, "dec1": dec1_rad,
-            "freq_old": freq_merged, "freq_new": freq_new_ms,
+            "freq_old": freq_merged, "freq_new": freq_new_ms, "width_old": width_merged,
             "ant_offset": job["ant_offset"],
             "weight_scale": weight_scale, "sigma_scale": sigma_scale,
             "rows": nrows, "rows_all": rows_all, "filters": filters,
@@ -685,7 +760,7 @@ def _iter_ms_chunks(job, alloc):
             vis = alloc((n, nchan_tot, ncorr), np.complex64)
             flag = alloc((n, nchan_tot, ncorr), np.bool_)
             c0 = 0
-            for (sub, col, lo, hi, _f) in pieces:
+            for (sub, col, lo, hi, *_rest) in pieces:
                 w = hi - lo
                 blc, trc = [lo, 0], [hi - 1, ncorr - 1]
                 if len(pieces) == 1:
@@ -1284,10 +1359,10 @@ class ViSta:
                 start  = start_ideal
                 reason = "ideal window fits"
             elif msmin > start_ideal:
-                start  = msmin
+                start  = _snap_to_grid(msmin, start_ideal, df_new, "left")
                 reason = "shifted to left edge"
             elif msmax < end_ideal:
-                start  = msmax - bandwidth
+                start  = _snap_to_grid(msmax - bandwidth, start_ideal, df_new, "right")
                 reason = "shifted to right edge"
             else:
                 raise RuntimeError(
@@ -1523,6 +1598,7 @@ class ViSta:
             "freq_old_list": self._cache_freq_old[i],
             "width_old_list": self._cache_width_old[i],
             "ddids": [int(d) for d in self._cache_ddids[i]],
+            "spws": self.spw_list[i],
             "field": self.field_list[i],
             "phase_dir": self._cache_phase_dir[i],
             "ra": self.ra_list[i], "dec": self.dec_list[i],
@@ -1741,7 +1817,8 @@ class ViSta:
                 t0 = time.perf_counter()
                 vo, fo, uo = ms_ops.full_pipeline(
                     vis, flag, obj["uvw"], c["z"], c["freq_old"],
-                    c["ra0"], c["dec0"], c["ra1"], c["dec1"], c["freq_new"])
+                    c["ra0"], c["dec0"], c["ra1"], c["dec1"], c["freq_new"],
+                    width_old_rf=c["width_old"])
                 stats["t_compute"] += time.perf_counter() - t0
             finally:
                 del vis, flag
@@ -1776,7 +1853,8 @@ class ViSta:
                     [c["ra0"] for c in cs], [c["dec0"] for c in cs],
                     [c["ra1"] for c in cs], [c["dec1"] for c in cs],
                     [c["freq_new"] for c in cs],
-                    [o[0] for o in outs], [o[1] for o in outs], [o[2] for o in outs])
+                    [o[0] for o in outs], [o[1] for o in outs], [o[2] for o in outs],
+                    width_old_list=[c["width_old"] for c in cs])
                 stats["t_compute"] += time.perf_counter() - t0
                 stats["gpu_launches"] += 1
                 stats["gpu_chunks"] += len(batch)

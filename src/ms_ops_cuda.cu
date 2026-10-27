@@ -219,7 +219,8 @@ void run_impl(const VistaItem* items, int n_items, double mem_fraction)
 
         const VistaGeometry g = vista_geometry(it.z, it.ra_old, it.dec_old,
                                                it.ra_new, it.dec_new);
-        vista_df_old_k(it.freq_old, it.nchan_old, it.freq_new, it.nchan_new, df_old_k);
+        vista_df_old_k(it.freq_old, it.nchan_old, it.freq_new, it.nchan_new, df_old_k,
+                       it.width_old);
         const double df_new = vista_median_df(it.freq_new, it.nchan_new);
         vista_build_map(it.freq_old, it.nchan_old, it.freq_new, it.nchan_new,
                         df_old_k, df_new, jptr, kidx, wts);

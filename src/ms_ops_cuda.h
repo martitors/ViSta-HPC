@@ -41,6 +41,7 @@ struct VistaItem {
     float*   vis_out;         // complex64, interleaved  [nrow, nchan_new, ncorr]
     uint8_t* flag_out;        // bool (1 byte)           [nrow, nchan_new, ncorr]
     double*  uvw_out;         //                         [nrow, 3]
+    const double* width_old = nullptr;   // input channel widths [nchan_old], or nullptr
 };
 
 // ---------------------------------------------------------------------------
@@ -97,10 +98,18 @@ inline double vista_median_df(const double* f, int64_t n)
 
 // Per-channel width of the input grid: centred difference, forward/backward
 // difference at the edges, always positive (as CASA mstransform).
+// When the real widths (CHAN_WIDTH) are given they are used instead: the
+// centred difference is wrong at the junction of two SPWs separated by a gap.
 inline void vista_df_old_k(const double* fo, int64_t nco,
                            const double* fn, int64_t ncn,
-                           std::vector<double>& out)
+                           std::vector<double>& out,
+                           const double* width = nullptr)
 {
+    if (width) {
+        out.assign(width, width + nco);
+        for (auto& v : out) v = std::abs(v);
+        return;
+    }
     out.assign(static_cast<size_t>(nco), 1.0);
     if (nco == 1) {
         out[0] = (ncn > 1) ? (fn[1] - fn[0]) : 1.0;
