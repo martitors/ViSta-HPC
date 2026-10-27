@@ -426,6 +426,11 @@ def compress_visibilities(ms_path: str,
             if np.isfinite(pb_offset):
                 print(f"  dd={dd:>3} primary beam A={pb_gain:.3f}  "
                       f"offset={pb_offset:.1f}\"  D={pb_dish:.1f} m")
+                if pb_gain < 0.5:
+                    print(f"  dd={dd:>3} WARNING: the source is beyond half the "
+                          f"primary beam (A={pb_gain:.3f}, offset {pb_offset:.1f}\"): "
+                          f"the correction is large and the Gaussian beam "
+                          f"approximate there")
             else:
                 print(f"  dd={dd:>3} WARNING: cannot read {entry.ms}, "
                       f"primary beam not corrected (A=1)")
