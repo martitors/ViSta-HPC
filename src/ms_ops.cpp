@@ -318,11 +318,6 @@ phase_shift(
     build_basis(ra_new, dec_new, basis_new);
     mat_mul_BT(basis_new, basis_old, Rot);
 
-    double dl  = (ra_new - ra_old) * std::cos(dec_old);
-    double dm  = (dec_new - dec_old);
-    double arg = 1.0 - dl*dl - dm*dm;
-    double dn  = (arg > 0.0 ? std::sqrt(arg) : 0.0) - 1.0;
-
     py::array_t<std::complex<double>> vis_out({nrow, nchan, ncorr});
     py::array_t<double>                uvw_out({nrow, (ssize_t)3});
 
@@ -336,7 +331,11 @@ phase_shift(
         uout(i,0) = Rot[0]*u + Rot[1]*v + Rot[2]*w;
         uout(i,1) = Rot[3]*u + Rot[4]*v + Rot[5]*w;
         uout(i,2) = Rot[6]*u + Rot[7]*v + Rot[8]*w;
-        double proj = u*dl + v*dm + w*dn;
+        // exact delay difference between the old and the new phase centre:
+        //   u l + v m + w (n - 1) = w_new - w_old
+        // (l, m, n = direction cosines of the new centre in the old frame;
+        //  the former small-angle dl, dm gave an error ~ offset^2 tan(dec))
+        double proj = uout(i,2) - w;
         if (equispaced && nchan > 1) {
             double phi0 = -TWO_PI * proj * freq[0] / C_LIGHT;
             double dphi = -TWO_PI * proj * df      / C_LIGHT;
@@ -400,10 +399,6 @@ regrid_and_shift(
     build_basis(ra_new, dec_new, basis_new);
     mat_mul_BT(basis_new, basis_old, Rot);
 
-    double dl = (ra_new-ra_old)*std::cos(dec_old), dm = dec_new-dec_old;
-    double arg = 1.0-dl*dl-dm*dm;
-    double dn = (arg>0.0?std::sqrt(arg):0.0)-1.0;
-
     py::array_t<std::complex<float>> vis_out({nrow,nchan_new,ncorr});
     py::array_t<bool>                  flag_out({nrow,nchan_new,ncorr});
     py::array_t<double>                uvw_out({nrow,(ssize_t)3});
@@ -441,7 +436,7 @@ regrid_and_shift(
         uout(i,0)=Rot[0]*u+Rot[1]*v+Rot[2]*w;
         uout(i,1)=Rot[3]*u+Rot[4]*v+Rot[5]*w;
         uout(i,2)=Rot[6]*u+Rot[7]*v+Rot[8]*w;
-        double proj=u*dl+v*dm+w*dn;
+        double proj=uout(i,2)-w;   // exact: w_new - w_old
         double df_n=(nchan_new>1)?(fn[1]-fn[0]):0.0;
         if (equispaced && nchan_new>1) {
             double phi0=-TWO_PI*proj*fn[0]/C_LIGHT, dphi=-TWO_PI*proj*df_n/C_LIGHT;
@@ -510,8 +505,6 @@ restframe_and_shift(
     if(nchan>1){df=freq[1]-freq[0]; for(ssize_t j=2;j<nchan;++j) if(std::abs((freq[j]-freq[j-1])-df)>df*1e-6){equispaced=false;break;}}
     double basis_old[9],basis_new[9],Rot[9];
     build_basis(ra_old,dec_old,basis_old); build_basis(ra_new,dec_new,basis_new); mat_mul_BT(basis_new,basis_old,Rot);
-    double dl=(ra_new-ra_old)*std::cos(dec_old), dm=dec_new-dec_old;
-    double arg=1.0-dl*dl-dm*dm; double dn=(arg>0.0?std::sqrt(arg):0.0)-1.0;
     py::array_t<std::complex<double>> vis_out({nrow,nchan,ncorr});
     py::array_t<double> uvw_out({nrow,(ssize_t)3});
     auto vout=vis_out.mutable_unchecked<3>(); auto uout=uvw_out.mutable_unchecked<2>();
@@ -521,7 +514,7 @@ restframe_and_shift(
         uout(i,0)=Rot[0]*u_rf+Rot[1]*v_rf+Rot[2]*w_rf;
         uout(i,1)=Rot[3]*u_rf+Rot[4]*v_rf+Rot[5]*w_rf;
         uout(i,2)=Rot[6]*u_rf+Rot[7]*v_rf+Rot[8]*w_rf;
-        double proj=u_rf*dl+v_rf*dm+w_rf*dn;
+        double proj=uout(i,2)-w_rf;   // exact: w_new - w_old
         if(equispaced&&nchan>1){
             double phi0=-TWO_PI*proj*freq[0]/C_LIGHT, dphi=-TWO_PI*proj*df/C_LIGHT;
             std::complex<double> ph=std::polar(1.0,phi0), step=std::polar(1.0,dphi);
@@ -670,10 +663,6 @@ full_pipeline(
     build_basis(ra_old, dec_old, basis_old);
     build_basis(ra_new, dec_new, basis_new_m);
     mat_mul_BT(basis_new_m, basis_old, Rot);
-    double dl  = (ra_new - ra_old) * std::cos(dec_old);
-    double dm  = (dec_new - dec_old);
-    double arg = 1.0 - dl*dl - dm*dm;
-    double dn  = (arg > 0.0 ? std::sqrt(arg) : 0.0) - 1.0;
     const double inv_z = 1.0 / (1.0 + z);
 
     // ----------------------------------------------------------------
@@ -706,7 +695,11 @@ full_pipeline(
         uout(i,0) = Rot[0]*u_rf + Rot[1]*v_rf + Rot[2]*w_rf;
         uout(i,1) = Rot[3]*u_rf + Rot[4]*v_rf + Rot[5]*w_rf;
         uout(i,2) = Rot[6]*u_rf + Rot[7]*v_rf + Rot[8]*w_rf;
-        double proj = u_rf*dl + v_rf*dm + w_rf*dn;
+        // exact delay difference between the old and the new phase centre:
+        //   u l + v m + w (n - 1) = w_new - w_old
+        // (l, m, n = direction cosines of the new centre in the old frame;
+        //  the former small-angle dl, dm gave an error ~ offset^2 tan(dec))
+        double proj = uout(i,2) - w_rf;
 
         // --- 3. Phase shift su freq_old_rf (rest-frame) a precision float64 ---
         // FIX A: cast float32->float64 inline (vedi sopra), niente buffer globale
