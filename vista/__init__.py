@@ -13,11 +13,15 @@ Example usage::
 
     from vista import ViSta
     p = ViSta("input_list.txt")
-    p.run("stacked_output.ms", central_freq=153.253e9, nchan_out=1000)
+    p.run("stack.zarr", central_freq=153.253e9, nchan_out=1000)
 
 Log: every step of the package writes timestamped lines to stdout through the
 logger ``"vista"``; ``vista.set_verbosity()`` chooses how much (and an
 optional log file).
+
+Output: the stacking writes a Zarr store (``stack.zarr``), written in
+parallel, or a Measurement Set when the path ends in ``.ms``;
+``vista.export_ms(store, ms)`` turns a store into a Measurement Set.
 
 New in v2.1:
     - Transparent GPU/CUDA acceleration (batch kernel dispatch)
@@ -44,14 +48,45 @@ New in v2.3:
       time on every line, what each input contributes, warnings for
       suspicious inputs; ``verbose="debug"`` and ``run(timing=True)`` for
       the details
+
+New in v2.4:
+    - The stacking writes a Zarr store (layout of dask-ms) for any output
+      path not ending in .ms: parallel writers (n_writers), compressed
+      columns, rows of each dataset in input order; a path ending in .ms
+      (or output_format="ms") still gives a Measurement Set, and
+      vista.export_ms() converts a store into one
+    - Continuum subtraction and compression read Zarr stores and MSs alike,
+      overlap reading, computing and writing, and run their per-row work in
+      new OpenMP kernels of ms_ops (continuum_subtract, annuli_accumulate);
+      casatools is no longer needed.  The continuum is fitted on the
+      unflagged samples only, wherever the rows of a dataset are
+    - run(frame="LSRK") brings TOPO inputs to the frame of the redshifts,
+      row by row (vista.frames)
+
+New in v2.5:
+    - run(..., line=, continuum=, stats_line=, stats_continuum=): continuum
+      subtraction and compression while the stack is written, one pass over
+      the data (vista.extract.inline); same stack and statistics as the
+      separate steps.  The parameters of every subtraction are recorded in
+      the stack
+    - the statistics store sum w Re^2 and sum w Im^2 (format 4): the noise of
+      every cell is measured from the scatter of its visibilities
+      (vista.extract.noise), and checked against the weights, the imaginary
+      part and the line-free channels
+    - vista.extract.measure_line: the line fitted on all channels and annuli
+      at once (profile at zero spacing, flux, peak, centre, width, size), with
+      the measured noise and the channel correlation; matched filter
+      (mode='detect') or search with its significance from null realisations
+    - examples/plot_line.py: the figures of measure_line from its output
+      files (numpy + matplotlib only), to restyle them
 """
 
 import logging as _logging
 import sys as _sys
 import time as _time
 
-__all__ = ["ViSta", "set_verbosity"]
-__version__ = "2.3.0"
+__all__ = ["ViSta", "set_verbosity", "export_ms", "open_stack"]
+__version__ = "2.5.0"
 
 
 # ---------------------------------------------------------------------------
@@ -148,4 +183,7 @@ def __getattr__(name):
     if name == "ViSta":
         from .pipeline import ViSta
         return ViSta
+    if name in ("export_ms", "open_stack"):
+        from . import stackio
+        return getattr(stackio, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

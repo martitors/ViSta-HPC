@@ -3,11 +3,15 @@ vista.extract.cli
 =================
 Command-line front end of the extraction, one subcommand per step::
 
-    python -m vista.extract contsub   stacked.ms      --rest-freq 345.7959899
-    python -m vista.extract compress  stacked.ms      --input input_list.txt \
+    python -m vista.extract contsub   stack.zarr      --rest-freq 345.7959899
+    python -m vista.extract compress  stack.zarr      --input input_list.txt \
                                                       --rest-freq 345.7959899
     python -m vista.extract flux      line_stats.npy  --input input_list.txt \
-                                                      --rest-freq 345.7959899
+                                                      --rest-freq 345.7959899 \
+                                                      [--method joint]
+    python -m vista.extract export-ms stack.zarr      stack.ms
+
+The stack is the Zarr store written by the stacking, or a Measurement Set.
 
 Every option maps one to one onto a field of the configuration objects in
 :mod:`vista.extract.config`, which remain the reference for the defaults and
@@ -66,8 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- continuum subtraction -------------------------------------------
     p = subparsers.add_parser("contsub",
-                              help="subtract the continuum from a stacked MS")
-    p.add_argument("ms_path")
+                              help="subtract the continuum from a stack (Zarr or MS)")
+    p.add_argument("ms_path", help="the stack: Zarr store or Measurement Set")
+    p.add_argument("--io-threads", type=int, default=4,
+                   help="threads reading and writing a Zarr store (default 4)")
     _add_line_options(p)
     p.add_argument("--order", type=int, default=0, choices=[0, 1, -1],
                    help="0 constant (default), 1 linear, -1 chosen per "
@@ -90,8 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- compression -----------------------------------------------------
     p = subparsers.add_parser(
-        "compress", help="compress a stacked MS into sufficient statistics")
-    p.add_argument("ms_path")
+        "compress", help="compress a stack (Zarr or MS) into sufficient statistics")
+    p.add_argument("ms_path", help="the stack: Zarr store or Measurement Set")
+    p.add_argument("--io-threads", type=int, default=4,
+                   help="threads reading a Zarr store (default 4)")
     p.add_argument("--input", required=True, help="ViSta input list")
     _add_line_options(p)
     p.add_argument("--bins", nargs=3, type=float, default=(3.0, 3000.0, 18),
@@ -142,7 +150,42 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tolerance to recognise two entries as the same "
                         "physical source")
     p.add_argument("--method", default="template",
-                   choices=["template", "window", "continuum"])
+                   choices=["joint", "template", "window", "continuum"],
+                   help="joint: one fit of all channels and annuli, with the "
+                        "noise measured from the data (vista.extract.measure); "
+                        "template, window, continuum: the three-step chain of "
+                        "Sec. 5.3")
+    j = p.add_argument_group("joint method (--method joint)")
+    j.add_argument("--mode", default="search", choices=["search", "detect"],
+                   help="search: centre and width free, significance from the same "
+                        "search on noise; detect: centre and width fixed (--v0, "
+                        "--fwhm), matched filter")
+    j.add_argument("--v0", type=float, default=0.0, metavar="KMS",
+                   help="line centre: fixed (detect) or start (search)")
+    j.add_argument("--fwhm", type=float, default=None, metavar="KMS",
+                   help="line FWHM: fixed (detect, required) or start (search)")
+    j.add_argument("--v0-range", nargs=2, type=float, default=None, metavar=("LO", "HI"),
+                   help="allowed centres in search mode (default: the line window)")
+    j.add_argument("--fwhm-range", nargs=2, type=float, default=None, metavar=("LO", "HI"),
+                   help="allowed FWHM in search mode (default: 2 channels .. window)")
+    j.add_argument("--size", default="auto", choices=["auto", "point", "gauss"],
+                   help="source size: auto (Gaussian only if it improves chi2 by "
+                        "--resolved-dchi2), point, gauss")
+    j.add_argument("--resolved-dchi2", type=float, default=9.0,
+                   help="chi2 improvement needed to adopt a Gaussian source (default 9: 3 sigma)")
+    j.add_argument("--noise", default="scatter", choices=["scatter", "weights"],
+                   help="noise of the cells from the scatter of the visibilities "
+                        "(default) or from the weights")
+    j.add_argument("--no-channel-correlation", dest="channel_correlation",
+                   action="store_false", default=True)
+    j.add_argument("--n-null", type=int, default=1000,
+                   help="realisations of the search on noise (significance)")
+    j.add_argument("--n-null-phase", type=int, default=200,
+                   help="random-phase stacks (data-driven null); 0 to skip")
+    j.add_argument("--window", nargs=2, type=float, default=None, metavar=("LO", "HI"),
+                   help="window of the summed flux (default: --v-window)")
+    j.add_argument("--plot-rebin", type=int, default=1,
+                   help="channels per bin in the profile figure")
     p.add_argument("--joint-continuum", action="store_true",
                    help="fit the line on top of a constant continuum and "
                         "measure both: use it when the stack was NOT "
@@ -185,11 +228,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--v-limits", nargs=2, type=float, default=None,
                    metavar=("LO", "HI"),
                    help="velocity range of the spectrum plot [km/s]")
+
+    # ---- export ----------------------------------------------------------
+    p = subparsers.add_parser("export-ms",
+                              help="write a Zarr stack as a Measurement Set")
+    p.add_argument("store", help="Zarr store written by the stacking")
+    p.add_argument("ms_path", help="Measurement Set to write (replaced if it exists)")
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "export-ms":
+        from ..stackio import export_ms
+        export_ms(args.store, args.ms_path)
+        return 0
     line = _line_from_args(args)
 
     if args.command == "contsub":
@@ -207,7 +260,7 @@ def main(argv=None) -> int:
         only = ({int(x) for x in args.only_dd.split(",") if x.strip()}
                 if args.only_dd else None)
         subtract_continuum(args.ms_path, line, config, only_dd=only,
-                           start_dd=args.start_dd)
+                           start_dd=args.start_dd, n_io=args.io_threads)
         return 0
 
     if args.command == "compress":
@@ -221,7 +274,8 @@ def main(argv=None) -> int:
                               line_column=args.line_column,
                               continuum_column=args.continuum_column,
                               max_amplitude=args.max_amplitude,
-                              chunk_mb=args.chunk_mb, resume=args.resume)
+                              chunk_mb=args.chunk_mb, resume=args.resume,
+                              n_io=args.io_threads)
         return 0
 
     # ---- flux ------------------------------------------------------------
@@ -249,6 +303,33 @@ def main(argv=None) -> int:
         z_ref=args.z_ref, flux_normalisation=args.flux_normalisation,
         norm_ref=args.norm_ref, already_applied=args.already_applied,
         primary_beam=args.primary_beam)
+    if args.method == "joint":
+        from .config import LineFitConfig
+        from .measure import measure_line
+        fitcfg = LineFitConfig(
+            mode=args.mode, v0_kms=args.v0, fwhm_kms=args.fwhm,
+            v0_range_kms=tuple(args.v0_range) if args.v0_range else None,
+            fwhm_range_kms=tuple(args.fwhm_range) if args.fwhm_range else None,
+            size=args.size, theta_fixed_arcsec=args.theta_fixed,
+            theta_max_arcsec=args.theta_max, resolved_delta_chi2=args.resolved_dchi2,
+            theta_prior_arcsec=theta_prior,
+            continuum=args.joint_continuum, shape_tie=args.shape_tie,
+            fit_span_kms=args.fit_span_kms, min_sources_per_bin=args.min_sources_per_bin,
+            noise=args.noise, channel_correlation=args.channel_correlation,
+            n_null=args.n_null, n_null_phase=args.n_null_phase,
+            window_kms=tuple(args.window) if args.window else None)
+        result = measure_line(args.statistics, args.input, line, weighting, fitcfg,
+                              BootstrapConfig(n_realisations=args.n_bootstrap,
+                                              seed=args.seed),
+                              match_tol_arcsec=args.match_tol_arcsec,
+                              output_prefix=args.out)
+        if args.plot:
+            from .plots_line import plot_line_result
+            plot_line_result(result, line, args.out, unit=args.unit,
+                             v_limits=tuple(args.v_limits) if args.v_limits else None,
+                             rebin=args.plot_rebin)
+        return 0
+
     profile = ProfileConfig(
         method=args.method, fit_span_kms=args.fit_span_kms,
         shape_tie=args.shape_tie,

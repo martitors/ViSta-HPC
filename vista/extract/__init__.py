@@ -25,10 +25,10 @@ Typical workflow
     #    CORRECTED_DATA, leaves DATA untouched).  Optional: skip it and set
     #    ProfileConfig(joint_continuum=True) below to fit line and continuum
     #    together instead.
-    subtract_continuum("stacked.ms", line, ContinuumConfig(order=0))
+    subtract_continuum("stack.zarr", line, ContinuumConfig(order=0))
 
     # 2. compression into sufficient statistics, read-only
-    compress_visibilities("stacked.ms", "input_list.txt", line,
+    compress_visibilities("stack.zarr", "input_list.txt", line,
                           out_line="line_stats.npy",
                           out_continuum="cont_stats.npy")
 
@@ -39,14 +39,26 @@ Typical workflow
 
     print(result.summary["flux_total"], result.summary["theta_fwhm_arcsec"])
 
-Steps 1 and 2 read the MS and need ``casatools``; step 3 works on the
-compressed statistics and only needs ``numpy`` and ``scipy``, so it can run
-on a laptop and be repeated cheaply for different subsamples, weighting
-schemes and source models.
+    # or: the line fitted on all channels and annuli at once, with the noise
+    # measured from the data (profile, flux, significance; see measure.py)
+    result = measure_line("line_stats.npy", "input_list.txt", line,
+                          output_prefix="stack")
+
+Steps 1 and 2 can also run while the stack is written, in one pass:
+``ViSta.run(..., line=line, continuum=ContinuumConfig(), stats_line=...,
+stats_continuum=...)`` (see :mod:`vista.extract.inline`).
+
+Steps 1 and 2 read the stack, the Zarr store written by the stacking or a
+Measurement Set (``zarr`` or ``python-casacore``); their per-row work runs
+in the compiled kernel ``ms_ops`` (OpenMP) when it is built, otherwise in
+NumPy.  Step 3 works on the compressed statistics and only needs ``numpy``
+and ``scipy``, so it can run on a laptop and be repeated cheaply for
+different subsamples, weighting schemes and source models.
 """
 
 from .config import (BinningConfig, BootstrapConfig, ContinuumConfig,
-                     LineConfig, ProfileConfig, UVFitConfig, WeightingConfig)
+                     LineConfig, LineFitConfig, ProfileConfig, UVFitConfig,
+                     WeightingConfig)
 from .contsub import subtract_continuum
 from .profiles import (LineShape, fit_line_shape, flux_per_annulus_continuum,
                        flux_per_annulus_template, flux_per_annulus_window,
@@ -56,15 +68,18 @@ from .sources import (Entry, alpha_factor, amplitude_factors,
 from .stack import (ExtractionResult, StackInput, build_stack_input, combine,
                     extract_flux, sources_per_bin, sources_per_channel)
 from .statistics import SufficientStatistics, compress_visibilities
+from .measure import LineResult, measure_line
+from .noise import NoiseModel
 from .uvfit import (UVFitResult, fit_uv_profile, gaussian_visibility,
                     two_gaussian_visibility)
 
 __all__ = [
     # configuration
     "LineConfig", "BinningConfig", "WeightingConfig", "ProfileConfig",
-    "UVFitConfig", "BootstrapConfig", "ContinuumConfig",
+    "UVFitConfig", "BootstrapConfig", "ContinuumConfig", "LineFitConfig",
     # pipeline steps
-    "subtract_continuum", "compress_visibilities", "extract_flux",
+    "subtract_continuum", "compress_visibilities", "extract_flux", "measure_line",
+    "LineResult", "NoiseModel",
     # building blocks
     "SufficientStatistics", "StackInput", "build_stack_input", "combine",
     "sources_per_bin", "sources_per_channel", "ExtractionResult",

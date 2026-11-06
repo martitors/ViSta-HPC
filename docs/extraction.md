@@ -1,8 +1,8 @@
 # Post-processing and uv-domain signal extraction
 
-`vista.extract` recovers the stacked flux density from the combined
-Measurement Set produced by `vista.ViSta`, working directly in the visibility
-domain.
+`vista.extract` recovers the stacked flux density from the stack produced by
+`vista.ViSta` (a Zarr store by default, or a Measurement Set), working directly
+in the visibility domain.
 
 The stacked MS is a standard interferometric product, so in principle the flux
 could be measured by imaging it with `tclean` or by fitting the visibilities
@@ -27,12 +27,14 @@ below refer to that text.
 
 | Step | Function | Reads | Needs |
 |------|----------|-------|-------|
-| 1. Stacking | `ViSta.run` | the input datasets | `dask-ms`, `ms_ops` |
-| 2. Continuum subtraction | `subtract_continuum` | the stacked MS, read/write | `casatools` |
-| 3. Compression | `compress_visibilities` | the stacked MS, read-only | `casatools` |
-| 4. Extraction | `extract_flux` | the compressed statistics | `numpy`, `scipy` |
+| 1. Stacking | `ViSta.run` | the input datasets | `dask-ms`, `zarr`, `ms_ops` |
+| 2. Continuum subtraction | `subtract_continuum` | the stack, read/write | `zarr` or `python-casacore`; `ms_ops` (optional, much faster) |
+| 3. Compression | `compress_visibilities` | the stack, read-only | `zarr` or `python-casacore`; `ms_ops` (optional, much faster) |
+| 4. Extraction | `measure_line` (joint fit) or `extract_flux` (Sec. 5.3) | the compressed statistics | `numpy`, `scipy` |
 
-Only steps 2 and 3 touch the MS. Step 4 works on a file of a few MB, so it
+Steps 2 and 3 can run **during step 1** (`ViSta.run(..., continuum=...,
+stats_line=...)`, the default of `run_vista.sh`): see [One pass](#one-pass).
+Only steps 2 and 3 touch the stack. Step 4 works on a file of a few MB, so it
 runs on a laptop in seconds and can be repeated as often as needed for
 different weighting schemes, normalisations and source models. **Neither the
 weighting nor the flux normalisation is ever applied to the visibilities on
@@ -49,9 +51,9 @@ from vista.extract import (LineConfig, ContinuumConfig, WeightingConfig,
 line = LineConfig(rest_freq_ghz=345.7959899,   # the line you are stacking, GHz
                   v_window_kms=(-600, 600))
 
-subtract_continuum("stacked.ms", line, ContinuumConfig(order=0))
+subtract_continuum("stack.zarr", line, ContinuumConfig(order=0))
 
-compress_visibilities("stacked.ms", "input_list.txt", line,
+compress_visibilities("stack.zarr", "input_list.txt", line,
                       out_line="line_stats.npy",
                       out_continuum="cont_stats.npy")
 
@@ -145,8 +147,11 @@ brighter continuum than the rest.
 
 A low-order polynomial is fitted to the line-free channels, separately for the
 real and the imaginary part, and subtracted from every channel, spectral
-window by spectral window. The fitted continuum goes to `MODEL_DATA` and the
-line to `CORRECTED_DATA`; `DATA` is left untouched, so the step can be rerun.
+window by spectral window. Only the unflagged samples enter the fit: the
+channels of the common grid that a dataset does not cover are flagged and
+hold 0, and counting them would pull the continuum towards zero. The fitted
+continuum goes to `MODEL_DATA` and the line to `CORRECTED_DATA`; `DATA` is
+left untouched, so the step can be rerun.
 
 Line and continuum are then compressed and fitted as two independent runs, on
 two different columns, and each gets its own outputs:
@@ -187,6 +192,301 @@ right function at all: in the Rayleigh-Jeans limit the continuum scales
 roughly as `nu^4`, so fit it locally, on narrow windows.
 
 ---
+
+## One pass
+
+The continuum subtraction and the compression work row by row on the output
+grid, so they can run on each chunk right after the stacking kernel, before
+it is written:
+
+```python
+ViSta("input_list.txt").run("stack.zarr", central_freq=345.7959899e9,
+                            line=line, continuum=ContinuumConfig(order=0),
+                            stats_line="line_stats.npy",
+                            stats_continuum="cont_stats.npy")
+```
+
+The stack and the statistics are those of the separate steps (the columns bit
+for bit; the statistics bit for bit on Zarr, to 1e-15 on an MS), and the
+stack is read once instead of three times. `DATA` is kept: after a look at
+the profile the subtraction can be redone with another window
+(`subtract_continuum`, or `run_vista.sh --skip-stack ...`) and the statistics
+recomputed, without stacking again. The parameters of every subtraction are
+recorded in the stack and in the statistics, and a new one says which it
+replaces.
+
+A good sequence when the line window is uncertain:
+
+1. stack in one pass with a generous window (`v_window_kms`), e.g. ±1.5 times
+   the expected width;
+2. look at `<prefix>_profile.png`: the residuals in the channels used for the
+   continuum must be noise (the `±1σ` band, `line_free_rms_over_noise` ≈ 1);
+3. if another line, or a wing, sits there, add it to `exclude_v_kms` (or
+   `second_rest_freq_ghz` if you know what it is: an identified line is
+   safer than an interval chosen by eye, which can bias the result), and redo
+   steps 2-3 on the stack.
+
+## Measuring the line (`measure_line`, `--method joint`)
+
+`measure_line` fits all channels and annuli of the stacked cube at once with
+
+    Re V(c, b) = F φ_c(v₀, FWHM) g(b; θ)   [+ F₂ φ₂_c g] [+ C g]
+
+φ a Gaussian of unit integral averaged over the channel, g the visibility of a
+circular Gaussian (1 for a point source), by weighted least squares with the
+noise measured from the data, the correlation between channels entering every
+error (it is not inverted: Hanning smoothing makes it singular). Every
+quantity — flux F, peak, centre, FWHM, size — comes from the same fit and has
+its error from the same covariance; the bootstrap over the sources adds the
+population scatter.
+
+Compared with the chain of Sec. 5.3 (shape on the spectrum averaged over the
+annuli, amplitude annulus by annulus, uv fit), it uses all the information at
+once, with the right weights: the spectrum averaged over the annuli is
+dominated by the long baselines, where a resolved source has the least
+signal, so the shape was measured on its noisiest version.
+
+### The noise
+
+The compression stores, for every cell, `Σw Re²` and `Σw Im²` too, so the
+scatter of the visibilities inside the cell gives its variance directly:
+
+    Σw (x − x̄)² = Σw x² − (Σw x)² / Σw,   E[·] = (N − 1) κ²
+
+κ is the factor by which the weights misjudge the noise. It is measured for
+every entry (`kappa_per_entry`: an MS with wrong weights stands out) and every
+channel (atmospheric lines, which a `WEIGHT` per row ignores). A visibility
+has S/N far below 1, so the signal does not inflate it. Three more estimates
+check it, all expected to be 1 in the results:
+
+| Key | Estimate | Off 1 means |
+|-----|----------|-------------|
+| `kappa_scatter_over_weights` | scatter / weights | the weights are not absolute (not an error: the scatter is used) |
+| `imaginary_rms_over_noise` | Im of the stacked cells / noise | sources not centred, asymmetric, or phase errors |
+| `line_free_rms_over_noise` | Re in the line-free channels / noise (after a subtraction) | residual continuum, baseline ripples, an unmasked line |
+| `bootstrap_over_thermal` (in `line`) | bootstrap / thermal error of F | > 1: scatter of the population (or systematics); < 1 with few sources: the bootstrap underestimates |
+
+The correlation of the noise between channels is measured as a whole matrix
+from the imaginary part of every source in every annulus (one noise vector
+each, with the spectral response and the continuum subtraction of the real
+part, and no line) and used in every error. It has two parts: the spectral
+response and the rebinning (Hanning smoothing gives +0.67 at lag 1, +0.17 at
+lag 2), and the continuum subtraction, whose fitted level is noisy and shared
+by all the channels of a row — a correlation at every lag, about 1 / (the
+effective number of fit channels), which on a narrow band can double the
+error of a flux summed over the line (`channel_correlation_far_in_line_window`
+gives it). `channel_correlation` summarises the first lags,
+`channel_correlation_method` says how it was obtained (with fewer than 30
+noise vectors, a model of the first lags only).
+
+### Detection and significance
+
+| | `mode="detect"` | `mode="search"` (default) |
+|---|---|---|
+| centre, width | fixed (`v0_kms`, `fwhm_kms`) | free in the line window |
+| flux | matched filter: linear, unbiased | from the free fit |
+| significance | its S/N | the best S/N of the search, calibrated on the same search run on noise (`p_value`, `significance_sigma`, `n_effective_trials`) |
+| use it | a weak line whose width is known from elsewhere | the line is clear, or its width is unknown |
+
+In a search, the fit always finds a bump: `F / σ_F` is the precision of the
+flux, not the evidence that the line exists. That is `significance_sigma`.
+Two more checks: `snr_imaginary` (the imaginary part through the same
+filter: ≈ 0) and `p_value_phase_null` (the search on stacks with a random
+phase per source, which keeps the noise and scrambles the signal; it needs a
+few tens of sources).
+
+### Profile, window flux, size
+
+- `<prefix>_profile.txt` / `.png`: flux density at zero spacing per channel
+  (for a point source the noise-weighted mean over the annuli; for a resolved
+  one each annulus is corrected for the resolution first), with the thermal
+  and bootstrap errors, the imaginary part and the model. Its integral is the
+  line flux. Plot it rebinned with `--plot-rebin N`.
+- `window`: the sum of the profile in the line window (model independent,
+  defined in advance, so unbiased) and in 1.19 FWHM around the fitted centre
+  (the best S/N for a Gaussian, 84% of the flux; defined on the data). Their
+  errors include the correlation between channels.
+- resolved sources: the detection scan includes Gaussian templates (0.5, 1
+  and 2 times the size that halves the visibility at the median baseline),
+  since a point template collects only part of their signal; the model is
+  averaged over each annulus rather than taken at its mean baseline; the
+  window flux includes the uncertainty of the size.
+- with `size="auto"` the flux, the profile and the window fluxes are the
+  average of the point and the Gaussian fit, with Akaike weights
+  (`size_test.weight_gauss`), and the spread between the two is in the error:
+  a weak or barely resolved stack does not tell its size, and its total flux
+  depends on it. For a weak resolved line give a size from elsewhere,
+  `theta_prior_arcsec=(θ_ref, σ_dex)` (`--theta-prior`, `--theta-prior-from`),
+  e.g. the continuum size of the same sources.
+- `size_test`: χ² of a point and of a Gaussian source; with `size="auto"` the
+  Gaussian is adopted only if it improves χ² by 9 or more (3σ). At low S/N a free
+  size scatters high and drags the extrapolated flux with it. The fits weight
+  the cells by their noise alone, so their χ² treats correlated channels as
+  independent: the difference is divided by `correlation_factor`, the
+  variance of the data along the direction that only the Gaussian can follow
+  with the measured channel correlation, over the same without it (4-5 on
+  the ALMA simulations below, with Hanning smoothing and the continuum
+  subtraction; `delta_chi2_uncorrelated` is the raw difference). Without it
+  noise made 2 of 6 point sources look resolved at Δχ² = 15-21.
+
+### How well it works
+
+**Tested on simulations** with a known line (synthetic
+statistics built cell by cell as the compression builds them, 20 sources,
+weights wrong by κ = 1.3, channel correlation 0.3; 50-100 realisations per
+case). *Scatter* is the rms of the flux over the true flux, *coverage* the
+fraction of realisations whose quoted ±1σ contains the truth (ideal 0.68),
+*noise > 2σ* the fraction of pure-noise stacks with F/σ > 2 (ideal 0.023).
+
+| Method | noise > 2σ | weak (S/N ≈ 3): bias, scatter, coverage | medium (S/N ≈ 6): scatter, coverage | resolved (θ = 1″): bias |
+|---|---|---|---|---|
+| window ±600 (Sec. 5.3) | 0.07 | −6%, 0.62, 0.59 | 0.32, 0.55 | −61% |
+| template, point | 0.09 | −4%, 0.48, 0.65 | 0.24, 0.58 | −69% |
+| template, gauss (old default) | 0.03 | +128%, 9.0, 0.90 | 0.27, 0.92 | −4% |
+| joint, search | p < 0.05 in 2% | −11%, 0.53, 0.56 | 0.23, 0.73 | +4% |
+| **joint, detect** (width known) | 0.00 | −6%, **0.31**, 0.70 | **0.15**, 0.72 | +2% |
+| joint, window ±600 | 0.02 | −8%, 0.55, 0.65 | 0.29, 0.62 | +6% |
+
+The errors of the chain of Sec. 5.3 (bootstrap only) are too small for a
+point model (noise gives F/σ > 2 three to four times too often) and too large
+for a free Gaussian, whose flux also runs away at low S/N. The joint fit with
+a known width halves the scatter of the template method; a free search is
+reliable from about 4σ (below that its flux follows noise peaks, and the
+results warn). On whole Measurement Sets (8 simulated ALMA datasets,
+Hanning-smoothed noise, weights wrong by a factor 52, continuum subtracted on
+18 line-free channels, 16 noise realisations), the measured scatter of the
+flux is 71 against 69 quoted (detect) and 108 against 113 quoted (window);
+with only the first lags of the channel correlation, the quoted errors were
+50 and 70 — the continuum subtraction shares its noisy level between all the
+channels of a row.
+
+**Extended and non-ideal sources** (same simulations, the signal of every
+cell averaged over the baselines of its annulus; bias of the total flux and,
+in brackets, the coverage of the quoted ±1σ):
+
+| Case (S/N) | template, point | template, gauss (old default) | joint, detect | joint, search |
+|---|---|---|---|---|
+| Gaussian 1″, 40 sources (8) | −69% | −4% (0.66) | +3% (0.68) | +5% (0.68) |
+| the same, weak (4) | −64% | +18%, scatter 1.25 (0.77) | +8%, scatter 0.62 (0.83) | +10% (0.65) |
+| weak, size prior from elsewhere (±0.15 dex) | | | +4%, scatter 0.33 (0.65) | +1% (0.63) |
+| sizes from 0.5″ to 1.5″ (8) | −62% | −7% (0.66) | −7% (0.74) | −5% (0.72) |
+| point sources, 0.3″ position errors (8) | −54% | +16% (0.82) | +4% (0.82) | +9% (0.66) |
+| rotating disk, velocity gradient over 1″ (8) | −62% | −16% (0.58) | +1% (0.72) | −7% (0.64) |
+| exponential disk (8) | −68% | −10% (0.44) | −4% (0.62) | −1% (0.54) |
+| double-horn profile, point source (8) | 0% (0.66) | +4% (0.70) | +9% (0.60) | +3% (0.76) |
+| Gaussian 1″, bright (25) | −68% | 0% (0.57) | +1% (0.60) | +2% (0.60) |
+
+A point model loses 55-70% of the flux of anything extended — including point
+sources stacked with 0.3″ position errors, which add up to an extended stack.
+The joint fit recovers the total flux within a few per cent when the source is
+resolved at S/N ≳ 8 (also for an exponential disk or a rotating disk, which
+the Gaussian model does not describe exactly). For a weak resolved stack the
+total flux is uncertain, because the size is: the averaged model gives an
+honest, large error, and a size prior halves it. With a fixed Gaussian shape
+(`detect`), a double-horn profile comes out 9% high: there the window flux is
+the one to quote. On whole Measurement Sets with a 1″ source (8 datasets, 12
+noise realisations): F = 211 ± 18 against 213 true, size 0.95″ ± 0.24″, while
+the point-source flux is 78.
+
+These tables were made before the size test was corrected for the channel
+correlation (Sec. *Profile, window flux, size*). With the correlation of these
+simulations (0.3 at lag 1, a factor of about 1.6 on the χ² difference) the
+correction changes them within their noise — on 50 new realisations each,
+before → after: point source, bias +0.8% → −0.1%, scatter 0.21 → 0.20;
+Gaussian 1″ at S/N 8, +3.5% → +3.2%, coverage 0.68 → 0.70; a very weak 1″
+source (S/N ≈ 2), +15% → +9%, coverage 0.78 → 0.68. It matters with Hanning
+smoothing and a continuum subtraction, where the factor is 4-5 (below).
+
+### uv plane or image plane
+
+The same stacks measured both ways: 8 simulated ALMA datasets (43 antennas,
+baselines up to ~370 m, beam 1.06″ × 0.76″, Hanning-smoothed noise, weights
+wrong by 1.3), a line of 200 km/s FWHM, stacked in one pass; in the image
+plane, `tclean` of the stacked visibilities over the line window (±300 km/s,
+natural weighting, CLEAN to 2σ in a 4″ mask). Mean of measured / true flux
+and its scatter over 6 noise realisations per case (so the scatter is known to
+about ±30%):
+
+| Method | point source, S/N ≈ 6 | 1″ source, S/N ≈ 8 | 1″ source, S/N ≈ 5 |
+|---|---|---|---|
+| uv, joint fit, detect | 1.09 ± 0.16 | **1.05 ± 0.12** | 1.16 ± 0.29 |
+| uv, joint fit, search | 1.20 ± 0.28 | 1.04 ± 0.14 | 1.12 ± 0.35 |
+| uv, window ±300 km/s | 1.20 ± 0.26 | 0.99 ± 0.17 | 1.09 ± 0.41 |
+| uv, point-source fit only | **1.00 ± 0.12** | 0.44 ± 0.05 | 0.48 ± 0.11 |
+| image, dirty peak | 1.11 ± 0.17 | 0.42 ± 0.07 | 0.52 ± 0.14 |
+| image, aperture 1″ / 2″ / 3″ | 1.14 / 0.77 / 0.82 ± 0.37 / 0.63 / 0.78 | 0.74 / 1.09 / 0.87 ± 0.10 / 0.25 / 0.67 | 0.87 / 0.89 / 0.43 ± 0.35 / 0.63 / 1.41 |
+| image, aperture 2″, JvM-corrected | 0.78 ± 0.52 | 0.95 ± 0.22 | 0.76 ± 0.57 |
+| image, CLEAN model total | 0.58 ± 0.23 | 0.39 ± 0.40 | −0.03 ± 0.67 |
+| image, `imfit` Gaussian | 1.41 ± 1.05 | 1.20 ± 0.25 | 4.2 ± 3.1 (2 of 6 failed) |
+
+- **Point source**: the two planes measure the same thing. With natural
+  weighting the dirty image at the source position is the weighted mean of
+  the real part of the visibilities, i.e. the uv point-source flux (on a
+  noiseless stack: 209 against 212). The point-source fit has the smaller
+  scatter only because it weights the channels with the line shape instead
+  of averaging a ±300 km/s window, which a fit of the spectrum of the peak
+  pixel in a cube would do as well. With `size="auto"` the joint fit does
+  not know that the source is unresolved and averages in a Gaussian fitted
+  to the noise, which costs scatter (0.16 against 0.12; the +9% here is
+  within the noise of 6 runs: on 50 simulated point sources the bias is
+  0.0% ± 3%). If the source is known to be unresolved, `size="point"`.
+- **Resolved source**: the peak and the point-source flux lose 55-60%; in the
+  image the total flux needs an aperture, and the result depends on it
+  (1″ loses a quarter, 3″ is dominated by noise; the dirty-beam wings make
+  the raw aperture sum high, the JvM correction brings it back). CLEAN to 2σ
+  of a stack at S/N 5-8 leaves most of the flux in the residual. The joint
+  uv fit has no aperture to choose and half the scatter of the best image
+  method.
+- **Weak resolved source**: every total flux is uncertain because the size
+  is; the uv fit gives the honest error, `imfit` fails or runs away. A size
+  from elsewhere (`theta_prior_arcsec`) is the way to tighten it.
+
+This agrees with Lindroos et al. (2015, MNRAS 446, 3502), who find
+uv-stacking more robust than image stacking, with better size estimates.
+The image is still the place to look at the source: a cube of the stacked
+visibilities (`export_ms`, then `tclean`) shows where the emission is and
+whether it is symmetric, which the uv fit assumes.
+
+### Output files and figures
+
+With `output_prefix` (or `--output`), `measure_line` writes:
+
+| File | Content |
+|------|---------|
+| `<prefix>_results.json` | every number: `line`, `detection`, `window`, `size_test`, `noise`, the `contsub` record |
+| `<prefix>_profile.txt` | per channel: `v_kms freq_GHz flux_density err_thermal err_bootstrap imaginary model fitted line_free n_sources` |
+| `<prefix>_uvamp.txt` | per annulus: `b_klambda line_flux err_thermal used n_sources` (line flux at the fitted line shape) |
+| `<prefix>_noise.txt` | per channel: noise of the profile from the scatter of the visibilities and from the weights |
+| `<prefix>_diagnostics.npz` | `channel_correlation` (the matrix), `z_imaginary`, `z_line_free` (cells over their noise), `null_snr`, `null_snr_phase` (null distributions of the detection S/N) |
+
+`--plot` makes `_profile.png`, `_uv.png`, `_noise.png` (`plots_line.py`).
+**To make them in your own style**, `examples/plot_line.py` draws the same
+three figures from these files alone, with only numpy and matplotlib (it does
+not import ViSta, so it can be copied next to the paper):
+
+    python examples/plot_line.py <prefix> --unit Jy --rebin 2 --vlim -800 800 --format pdf
+    python examples/plot_line.py <prefix> --style thesis.mplstyle --only profile
+
+Colours, line styles, sizes and fonts are in the `STYLE` dictionary at the top
+(or in a matplotlib style file, `--style`, applied on top); each figure is one
+function (`plot_profile`, `plot_uv`, `plot_noise`) that returns the
+matplotlib figure, commented on what every element is and how it is computed —
+e.g. the rebinned errors use the channel correlation matrix,
+`var(mean) = Σᵢⱼ Rᵢⱼ σᵢ σⱼ / n²`, not `σ / √n`. From Python:
+
+    import plot_line as pl
+    pl.STYLE["model"]["color"] = "C2"
+    pl.apply_style()
+    fig = pl.plot_profile(pl.load("<prefix>"), unit="Jy", rebin=2)
+    fig.axes[0].set_ylim(-3, 6); fig.savefig("line.pdf")
+
+Without `_diagnostics.npz` (outputs of earlier runs) the noise histograms are
+replaced by the rms values of the JSON and the rebinned errors ignore the
+correlation.
+
+With `n_null=0` and more than one template (a search, or a size scan in
+`detect`), the p-value is a Bonferroni bound over the templates
+(`p_value_method`): conservative, no simulation needed.
 
 ## What to choose
 
@@ -238,7 +538,7 @@ difference is itself informative about the depth distribution of the sample.
 | `require_positive_slope` | `True` | With `order=-1`, accept order 1 only for a rising continuum |
 | `exclude_kms_lo/hi` | the line window | Widen or skew the mask where a neighbouring line or feature falls inside the fitted range |
 | `exclude_v_kms` | `()` | Extra intervals, e.g. a known absorption feature |
-| `chunk_rows` | `50 000` | Lower it if memory is tight |
+| `chunk_rows` | `50 000` | Rows read at a time from an MS, at most; fewer for wide spectra (about 256 MB per chunk). A Zarr store is read by its own chunks |
 
 ### Radial binning
 
@@ -343,3 +643,17 @@ continuum; the flux normalisation rescales them by `norm_ref / NORM`.
 | `n_bootstrap_failed` | Realisations whose fit did not converge; a large fraction makes the quoted errors unreliable |
 | `flux_point_source` vs `flux_total` | A large ratio between the two is the signature of a resolved source |
 | `n_sources` vs `n_entries` | How many lines of the input list were merged into physical sources: check it matches what you expect, and raise or lower `match_tol_arcsec` if not |
+
+With `measure_line` (`--method joint`):
+
+| Key | What it tells you |
+|-----|-------------------|
+| `detection.significance_sigma`, `p_value` | Is there a line at all. In a search, this — not `F / σ_F` — is the evidence |
+| `noise.imaginary_rms_over_noise`, `line_free_rms_over_noise` | ≈ 1. Above: centring, calibration, residual continuum or an unmasked line; the thermal errors are optimistic there |
+| `noise.kappa_per_entry` | One entry far from the others: its weights are off (harmless, the scatter is used) or its data are bad |
+| `noise.channel_correlation_method` | Whether the whole correlation matrix was measured (needs ≥ 30 source × annulus vectors) |
+| `line.bootstrap_over_thermal` | ≈ 1 for a uniform population; > 1 the population scatters (or systematics); < 1 with few sources |
+| `detection.snr_imaginary` | The imaginary part through the line filter: ≈ 0 |
+| `size_test` | Point against Gaussian: Δχ² and both fluxes |
+| `line.chi2_reduced` | ≈ 1; much larger: the model (one Gaussian, separable in velocity and baseline) does not describe the data |
+| `warnings` | e.g. a weak line in a search, whose free-shape flux is unreliable |

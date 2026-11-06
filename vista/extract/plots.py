@@ -43,8 +43,11 @@ _MODEL_COLOUR = "k"
 
 
 def _pyplot(save: bool):
+    """pyplot; to save files, on the Agg backend unless inside IPython/Jupyter,
+    whose inline display a backend switch would turn off."""
+    import sys
     import matplotlib
-    if save:
+    if save and "IPython" not in sys.modules:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     return plt

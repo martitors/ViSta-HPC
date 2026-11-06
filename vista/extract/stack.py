@@ -23,6 +23,7 @@ applied to the imaginary part is verified to be consistent with zero.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -47,7 +48,7 @@ from .uvfit import UVFitResult, fit_uv_profile, gaussian_visibility
 class StackInput:
     """Statistics of the selected sources, ready to be stacked."""
 
-    sums: np.ndarray                  # (n_src, nchan, nbins, 5)
+    sums: np.ndarray                  # (n_src, nchan, nbins, 7) (5: format 3)
     factors: np.ndarray               # (n_src,) amplitude normalisation
     coordinates: List[tuple]          # (n_src,) (RA, Dec) in degrees
     redshifts: np.ndarray
@@ -56,6 +57,15 @@ class StackInput:
     n_entries: int = 0
     z_ref: Optional[float] = None
     norm_ref: Optional[float] = None
+    # noise (vista.extract.noise): per-source variance accumulators of the
+    # real part, from the scatter inside the cells and from the weights alone
+    variance: Optional[np.ndarray] = None            # (n_src, nchan, nbins)
+    variance_weights: Optional[np.ndarray] = None    # (n_src, nchan, nbins)
+    kappa2_entries: Dict[int, float] = field(default_factory=dict)
+    dof_entries: Dict[int, float] = field(default_factory=dict)
+    kappa2_channel: Optional[np.ndarray] = None      # (nchan,) all entries
+    has_scatter: bool = False
+    meta: dict = field(default_factory=dict)         # of the statistics file
 
     @property
     def n_sources(self) -> int:
@@ -122,19 +132,38 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
             _warn("extraction: no primary beam values in the statistics "
                   "file (compressed with an older version): not corrected")
 
+    from .noise import entry_variance
+
+    has_scatter = stats.has_scatter
     stacked, shapes = [], set()
+    variances, variances_w = [], []
+    kappa2, dofs = {}, {}
+    d_all = dof_all = None
     for k in keep:
-        total = None
+        total = var_total = varw_total = None
         for entry in groups[k]:
-            block = np.asarray(stats.sums[entry.dd], dtype=np.float64)
+            raw = np.asarray(stats.sums[entry.dd], dtype=np.float64)
             gain = float(pb_gain.get(entry.dd, 1.0))
-            if weighting.primary_beam and gain > 0 and gain != 1.0:
-                block = block.copy()
+            applied = weighting.primary_beam and gain > 0 and gain != 1.0
+            block = raw
+            if applied:
+                block = raw.copy()
                 block[..., 0:2] *= gain          # sum w Re, sum w Im
                 block[..., 2:4] *= gain * gain   # sum w, sum w b
+                # sum w Re^2, sum w Im^2: unchanged (w A^2 (Re / A)^2)
+            var, k2_e, dof, d_c, dof_c = entry_variance(raw, gain if applied else 1.0,
+                                                        use_scatter=has_scatter)
+            kappa2[entry.dd], dofs[entry.dd] = k2_e, dof
+            d_all = d_c if d_all is None else d_all + d_c
+            dof_all = dof_c if dof_all is None else dof_all + dof_c
             shapes.add(block.shape)
             total = block.copy() if total is None else total + block
+            var_total = var if var_total is None else var_total + var
+            w_corr = block[..., 2]
+            varw_total = w_corr.copy() if varw_total is None else varw_total + w_corr
         stacked.append(total)
+        variances.append(var_total)
+        variances_w.append(varw_total)
     if len(shapes) > 1:
         raise ValueError(f"the statistics were compressed on different grids: "
                          f"shapes {sorted(shapes)}")
@@ -144,6 +173,9 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
          f"({n_multi} observed more than once), {weighting.scheme} weighting, "
          f"flux normalisation {'on' if norm_ref else 'off'}", verbose)
 
+    with np.errstate(invalid="ignore", divide="ignore"):
+        k2_channel = (np.where(dof_all > 0, d_all / np.maximum(dof_all, 1), np.nan)
+                      if has_scatter else None)
     return StackInput(
         sums=np.stack(stacked),
         factors=factors[keep],
@@ -151,7 +183,10 @@ def build_stack_input(statistics: Union[str, SufficientStatistics],
         redshifts=np.array([groups[k][0].z for k in keep], dtype=float),
         freq_grid=np.asarray(stats.freq_grid, dtype=float),
         bin_edges_lambda=np.asarray(stats.bin_edges_lambda, dtype=float),
-        n_entries=len(available), z_ref=z_ref, norm_ref=norm_ref)
+        n_entries=len(available), z_ref=z_ref, norm_ref=norm_ref,
+        variance=np.stack(variances), variance_weights=np.stack(variances_w),
+        kappa2_entries=kappa2, dof_entries=dofs, kappa2_channel=k2_channel,
+        has_scatter=has_scatter, meta=dict(stats.meta or {}))
 
 
 def combine(sums, factors, multiplicity=None, renormalise=True):
@@ -388,8 +423,9 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
     real, imaginary, weight, mean_b = combine(sums, factors,
                                               renormalise=renormalise)
     per_channel = sources_per_channel(sums)
-    baseline = (np.nansum(mean_b * weight, axis=0)
-                / np.nansum(weight, axis=0))
+    with np.errstate(invalid="ignore", divide="ignore"):    # empty annuli: NaN
+        baseline = (np.nansum(mean_b * weight, axis=0)
+                    / np.nansum(weight, axis=0))
     spectrum = integrated_spectrum(real, weight)
     velocity = line.velocity(freq)
 
@@ -492,8 +528,10 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
 
     boot_flux = np.asarray(boot_flux)
     boot_spectrum = np.asarray(boot_spectrum)
-    flux_error = np.nanstd(boot_flux, axis=0)
-    spectrum_error = np.nanstd(boot_spectrum, axis=0)
+    with warnings.catch_warnings():              # empty annuli / channels: NaN
+        warnings.simplefilter("ignore", RuntimeWarning)
+        flux_error = np.nanstd(boot_flux, axis=0)
+        spectrum_error = np.nanstd(boot_spectrum, axis=0)
 
     def apply_floor(errors, mask):
         usable = np.isfinite(errors) & (errors > 0) & mask

@@ -10,21 +10,26 @@ on the command line::
                              --v-window -800 800 --continuum joint
 
 The three ways of handling the continuum are shown in turn; pick the one that
-matches your data with ``--continuum``. The shell driver ``run_vista.sh`` does
+matches your data with ``--continuum``.  With ``--skip-stack`` the continuum
+subtraction and the compression are redone on the existing stack, e.g. after
+widening ``--v-window`` because the profile showed a line in the continuum
+channels. The shell driver ``run_vista.sh`` does
 the same thing from the command line, with more options.
 
-Stacking and the two MS-reading steps need ``casatools``/``ms_ops``; the
-extraction itself only needs numpy and scipy, so it can be repeated cheaply.
+Stacking and the two steps that read the stack need the compiled kernel
+``ms_ops`` (and ``zarr`` / ``python-casacore``); the extraction itself only
+needs numpy and scipy, so it can be repeated cheaply.
 """
 
 import argparse
 
 from vista import ViSta
 from vista.extract import (BinningConfig, BootstrapConfig, ContinuumConfig,
-                           LineConfig, ProfileConfig, UVFitConfig,
-                           WeightingConfig, compress_visibilities,
-                           extract_flux, subtract_continuum)
+                           LineConfig, LineFitConfig, ProfileConfig, UVFitConfig,
+                           WeightingConfig, compress_visibilities, extract_flux,
+                           measure_line, subtract_continuum)
 from vista.extract.plots import plot_all
+from vista.extract.plots_line import plot_line_result
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--input", default="input_list.txt",
@@ -37,11 +42,17 @@ parser.add_argument("--continuum", default="subtract",
                     choices=["subtract", "joint", "none"])
 parser.add_argument("--weighting", default="democratic",
                     choices=["democratic", "natural"])
+parser.add_argument("--fwhm", type=float, default=None,
+                    help="line FWHM known in advance [km/s]: the line is then "
+                         "measured with a matched filter (mode='detect')")
 parser.add_argument("--tag", default="stack", help="prefix of every output")
-parser.add_argument("--skip-stack", action="store_true")
+parser.add_argument("--skip-stack", action="store_true",
+                    help="the stack exists: redo the subtraction (with the "
+                         "current window) and the compression on it")
 args = parser.parse_args()
 
-MS = f"stacked_{args.tag}.ms"
+MS = f"stacked_{args.tag}.zarr"   # the stack (vista.export_ms() for an MS)
+STATS_LINE, STATS_CONT = f"{args.tag}_line_stats.npy", f"{args.tag}_cont_stats.npy"
 
 # ---------------------------------------------------------------------------
 # spectral setup: the one thing the code cannot guess
@@ -52,85 +63,66 @@ line = LineConfig(rest_freq_ghz=args.rest_freq,
 weighting = WeightingConfig(scheme=args.weighting, redshift_rescaling=True)
 bootstrap = BootstrapConfig(n_realisations=500, seed=42)
 binning = BinningConfig(b_min_klambda=3.0, b_max_klambda=3000.0, n_bins=18)
+subtract = args.continuum == "subtract"
+contsub = ContinuumConfig(order=0,                 # -1 for the BIC
+                          exclude_kms=max(abs(v) for v in args.v_window))
 
 # ---------------------------------------------------------------------------
-# 1. stacking
+# 1-3. stacking, with the continuum subtraction and the compression in the
+#      same pass (the stack keeps DATA, so 2-3 can be redone later on it)
 # ---------------------------------------------------------------------------
 if not args.skip_stack:
     ViSta(input_file=args.input, chunk_rows=5000, verbose=True).run(
-        ms_out=MS,
-        central_freq=line.rest_freq_hz,
-        velocity_range_kms=2000.0)
-
-# ===========================================================================
-# 2-4.  the continuum decides the rest
-# ===========================================================================
-if args.continuum == "subtract":
-    # ---- remove it first, then two independent fits -----------------------
-    subtract_continuum(MS, line, ContinuumConfig(order=0))   # -1 for the BIC
-
+        output=MS, central_freq=line.rest_freq_hz, velocity_range_kms=2000.0,
+        line=line, continuum=contsub if subtract else None,
+        stats_line=STATS_LINE, stats_continuum=STATS_CONT if subtract else None,
+        binning=binning, max_amplitude=20.0)
+else:
+    if subtract:
+        subtract_continuum(MS, line, contsub)
     compress_visibilities(MS, args.input, line, binning=binning,
-                          line_column="CORRECTED_DATA",
-                          continuum_column="MODEL_DATA",
-                          out_line=f"{args.tag}_line_stats.npy",
-                          out_continuum=f"{args.tag}_cont_stats.npy",
-                          max_amplitude=20.0)
+                          line_column="CORRECTED_DATA" if subtract else "DATA",
+                          out_line=STATS_LINE,
+                          out_continuum=STATS_CONT if subtract else None,
+                          max_amplitude=20.0, resume=False)
 
-    # the continuum first: its size then serves as a prior on the line size
+# ---------------------------------------------------------------------------
+# 4. the line: one fit of all channels and annuli, noise from the data
+# ---------------------------------------------------------------------------
+fit = (LineFitConfig(mode="detect", v0_kms=0.0, fwhm_kms=args.fwhm)
+       if args.fwhm else LineFitConfig(mode="search"))
+fit.continuum = args.continuum == "joint"
+result = measure_line(STATS_LINE, args.input, line, weighting, fit, bootstrap,
+                      output_prefix=f"{args.tag}_line")
+plot_line_result(result, line, f"{args.tag}_line", unit="Jy", rebin=1)
+# the same figures in your own style, from the files just written:
+#   python examples/plot_line.py <tag>_line --unit Jy --rebin 2 --format pdf
+
+s = result.summary
+print(f"F = {s['line']['flux']:.4g} +- {s['line']['flux_error']:.3g} Jy km/s   "
+      f"peak {s['line']['peak']:.3g} Jy   FWHM {s['line']['fwhm_kms']:.0f} km/s   "
+      f"size {s['line']['size_model']}")
+print(f"detection: {s['detection']['significance_sigma']:.1f} sigma   noise: "
+      f"kappa {s['noise']['kappa_scatter_over_weights']:.2f}, imaginary "
+      f"{s['noise'].get('imaginary_rms_over_noise', float('nan')):.2f} x the noise")
+
+# the continuum, from MODEL_DATA, with the chain of Sec. 5.3
+if subtract:
     continuum = extract_flux(
-        f"{args.tag}_cont_stats.npy", args.input, line,
+        STATS_CONT, args.input, line,
         weighting=weighting, profile=ProfileConfig(method="continuum"),
         bootstrap=bootstrap, output_prefix=f"{args.tag}_continuum")
     plot_all(continuum, line, f"{args.tag}_continuum", unit="Jy")
 
-    result = extract_flux(
-        f"{args.tag}_line_stats.npy", args.input, line,
-        weighting=weighting, profile=ProfileConfig(method="template"),
-        uvfit=UVFitConfig(model="gauss", min_sources_per_bin=3,
-                          theta_prior=(continuum.summary["theta_fwhm_arcsec"],
-                                       0.15)),
-        bootstrap=bootstrap, output_prefix=f"{args.tag}_line")
-    plot_all(result, line, f"{args.tag}_line", unit="Jy")
-
-else:
-    # ---- nothing subtracted: read DATA ------------------------------------
-    compress_visibilities(MS, args.input, line, binning=binning,
-                          line_column="DATA",
-                          out_line=f"{args.tag}_line_stats.npy",
-                          max_amplitude=20.0)
-
-    profile = ProfileConfig(method="template",
-                            joint_continuum=args.continuum == "joint")
-    result = extract_flux(
-        f"{args.tag}_line_stats.npy", args.input, line,
-        weighting=weighting, profile=profile,
-        uvfit=UVFitConfig(model="gauss", min_sources_per_bin=3),
-        bootstrap=bootstrap,
-        output_prefix=f"{args.tag}_joint" if profile.joint_continuum
-        else f"{args.tag}_line")
-    plot_all(result, line,
-             f"{args.tag}_joint" if profile.joint_continuum
-             else f"{args.tag}_line", unit="Jy")
-
-summary = result.summary
-print(f"F = {summary['flux_total']:.4g} +- {summary['flux_total_error']:.3g}   "
-      f"theta = {summary['theta_fwhm_arcsec']:.3f}\"")
-if "continuum" in summary:
-    block = summary["continuum"]
-    print(f"continuum S = {block['flux_total']:.4g} "
-          f"+- {block['flux_total_error']:.3g}   "
-          f"theta = {block['theta_fwhm_arcsec']:.3f}\"")
-
 # ---------------------------------------------------------------------------
 # tests worth running before believing any of the above
 # ---------------------------------------------------------------------------
-# is the stack actually resolved?  compare with a point-source model
-extract_flux(f"{args.tag}_line_stats.npy", args.input, line,
-             weighting=weighting, uvfit=UVFitConfig(model="point"),
-             output_prefix=f"{args.tag}_point")
+# the chain of Sec. 5.3 on the same statistics
+extract_flux(STATS_LINE, args.input, line, weighting=weighting,
+             profile=ProfileConfig(method="template", joint_continuum=fit.continuum),
+             uvfit=UVFitConfig(model="point"), output_prefix=f"{args.tag}_template")
 
 # does the other weighting scheme give the same answer?
 other = "natural" if args.weighting == "democratic" else "democratic"
-extract_flux(f"{args.tag}_line_stats.npy", args.input, line,
-             weighting=WeightingConfig(scheme=other),
-             output_prefix=f"{args.tag}_{other}")
+measure_line(STATS_LINE, args.input, line, WeightingConfig(scheme=other), fit,
+             bootstrap, output_prefix=f"{args.tag}_{other}")

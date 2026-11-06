@@ -239,6 +239,8 @@ VISTA_HD inline void vista_process_channel_t(
             if (flag_in_row[idx + c]) continue;
             const double vr = (double)vis_in_row[2*(idx + c)];
             const double vi = (double)vis_in_row[2*(idx + c) + 1];
+            // NaN / Inf: treated as flagged, as on the CPU (x - x != 0)
+            if (!(vr - vr == 0.0) || !(vi - vi == 0.0)) continue;
             ar[c] += (vr*cs - vi*sn) * wk;
             ai[c] += (vr*sn + vi*cs) * wk;
             ws[c] += wk;

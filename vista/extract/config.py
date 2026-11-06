@@ -237,6 +237,120 @@ class ProfileConfig:
 
 
 # ---------------------------------------------------------------------------
+# the joint fit of the whole cube  (vista.extract.measure)
+# ---------------------------------------------------------------------------
+@dataclass
+class LineFitConfig:
+    """The line fitted on all channels and annuli at once.
+
+    Parameters
+    ----------
+    mode
+        ``'search'`` (default): centre and width free within their ranges;
+        the significance accounts for that freedom (null realisations of the
+        same search on noise).
+        ``'detect'``: centre and width fixed to ``v0_kms`` and ``fwhm_kms``,
+        known in advance (e.g. from another tracer of the same sources).
+        The flux is then a matched filter: linear, unbiased, and its S/N is
+        the significance.  The right choice for a weak line.
+    v0_kms, fwhm_kms
+        Centre and FWHM: fixed in ``'detect'``, starting values in
+        ``'search'`` (``fwhm_kms`` None: from the scan).
+    v0_range_kms
+        Allowed centres in ``'search'``.  None: the line window
+        (``LineConfig.v_window_kms``) shrunk by half the smallest width.
+    fwhm_range_kms
+        Allowed FWHM in ``'search'``.  None: two channels to the width of
+        the line window.
+    size
+        ``'auto'`` (default): a Gaussian source only if it improves the
+        chi square by at least ``resolved_delta_chi2`` over a point source,
+        otherwise a point source; ``'point'``; ``'gauss'``.  A free size at
+        low S/N is biased high and drags the total flux up with it.
+    theta_fixed_arcsec
+        Freeze the size (FWHM) to this value instead.
+    theta_max_arcsec
+        Upper bound of the size.
+    theta_prior_arcsec
+        ``(theta_ref, sigma_dex)``: soft tie of the size to a reference
+        value, e.g. the continuum size of the same sources: a Gaussian
+        source whose size pays ``log10(theta / theta_ref) / sigma_dex`` in
+        the chi square.  For a weak resolved line, whose own data barely
+        constrain the size (and so its total flux), this is the way to a
+        meaningful total flux.
+    resolved_delta_chi2
+        Improvement of the chi square needed to call the stack resolved
+        (9: a 3 sigma preference; with 4, noise made a point source look
+        resolved in about 1 stack out of 20 at low S/N, with a flux
+        extrapolated far too high).
+    continuum
+        Fit a continuum term (constant in frequency, same size as the line)
+        together with the line: for statistics of a stack that was not
+        continuum subtracted.
+    shape_tie
+        With a second line (``LineConfig.second_rest_freq_ghz``): ``'free'``,
+        ``'centroid'`` or ``'centroid+width'`` (the second line shares the
+        centre, and the width, of the first).
+    fit_span_kms
+        Channels farther than this from the line centre are not fitted.
+    min_sources_per_bin
+        Annuli with fewer contributing sources are left out (min 2, or 1 for
+        a single source).
+    noise
+        ``'scatter'`` (default): the variance of each cell from the scatter of
+        its visibilities (statistics of format 4; the weights only for older
+        files, with a warning).  ``'weights'``: from the weights alone.
+    channel_correlation
+        Measure the correlation of the noise between adjacent channels and
+        use it (fit, window fluxes); ``False`` assumes independent channels.
+    n_null
+        Realisations of the search on noise, for its significance.
+    n_null_phase
+        Data-driven null: the search on stacks whose sources are given a
+        random phase (Re' = Re cos phi - Im sin phi): same noise, the signal
+        averages out.  0 to skip.  Needs a few tens of sources to be clean.
+    window_kms
+        Window of the model-independent flux (sum of the spectrum).  None:
+        the line window ``LineConfig.v_window_kms``.  The flux in the window
+        of 1.19 FWHM around the fitted centre (the best S/N for a Gaussian)
+        is given too.
+    """
+
+    mode: str = "search"
+    v0_kms: float = 0.0
+    fwhm_kms: Optional[float] = None
+    v0_range_kms: Optional[Tuple[float, float]] = None
+    fwhm_range_kms: Optional[Tuple[float, float]] = None
+    size: str = "auto"
+    theta_fixed_arcsec: Optional[float] = None
+    theta_max_arcsec: float = 15.0
+    theta_prior_arcsec: Optional[Tuple[float, float]] = None
+    resolved_delta_chi2: float = 9.0
+    continuum: bool = False
+    shape_tie: str = "free"
+    fit_span_kms: float = 1500.0
+    min_sources_per_bin: int = 2
+    noise: str = "scatter"
+    channel_correlation: bool = True
+    n_null: int = 1000
+    n_null_phase: int = 200
+    window_kms: Optional[Tuple[float, float]] = None
+
+    def __post_init__(self):
+        if self.mode not in ("search", "detect"):
+            raise ValueError(f"mode must be 'search' or 'detect', got {self.mode!r}")
+        if self.mode == "detect" and self.fwhm_kms is None:
+            raise ValueError("mode='detect' needs fwhm_kms (and v0_kms): the shape is "
+                             "fixed in advance")
+        if self.size not in ("auto", "point", "gauss"):
+            raise ValueError(f"size must be 'auto', 'point' or 'gauss', got {self.size!r}")
+        if self.noise not in ("scatter", "weights"):
+            raise ValueError(f"noise must be 'scatter' or 'weights', got {self.noise!r}")
+        if self.shape_tie not in ("free", "centroid", "centroid+width"):
+            raise ValueError("shape_tie must be 'free', 'centroid' or 'centroid+width'")
+
+
+# ---------------------------------------------------------------------------
 # uv-plane source model  (Sec. 5.3.2, Eq. 33)
 # ---------------------------------------------------------------------------
 @dataclass
@@ -365,7 +479,14 @@ class ContinuumConfig:
         column where the continuum-subtracted visibilities are written.  The
         input column is never modified, so the step can be rerun.
     chunk_rows
-        Rows read per chunk: bounds the memory footprint on a large stack.
+        Rows read at a time from a Measurement Set, at most: fewer when the
+        spectra are wide, so that a chunk of the data column stays within
+        about 256 MB.  A Zarr store is read by its own chunks.
+    bic_rows
+        With ``order=-1``: the order of a spectral window is chosen on the
+        mean spectrum of its first ``bic_rows`` rows (high S/N, one small
+        read).  Fixed by rows rather than by chunks, so that the separate step
+        and the subtraction during the stacking choose the same order.
     """
 
     order: int = 0                      # 0 | 1 | -1 (BIC)
@@ -378,6 +499,7 @@ class ContinuumConfig:
     model_column: str = "MODEL_DATA"
     line_column: str = "CORRECTED_DATA"
     chunk_rows: int = 50_000
+    bic_rows: int = 5000
 
     def __post_init__(self):
         if self.order not in (-1, 0, 1):
@@ -385,5 +507,6 @@ class ContinuumConfig:
 
 
 __all__ = ["LineConfig", "BinningConfig", "WeightingConfig", "ProfileConfig",
+           "LineFitConfig",
            "UVFitConfig", "BootstrapConfig", "ContinuumConfig",
            "C_KMS", "C_MS", "ARCSEC_PER_RAD"]

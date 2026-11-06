@@ -1,9 +1,11 @@
 # ViSta input list
 # Format (one MS per line):
-#   <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_ID]
+#   <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_IDS]  [NORM]
 #
-# RA/Dec format: hh:mm:ss.s  or  dd:mm:ss.s
-# FIELD_ID and SPW_ID are optional (default: 0)
+# RA/Dec: position of the source, hh:mm:ss.s  and  dd:mm:ss.s
+# FIELD_ID is optional: without it every field is read (phase centre of field 0)
+# SPW_IDS is optional: comma-separated list, without it every SPW is used
+# NORM is optional and used only by vista.extract
 #
 # Example:
 /path/to/obs1.ms  2.310  12:34:56.7  +12:34:56.7

@@ -3,15 +3,22 @@
 # run_vista.sh — stack, post-process and extract, end to end
 #
 #   1. STACK     ViSta: rest-frame, re-centre, regrid and combine the input
-#                datasets into one Measurement Set
+#                datasets into one stack (Zarr store, or Measurement Set)
 #   2. CONTSUB   subtract the continuum, spectral window by spectral window
 #                (optional: skip it and fit line and continuum together)
-#   3. COMPRESS  compress the stacked MS into sufficient statistics
+#   3. COMPRESS  compress the stack into sufficient statistics
 #   4. FIT       extract the stacked flux and the source size in the uv plane
 #
 # Every step can be run on its own, so a failed or refined step does not force
-# the previous ones to be repeated.  Steps 1-3 touch the MS; step 4 works on a
+# the previous ones to be repeated.  Steps 1-3 touch the stack; step 4 works on a
 # few MB of statistics and is cheap to repeat.
+#
+# When the stack is built in the same run, steps 2 and 3 are done while it is
+# written, chunk by chunk (one pass over the data instead of three; same
+# stack, same statistics).  DATA is always kept, so after a look at the
+# spectrum the subtraction can be redone with another window without stacking
+# again:  --skip-stack --exclude LO HI (or --exclude-v ...).  --two-pass runs
+# the three steps one after the other instead.
 #
 # Usage
 #   ./run_vista.sh --input input_list.txt --rest-freq 345.7959899   # GHz
@@ -58,6 +65,7 @@ SKIP_STACK=0
 SKIP_CONTSUB=0              # the subtraction was already done: do not redo it
 SKIP_COMPRESS=0
 SKIP_FIT=0
+TWO_PASS=0                  # 1 = stack first, then contsub and compress (re-reading it)
 
 # --- 1. stacking -----------------------------------------------------------
 VELOCITY_RANGE=2000         # half-width of the output band, km/s ("" to use NCHAN)
@@ -65,14 +73,20 @@ NCHAN=""                    # fixed number of output channels, alternative
 WIDTH=""                    # common rest-frame channel width, Hz; empty =
                             # widest rest-framed channel of the sample
 CHUNK_ROWS=5000             # rows per chunk (bounds the memory in use)
-SCRATCH="${TMPDIR:-}"       # build the MS on fast local disk, then move it
+SCRATCH="${TMPDIR:-}"       # build the stack on fast local disk, then move it
 IN_COLUMN="auto"            # column read from each input MS: auto prefers
                             # CORRECTED_DATA, or name one (DATA, ...)
+FRAME=""                    # frame of the redshifts (LSRK, BARY): the inputs
+                            # are corrected to it row by row; empty = none
 DEVICE="cpu"                # cpu | gpu (needs a CUDA build of the kernel)
 READERS=2                   # reader processes
 THREADS=""                  # OpenMP threads; empty = OMP_NUM_THREADS or all cores
 GPU_BATCH=8                 # GPU: chunks per launch
 TIMING=0                    # 1 = log how long each stage took
+FORMAT="zarr"               # zarr (parallel writes, compressed) | ms
+WRITERS=4                   # zarr: threads writing the stack
+IO_THREADS=4                # zarr: threads reading/writing in contsub and compress
+EXPORT_MS=0                 # 1 = also write the stack as a Measurement Set at the end
 VERBOSE="true"              # true | debug
 
 # --- 2. continuum subtraction ---------------------------------------------
@@ -98,7 +112,13 @@ NORM_FLUX=0                 # rescale by norm_ref/NORM (last column of the list)
 NORMREF=""                  # that reference; empty = sample median
 ALREADY_NORMALISED=0        # the amplitudes on disk already carry alpha
 
-METHOD="template"           # template | window
+METHOD="joint"              # joint | template | window
+MODE="search"               # joint: search (centre and width free) | detect (fixed)
+V0=""                       # joint: line centre, km/s (detect: fixed; search: start)
+FWHM=""                     # joint: line FWHM, km/s (detect: required)
+SIZE="auto"                 # joint: auto | point | gauss
+NNULL=1000                  # joint: realisations of the search on noise
+PLOT_REBIN=1                # joint: channels per bin in the profile figure
 MODEL="gauss"               # gauss | point | gauss2
 THETA_MAX=15
 THETA_FIXED=""
@@ -135,11 +155,14 @@ Options
                                     after:  keep it and fit it together with
                                       the line, one fit and one figure
 
-  --skip-stack                    the stacked MS already exists
+  --skip-stack                    the stack already exists
   --skip-contsub                  the subtraction was already done
   --skip-compress                 the statistics already exist
   --skip-fit                      stop after the statistics
   --only STEP                     run only one of stack|contsub|compress|fit
+  --two-pass                      stack first, then subtract and compress
+                                  reading the stack back (default: steps 2
+                                  and 3 during the stacking, one pass)
 
   --velocity-range KMS    half-width of the stacked band            (default 2000)
   --nchan N               fixed number of output channels instead
@@ -148,16 +171,25 @@ Options
                           finest grid every dataset supports.  A finer value
                           is refused.
   --chunk-rows N          rows per chunk while reading              (default 5000)
-  --scratch DIR           build the MS here, then move it           (default $TMPDIR)
+  --scratch DIR           build the stack here, then move it        (default $TMPDIR)
   --in-column NAME        column read from each input MS.  'auto' (default)
                           prefers CORRECTED_DATA and falls back to DATA; give
                           DATA explicitly when CORRECTED_DATA holds something
                           you do not want, as in a corrupted simulation.
+  --frame NAME            frame of the redshifts, LSRK or BARY: the inputs
+                          (ALMA, VLA: TOPO) are corrected to it row by row.
+                          Default: no correction, with a warning for TOPO
   --device {cpu,gpu}      where the stacking kernel runs            (default cpu)
   --readers N             reader processes                          (default 2)
   --threads N             OpenMP threads of the CPU kernel  (default: all cores)
   --gpu-batch N           GPU: chunks per launch                    (default 8)
   --timing                log how long reading, computing and writing took
+  --format {zarr,ms}      format of the stack: zarr (default; parallel,
+                          compressed writes) or a Measurement Set
+  --writers N             zarr: threads writing the stack           (default 4)
+  --io-threads N          zarr: I/O threads of contsub and compress (default 4)
+  --export-ms             at the end, also write the stack as a Measurement
+                          Set (stacked_<tag>.ms), e.g. for tclean
   --debug                 detailed log (metadata, queues, buffers)
 
   --cont-order {0,1,-1}   continuum: constant, linear, or BIC       (default 0)
@@ -180,7 +212,19 @@ Options
   --norm-ref X                    that reference (default: median)
   --already-normalised            the data already carry alpha
 
-  --method {template,window}      per-annulus flux                  (default template)
+  --method {joint,template,window}  how the line is measured       (default joint)
+                                  joint: one fit of all channels and annuli,
+                                  noise measured from the data, profile,
+                                  significance (vista.extract.measure);
+                                  template, window: the chain of Sec. 5.3
+  --mode {search,detect}          joint: centre and width free (search, the
+                                  significance accounts for it) or fixed to
+                                  --v0/--fwhm (detect: matched filter)
+  --v0 KMS                        joint: line centre (default 0)
+  --fwhm KMS                      joint: line FWHM (detect: required)
+  --size {auto,point,gauss}       joint: source size                (default auto)
+  --n-null N                      joint: noise realisations          (default 1000)
+  --plot-rebin N                  joint: channels per bin in the profile figure
   --model {gauss,point,gauss2}    source model                      (default gauss)
   --theta-max ARCSEC                                                (default 15)
   --theta-fixed ARCSEC            freeze the size, fit the flux only
@@ -227,6 +271,7 @@ while [ $# -gt 0 ]; do
         --skip-contsub)       SKIP_CONTSUB=1; shift;;
         --skip-compress)      SKIP_COMPRESS=1; shift;;
         --skip-fit)           SKIP_FIT=1; shift;;
+        --two-pass)           TWO_PASS=1; shift;;
         --only)
             SKIP_STACK=1; SKIP_CONTSUB=1; SKIP_COMPRESS=1; SKIP_FIT=1
             case "$2" in
@@ -244,11 +289,16 @@ while [ $# -gt 0 ]; do
         --chunk-rows)         CHUNK_ROWS="$2"; shift 2;;
         --scratch)            SCRATCH="$2"; shift 2;;
         --in-column)          IN_COLUMN="$2"; shift 2;;
+        --frame)              FRAME="$2"; shift 2;;
         --device)             DEVICE="$2"; shift 2;;
         --readers)            READERS="$2"; shift 2;;
         --threads)            THREADS="$2"; shift 2;;
         --gpu-batch)          GPU_BATCH="$2"; shift 2;;
         --timing)             TIMING=1; shift;;
+        --format)             FORMAT="$2"; shift 2;;
+        --writers)            WRITERS="$2"; shift 2;;
+        --io-threads)         IO_THREADS="$2"; shift 2;;
+        --export-ms)          EXPORT_MS=1; shift;;
         --debug)              VERBOSE="debug"; shift;;
 
         --cont-order)         CONT_ORDER="$2"; shift 2;;
@@ -273,6 +323,12 @@ while [ $# -gt 0 ]; do
         --already-normalised) ALREADY_NORMALISED=1; shift;;
 
         --method)             METHOD="$2"; shift 2;;
+        --mode)               MODE="$2"; shift 2;;
+        --v0)                 V0="$2"; shift 2;;
+        --fwhm)               FWHM="$2"; shift 2;;
+        --size)               SIZE="$2"; shift 2;;
+        --n-null)             NNULL="$2"; shift 2;;
+        --plot-rebin)         PLOT_REBIN="$2"; shift 2;;
         --model)              MODEL="$2"; shift 2;;
         --theta-max)          THETA_MAX="$2"; shift 2;;
         --theta-fixed)        THETA_FIXED="$2"; shift 2;;
@@ -301,7 +357,11 @@ done
 [ -n "$TAG" ] || TAG=$(awk "BEGIN{printf \"line%.0f\", $RESTFREQ*1000}")
 mkdir -p "$OUTDIR"
 
-MS="$OUTDIR/stacked_${TAG}.ms"
+case "$FORMAT" in
+    zarr) MS="$OUTDIR/stacked_${TAG}.zarr";;
+    ms)   MS="$OUTDIR/stacked_${TAG}.ms";;
+    *) echo "--format wants zarr|ms" >&2; exit 2;;
+esac
 STATS_LINE="$OUTDIR/${TAG}_line_stats.npy"
 STATS_CONT="$OUTDIR/${TAG}_cont_stats.npy"
 RESTHZ=$(awk "BEGIN{printf \"%.6e\", $RESTFREQ*1e9}")
@@ -309,7 +369,7 @@ RESTHZ=$(awk "BEGIN{printf \"%.6e\", $RESTFREQ*1e9}")
 echo "============================================================"
 echo "  ViSta  ${TAG}   nu_rest = ${RESTFREQ} GHz"
 echo "  input     : $INPUT"
-echo "  stacked MS: $MS"
+echo "  stack     : $MS ($FORMAT)"
 case "$CONTINUUM" in
     before) CONT_NOTE="subtracted from the stack, fitted separately";;
     after)  CONT_NOTE="kept, fitted jointly with the line";;
@@ -322,20 +382,63 @@ echo "  device    : $DEVICE"
 echo "============================================================"
 
 # ---------------------------------------------------------------------------
+# one pass: continuum subtraction and compression while the stack is written
+# ---------------------------------------------------------------------------
+ONE_PASS=0
+INLINE_CONTSUB=0
+if [ "$SKIP_STACK" = 0 ] && [ "$SKIP_COMPRESS" = 0 ] && [ "$TWO_PASS" = 0 ]; then
+    if [ "$CONTINUUM" != before ]; then
+        ONE_PASS=1
+    elif [ "$SKIP_CONTSUB" = 0 ]; then
+        ONE_PASS=1; INLINE_CONTSUB=1
+    fi
+fi
+INLINE_JSON=""
+if [ "$ONE_PASS" = 1 ]; then
+    INLINE_JSON=$(python - "$RESTFREQ" "$VWINDOW" "$SECOND_RESTFREQ" "$SECOND_VWINDOW" \
+        "$EXCLUDE_V" "$INLINE_CONTSUB" "$CONT_ORDER" "$EXCLUDE_LO" "$EXCLUDE_HI" \
+        "$BINS" "$MAX_AMP" "$STATS_LINE" "$STATS_CONT" <<'PY'
+import json, sys
+(rest, vw, rest2, vw2, excl, contsub, order, lo, hi, bins, max_amp,
+ stats_line, stats_cont) = sys.argv[1:14]
+vals = [float(x) for x in excl.split()] if excl.strip() else []
+if len(vals) % 2:
+    sys.exit("--exclude-v needs pairs LO HI")
+print(json.dumps({
+    "rest_freq_ghz": float(rest), "v_window_kms": [float(x) for x in vw.split()],
+    "second_rest_freq_ghz": float(rest2) if rest2 else None,
+    "second_v_window_kms": [float(x) for x in vw2.split()],
+    "exclude_v_kms": [vals[i:i + 2] for i in range(0, len(vals), 2)],
+    "contsub": contsub == "1", "order": int(order),
+    "exclude_lo": float(lo) if lo else None, "exclude_hi": float(hi) if hi else None,
+    "bins": [float(x) for x in bins.split()],
+    "max_amplitude": float(max_amp) if max_amp else None,
+    "stats_line": stats_line, "stats_continuum": stats_cont if contsub == "1" else None}))
+PY
+) || exit 2
+fi
+
+# ---------------------------------------------------------------------------
 # 1. stacking
 # ---------------------------------------------------------------------------
 if [ "$SKIP_STACK" = 0 ]; then
-    echo; echo "== [1/4] stacking =="
+    if [ "$ONE_PASS" = 1 ]; then
+        echo; echo "== [1/4] stacking, with $([ "$INLINE_CONTSUB" = 1 ] && echo "continuum subtraction and ")compression in the same pass =="
+    else
+        echo; echo "== [1/4] stacking =="
+    fi
     python - "$INPUT" "$MS" "$RESTHZ" "$CHUNK_ROWS" "$VELOCITY_RANGE" \
              "$NCHAN" "$SCRATCH" "$WIDTH" "$IN_COLUMN" "$DEVICE" "$READERS" \
-             "$THREADS" "$GPU_BATCH" "$TIMING" "$VERBOSE" \
+             "$THREADS" "$GPU_BATCH" "$TIMING" "$VERBOSE" "$FORMAT" "$WRITERS" "$FRAME" \
+             "$INLINE_JSON" \
              <<'PY' 2>&1 | tee "$OUTDIR/${TAG}_stack.log"
+import json
 import sys
 from vista import ViSta
 
 (input_file, ms_out, restfreq, chunk_rows, vrange, nchan, scratch,
  width, in_column, device, readers, threads, gpu_batch, timing,
- verbose) = sys.argv[1:16]
+ verbose, out_format, writers, frame, inline) = sys.argv[1:20]
 
 kwargs = {}
 if vrange:
@@ -351,22 +454,51 @@ kwargs["device"] = device
 kwargs["n_readers"] = int(readers)
 kwargs["gpu_batch"] = int(gpu_batch)
 kwargs["timing"] = timing == "1"
+kwargs["output_format"] = out_format
+kwargs["n_writers"] = int(writers)
+if frame:
+    kwargs["frame"] = frame
 if threads:
     kwargs["n_threads"] = int(threads)
+if inline:
+    from vista.extract import BinningConfig, ContinuumConfig, LineConfig
+    c = json.loads(inline)
+    line = LineConfig(rest_freq_ghz=c["rest_freq_ghz"],
+                      v_window_kms=tuple(c["v_window_kms"]),
+                      second_rest_freq_ghz=c["second_rest_freq_ghz"],
+                      second_v_window_kms=tuple(c["second_v_window_kms"]),
+                      exclude_v_kms=[tuple(x) for x in c["exclude_v_kms"]])
+    kwargs["line"] = line
+    if c["contsub"]:
+        # as `python -m vista.extract contsub`: the line window, unless --exclude
+        kwargs["continuum"] = ContinuumConfig(
+            order=c["order"],
+            exclude_kms=max(abs(v) for v in line.v_window_kms),
+            exclude_kms_lo=c["exclude_lo"], exclude_kms_hi=c["exclude_hi"])
+    kwargs["stats_line"] = c["stats_line"]
+    kwargs["stats_continuum"] = c["stats_continuum"]
+    kwargs["binning"] = BinningConfig(b_min_klambda=c["bins"][0],
+                                      b_max_klambda=c["bins"][1],
+                                      n_bins=int(c["bins"][2]))
+    kwargs["max_amplitude"] = c["max_amplitude"]
 
 ViSta(input_file=input_file, chunk_rows=int(chunk_rows),
       verbose="debug" if verbose == "debug" else True).run(
-    ms_out=ms_out, central_freq=float(restfreq), **kwargs)
+    output=ms_out, central_freq=float(restfreq), **kwargs)
 PY
     [ ${PIPESTATUS[0]} -eq 0 ] || { echo "stacking failed" >&2; exit 1; }
+    if [ "$ONE_PASS" = 1 ]; then
+        SKIP_COMPRESS=1
+        [ "$INLINE_CONTSUB" = 1 ] && SKIP_CONTSUB=1
+    fi
 else
     echo; echo "== [1/4] stacking skipped =="
 fi
 
-# the MS is only needed by the two steps that read it
+# the stack is only needed by the two steps that read it
 if { [ "$SKIP_CONTSUB" = 0 ] && [ "$CONTINUUM" = before ]; } \
    || [ "$SKIP_COMPRESS" = 0 ]; then
-    [ -d "$MS" ] || { echo "stacked MS not found: $MS" >&2; exit 1; }
+    [ -d "$MS" ] || { echo "stack not found: $MS" >&2; exit 1; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -386,12 +518,14 @@ EXCL_ARGS=()
 
 if [ "$CONTINUUM" = before ] && [ "$SKIP_CONTSUB" = 0 ]; then
     echo; echo "== [2/4] continuum subtraction (order=$CONT_ORDER) =="
-    python -u -m vista.extract contsub "$MS" \
+    python -u -m vista.extract contsub "$MS" --io-threads "$IO_THREADS" \
         --rest-freq "$RESTFREQ" --v-window $VWINDOW \
         "${SECOND_ARGS[@]}" "${EXCL_ARGS[@]}" "${CONT_ARGS[@]}" \
         --order "$CONT_ORDER" \
         2>&1 | tee "$OUTDIR/${TAG}_contsub.log"
     [ ${PIPESTATUS[0]} -eq 0 ] || { echo "continuum subtraction failed" >&2; exit 1; }
+elif [ "$CONTINUUM" = before ] && [ "$INLINE_CONTSUB" = 1 ]; then
+    echo; echo "== [2/4] continuum subtraction: done during the stacking =="
 elif [ "$CONTINUUM" = before ]; then
     echo; echo "== [2/4] continuum subtraction skipped (already done) =="
 elif [ "$CONTINUUM" = after ]; then
@@ -416,12 +550,14 @@ fi
 
 if [ "$SKIP_COMPRESS" = 0 ]; then
     echo; echo "== [3/4] compression into sufficient statistics =="
-    python -u -m vista.extract compress "$MS" --input "$INPUT" \
+    python -u -m vista.extract compress "$MS" --input "$INPUT" --io-threads "$IO_THREADS" \
         --rest-freq "$RESTFREQ" --v-window $VWINDOW \
         "${SECOND_ARGS[@]}" "${EXCL_ARGS[@]}" \
         --out-line "$STATS_LINE" "${COMPRESS_ARGS[@]}" \
         2>&1 | tee "$OUTDIR/${TAG}_compress.log"
     [ ${PIPESTATUS[0]} -eq 0 ] || { echo "compression failed" >&2; exit 1; }
+elif [ "$ONE_PASS" = 1 ]; then
+    echo; echo "== [3/4] compression: done during the stacking =="
 else
     echo; echo "== [3/4] compression skipped =="
 fi
@@ -429,8 +565,17 @@ fi
 # ---------------------------------------------------------------------------
 # 4. extraction and fit
 # ---------------------------------------------------------------------------
+export_ms () {
+    if [ "$EXPORT_MS" = 1 ] && [ "$FORMAT" = zarr ] && [ -d "$MS" ]; then
+        echo; echo "== export of the stack to a Measurement Set =="
+        python -u -m vista.extract export-ms "$MS" "${MS%.zarr}.ms" \
+            2>&1 | tee "$OUTDIR/${TAG}_export.log"
+    fi
+}
+
 if [ "$SKIP_FIT" = 1 ]; then
     echo; echo "== [4/4] fit skipped =="
+    export_ms
     echo "done: $MS"
     exit 0
 fi
@@ -452,6 +597,13 @@ FIT_ARGS=(--weighting "$WEIGHTING" --model "$MODEL"
 [ "$PLOT" = 1 ]       && FIT_ARGS+=(--plot)
 [ -n "$UNIT" ]        && FIT_ARGS+=(--unit "$UNIT")
 [ -n "$V_LIMITS" ]    && FIT_ARGS+=(--v-limits $V_LIMITS)
+JOINT_ARGS=()
+if [ "$METHOD" = joint ]; then
+    [ "$MODEL" = point ] && [ "$SIZE" = auto ] && SIZE=point
+    JOINT_ARGS+=(--mode "$MODE" --size "$SIZE" --n-null "$NNULL" --plot-rebin "$PLOT_REBIN")
+    [ -n "$V0" ]   && JOINT_ARGS+=(--v0 "$V0")
+    [ -n "$FWHM" ] && JOINT_ARGS+=(--fwhm "$FWHM")
+fi
 
 case "$CONTINUUM" in
 before)
@@ -463,7 +615,7 @@ before)
         --out "$OUTDIR/${TAG}_continuum" \
         2>&1 | tee "$OUTDIR/${TAG}_fit_continuum.log"
 
-    LINE_ARGS=("${FIT_ARGS[@]}" --method "$METHOD")
+    LINE_ARGS=("${FIT_ARGS[@]}" --method "$METHOD" "${JOINT_ARGS[@]}")
     if [ -n "$THETA_PRIOR_FROM" ]; then
         LINE_ARGS+=(--theta-prior-from "$THETA_PRIOR_FROM"
                     --theta-prior-sigma "$THETA_PRIOR_SIGMA")
@@ -481,7 +633,7 @@ after)
     echo "-- line and continuum together, from DATA"
     python -u -m vista.extract flux "$STATS_LINE" --input "$INPUT" \
         --rest-freq "$RESTFREQ" --v-window $VWINDOW \
-        "${SECOND_ARGS[@]}" "${FIT_ARGS[@]}" --method "$METHOD" \
+        "${SECOND_ARGS[@]}" "${FIT_ARGS[@]}" --method "$METHOD" "${JOINT_ARGS[@]}" \
         --joint-continuum \
         --out "$OUTDIR/${TAG}_joint" \
         2>&1 | tee "$OUTDIR/${TAG}_fit_joint.log"
@@ -492,7 +644,7 @@ none)
     echo "-- line only, from DATA (no continuum term)"
     python -u -m vista.extract flux "$STATS_LINE" --input "$INPUT" \
         --rest-freq "$RESTFREQ" --v-window $VWINDOW \
-        "${SECOND_ARGS[@]}" "${FIT_ARGS[@]}" --method "$METHOD" \
+        "${SECOND_ARGS[@]}" "${FIT_ARGS[@]}" --method "$METHOD" "${JOINT_ARGS[@]}" \
         --out "$OUTDIR/${TAG}_line" \
         2>&1 | tee "$OUTDIR/${TAG}_fit_line.log"
     ;;
@@ -516,6 +668,29 @@ for path in sorted(glob.glob(os.path.join(outdir, f"{tag}_*_results.json"))):
         r = json.load(fh)
     print(f"\n{os.path.basename(path)}  "
           f"({r['n_sources']} sources, {r['weighting_scheme']})")
+    if "detection" in r:                 # --method joint
+        ln, d, n, w = r["line"], r["detection"], r["noise"], r["window"]
+        print(f"  F={ln['flux']:.4g} +-{ln['flux_error']:.3g} (thermal "
+              f"{ln['flux_error_thermal']:.3g}, bootstrap {ln['flux_error_bootstrap']:.3g})  "
+              f"peak={ln['peak']:.4g}  v0={ln['v0_kms']:+.0f}  FWHM={ln['fwhm_kms']:.0f} km/s  "
+              f"size={ln['size_model']}  chi2r={ln['chi2_reduced']:.2f}")
+        print(f"  detection: " + (f"S/N={d['snr']:.2f} (fixed shape)" if d["mode"] == "detect"
+              else f"{d['significance_sigma']:.1f} sigma (search S/N={d['snr']:.2f}, "
+                   f"p={d['p_value']:.2g})")
+              + f"   window [{w['user_kms'][0]:.0f},{w['user_kms'][1]:.0f}]: "
+                f"{w['flux']:.4g} +-{w['flux_error']:.3g}")
+        print(f"  noise: kappa (scatter/weights)={n['kappa_scatter_over_weights']:.3f}  "
+              f"imaginary/noise={n.get('imaginary_rms_over_noise', float('nan')):.3f}  "
+              f"line-free/noise={n.get('line_free_rms_over_noise', float('nan')):.3f}  "
+              f"channel correlation={n['channel_correlation'][:2]}")
+        for key, what in (("imaginary_rms_over_noise", "imaginary part"),
+                          ("line_free_rms_over_noise", "line-free channels")):
+            if isinstance(n.get(key), float) and abs(n[key] - 1) > 0.15:
+                print(f"  WARNING: the {what} scatter {n[key]:.2f} x the thermal noise")
+        if abs(d.get("snr_imaginary", 0)) > 3:
+            print(f"  WARNING: the imaginary part has S/N {d['snr_imaginary']:.1f} with the "
+                  f"line template: check the centring")
+        continue
     print("  " + "  ".join(
         f"{label}={r[key]:.4g}" if isinstance(r.get(key), (int, float))
         else f"{label}=n/a" for key, label in keys))
@@ -534,9 +709,14 @@ for path in sorted(glob.glob(os.path.join(outdir, f"{tag}_*_results.json"))):
                   f"theta={b['theta_fwhm_arcsec']:.3f}\"")
 PY
 
+export_ms
+
 echo
 echo "done."
-echo "  stacked MS : $MS"
+echo "  stack      : $MS"
+[ "$EXPORT_MS" = 1 ] && [ "$FORMAT" = zarr ] && echo "  stack (MS) : ${MS%.zarr}.ms"
 echo "  statistics : $STATS_LINE$([ "$CONTINUUM" = before ] && echo ", $STATS_CONT")"
 echo "  results    : $OUTDIR/${TAG}_*_results.json"
 [ "$PLOT" = 1 ] && echo "  figures    : $OUTDIR/${TAG}_*.png"
+
+exit 0
