@@ -4,3 +4,20 @@
 .rst-content .highlight pre { font-size: 0.85em; }
 /* the logo: small, as a badge above the search box */
 .wy-side-nav-search .wy-dropdown > a img.logo, .wy-side-nav-search > a img.logo { max-width: 110px; }
+
+/* the header of the sidebar: white, so the logo sits on its own background;
+   dark title and version, a search box with a thin border */
+.wy-side-nav-search { background-color: #ffffff; border-bottom: 1px solid #e1e4e5; }
+.wy-side-nav-search .wy-dropdown > a, .wy-side-nav-search > a { color: #1a1a1a; }
+.wy-side-nav-search .wy-dropdown > a:hover, .wy-side-nav-search > a:hover { background: #f3f6f6; }
+.wy-side-nav-search > div.version,
+.wy-side-nav-search > div.switch-menus,
+.wy-side-nav-search > div.switch-menus > div.version-switch select,
+.wy-side-nav-search > div.switch-menus > div.language-switch select { color: #555555; }
+.wy-side-nav-search > div.switch-menus > div.version-switch select:hover,
+.wy-side-nav-search > div.switch-menus > div.language-switch select:hover { color: #1a1a1a; background: #f3f6f6; }
+.wy-side-nav-search input[type=text] { border: 1px solid #c9c9c9; box-shadow: none; }
+.wy-side-nav-search input[type=text]:focus { border-color: #2980b9; }
+/* the same on the narrow screens' top bar */
+.wy-nav-top { background-color: #ffffff; border-bottom: 1px solid #e1e4e5; }
+.wy-nav-top a, .wy-nav-top i { color: #1a1a1a; }
