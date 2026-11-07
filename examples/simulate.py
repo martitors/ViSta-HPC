@@ -142,13 +142,20 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
             cont_flux=0.0, cont_index=3.0, size_arcsec=0.0, cont_size_arcsec=None,
             phase_centre=(150.0, 2.0), offset_arcsec=(2.0, 1.0), noise=0.05, kappa=1.0,
             hanning=True, nchan=96, dv_kms=20.0, nant=43, rmax=250.0, ntime=40, dt=30.0,
-            primary_beam_attenuation=True, noiseless=False, seed=1):
+            primary_beam_attenuation=True, noiseless=False, seed=1, band_offset_kms=0.0,
+            t0=5.06e9, layout_seed=12345, noise_seed=None):
     """Write one Measurement Set; returns a dict of what was simulated.
 
     The spectral window has ``nchan`` channels of ``dv_kms`` centred on the
     observed line frequency ``rest / (1 + z)`` (channel width in frequency
-    ``dv_kms / c * nu_obs``).  ``offset_arcsec`` is the (east, north) offset
-    of the galaxy from the phase centre.
+    ``dv_kms / c * nu_obs``), or ``band_offset_kms`` away from it (positive:
+    the band centre at higher velocity, the line nearer its upper-frequency
+    edge).  ``offset_arcsec`` is the (east, north) offset of the galaxy from
+    the phase centre.  ``t0`` (MJD seconds) sets the start of the
+    observation, hence the hour angles and the uv tracks; ``layout_seed`` the
+    antenna positions.  ``noise_seed`` draws the noise from its own
+    generator: the same ``seed`` and another ``noise_seed`` give the same
+    weights and a new realisation of the noise.
     """
     from casacore import tables as ct
 
@@ -156,7 +163,8 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     nu_r = rest_freq_ghz * 1e9
     nu_obs = nu_r / (1.0 + z)
     df = dv_kms / C_KMS * nu_obs
-    freq = nu_obs + (np.arange(nchan) - (nchan - 1) / 2.0) * df          # [Hz]
+    nu_centre = nu_obs * (1.0 - band_offset_kms / C_KMS)
+    freq = nu_centre + (np.arange(nchan) - (nchan - 1) / 2.0) * df       # [Hz]
 
     # positions
     ra0, dec0 = (math.radians(x) for x in phase_centre)
@@ -168,9 +176,9 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     l, m, n = basis @ s_dir
 
     # uvw: the baselines rotating with the Earth, projected on the phase centre
-    itrf = antenna_layout(nant, rmax)
+    itrf = antenna_layout(nant, rmax, seed=layout_seed)
     a1, a2 = np.triu_indices(nant, 1)
-    times = 5.06e9 + np.arange(ntime) * dt
+    times = t0 + np.arange(ntime) * dt
     ha = 2 * math.pi * (times % 86164.0905) / 86164.0905
     bl = itrf[a2] - itrf[a1]                                           # (nbl, 3)
     cos_h, sin_h = np.cos(ha), np.sin(ha)
@@ -204,7 +212,8 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     if noiseless:
         data = np.repeat(vis[:, :, None], 2, axis=2).astype(np.complex64)
     else:
-        e = rng.standard_normal((2, nrow, nchan, 2))
+        e = (rng if noise_seed is None else np.random.default_rng(noise_seed)) \
+            .standard_normal((2, nrow, nchan, 2))
         if hanning:
             pad = np.pad(e, ((0, 0), (0, 0), (1, 1), (0, 0)), mode="edge")
             e = (0.25 * pad[:, :, :-2] + 0.5 * pad[:, :, 1:-1] + 0.25 * pad[:, :, 2:]) \

@@ -1,0 +1,6 @@
+/* a little more room for wide tables and code */
+.wy-nav-content { max-width: 960px; }
+.rst-content table.docutils td, .rst-content table.docutils th { white-space: normal; }
+.rst-content .highlight pre { font-size: 0.85em; }
+/* the logo: small, as a badge above the search box */
+.wy-side-nav-search .wy-dropdown > a img.logo, .wy-side-nav-search > a img.logo { max-width: 110px; }

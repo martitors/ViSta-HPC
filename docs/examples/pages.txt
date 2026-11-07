@@ -1,0 +1,11 @@
+00_setup
+01_the_simulated_sample
+02_one_galaxy_without_and_with
+03_stacking
+04_measuring_the_stacked_line
+05_searching_for_the_line
+06_what_each_option_changes
+07_the_continuum
+08_redoing_the_continuum
+09_the_stack_in_the_image
+10_from_the_command_line_and_on

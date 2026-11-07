@@ -33,3 +33,6 @@ Thumbs.db
 # Data files
 *.ms
 *.fits
+
+# Documentation build
+docs/_build/
