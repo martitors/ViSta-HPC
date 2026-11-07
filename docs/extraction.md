@@ -480,6 +480,10 @@ e.g. the rebinned errors use the channel correlation matrix,
     fig = pl.plot_profile(pl.load("<prefix>"), unit="Jy", rebin=2)
     fig.axes[0].set_ylim(-3, 6); fig.savefig("line.pdf")
 
+`plot_profile` and `plot_uv` take a `reference=(x, y)` curve to compare with
+(in data units): the true signal of a simulation, as in the tutorial
+notebook, the profile of another line, a model.
+
 Without `_diagnostics.npz` (outputs of earlier runs) the noise histograms are
 replaced by the rms values of the JSON and the rebinned errors ignore the
 correlation.

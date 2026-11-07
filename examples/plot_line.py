@@ -80,6 +80,7 @@ STYLE = {
     "point_model": dict(color="#2471a3"),
     "gauss_model": dict(color="#c0392b"),
     "total_flux": dict(color="k", ls=":", lw=1),
+    "reference": dict(color="#1e8449", ls="--", lw=1.6),   # e.g. the true signal of a simulation
     "hist_null": dict(color="0.75"),
     "hist_imag": dict(color="#2471a3"),
     "hist_free": dict(color="#c0392b"),
@@ -260,9 +261,14 @@ def uv_gaussian(b_klambda, theta_arcsec):
 # =============================================================================
 # figure 1: the line profile
 # =============================================================================
-def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True):
+def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True, reference=None,
+                 reference_label="true signal"):
     """Flux density at zero spacing against velocity, with the fit, the
-    noise band, the imaginary part, the line window, and the residuals."""
+    noise band, the imaginary part, the line window, and the residuals.
+
+    ``reference``: an optional curve to compare with, (velocity [km/s],
+    flux density [data units]) -- the true signal of a simulation, the
+    profile of another line, a model."""
     res, p = d["res"], d["prof"]
     f, ulab = flux_scale(unit, d)
 
@@ -296,6 +302,9 @@ def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True):
     # the stacked profile and the fit (both averaged over the channels)
     ax.step(vb, yb, where="mid", label="stacked flux density", **STYLE["data"])
     ax.step(vb, ymb, where="mid", label="fit", **STYLE["model"])
+    if reference is not None:
+        ax.plot(reference[0], np.asarray(reference[1]) * f, label=reference_label,
+                **STYLE["reference"])
     ax.axhline(0, **STYLE["zero"])
 
     if STYLE["show_textbox"]:
@@ -333,11 +342,14 @@ def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True):
 # =============================================================================
 # figure 2: amplitude against baseline
 # =============================================================================
-def plot_uv(d, unit=None):
+def plot_uv(d, unit=None, reference=None, reference_label="true signal"):
     """Line flux of every uv annulus against baseline length, with the point
     and the Gaussian source models.  A point source is flat; an extended one
     falls on the baselines that resolve it; the value at zero baseline is the
-    total flux."""
+    total flux.
+
+    ``reference``: an optional curve to compare with, (baseline [klambda],
+    line flux [data units x km/s]), e.g. the true signal of a simulation."""
     res, u = d["res"], d["uv"]
     ln, st = res["line"], res.get("size_test") or {}
     f, ulab = flux_scale(unit, d)
@@ -368,6 +380,9 @@ def plot_uv(d, unit=None):
     else:
         ax.plot(bb, np.full_like(bb, ln["flux"] * f), label="point source",
                 **STYLE["point_model"])
+    if reference is not None:
+        ax.plot(reference[0], np.asarray(reference[1]) * f, label=reference_label,
+                **STYLE["reference"])
     ax.axhline(0, **STYLE["zero"])
     if STYLE["uv_clip_errors"]:
         # the outermost annuli have few visibilities and huge errors: keep

@@ -97,18 +97,21 @@ with `device="cpu"`.
 
 ## Tutorial notebook
 
-`examples/ViSta_tutorial.ipynb` runs everything on a simulated sample, where
-the true answer is known: simulation of ALMA-like datasets
-(`examples/simulate.py`), stacking with the continuum subtraction and the
-compression in one pass, the line measurement (`detect` and `search`), what
-every option changes, the continuum, a second continuum subtraction, the
-older chain, the figures in your own style (`examples/plot_line.py`), the
-image of the stack with CASA, a small Monte Carlo. It installs and builds
-everything itself on
+`examples/ViSta_tutorial.ipynb` runs everything on a simulated sample of
+ALMA Band 3 observations of CO(3–2) at z = 2–3 (`examples/simulate.py`),
+written twice, with and without noise, so that every result is compared with
+the true signal: one galaxy in the uv plane (mean over the baselines, flux
+per annulus) and in a CLEANed CASA cube (peak pixel, aperture, with their
+errors), the stacking with the continuum subtraction and the compression in
+one pass, the line measurement (`detect` and `search`), what every option
+changes, the continuum, a second continuum subtraction, the image of the
+stack, the command line; the figures are drawn with `examples/plot_line.py`.
+It installs and builds everything itself on
 [Google Colab](https://colab.research.google.com/github/martitors/ViSta-HPC/blob/extract_opt/examples/ViSta_tutorial.ipynb)
-(*Runtime → Run all*, about 10 minutes on the CPU; for a private repository
-put a GitHub token in the Colab secrets as `GITHUB_TOKEN`), and runs as well
-in a local Jupyter with `VISTA_REPO` set to a checkout.
+(*Runtime → Run all*, about 15 minutes on the CPU, CASA's data tables
+included; for a private repository put a GitHub token in the Colab secrets
+as `GITHUB_TOKEN`), and runs as well in a local Jupyter with `VISTA_REPO` set
+to a checkout (CASA: `pip install casatasks casatools`, for the images only).
 
 ---
 
@@ -933,7 +936,7 @@ This project is licensed under the MIT License.
 
 **`measure_line`** (`--method joint`, the new default of `run_vista.sh`): the line fitted on all channels and annuli at once — profile at zero spacing, flux, peak, centre, FWHM, size — with the measured noise; thermal and bootstrap errors; matched filter with a fixed shape (`mode="detect"`) or a search with its significance from the same search on noise; window fluxes with the correlation between channels; three figures (profile, uv, noise). For extended sources: point and Gaussian templates in the detection scan, the model averaged over each annulus, the total flux averaged over the point and the Gaussian model (Akaike weights, the spread in the error), an optional size prior (`theta_prior_arcsec`, `--theta-prior`). Tested on point, Gaussian, exponential, rotating, offset and double-horn sources. The chain of Sec. 5.3 (`extract_flux`, `--method template|window`) is unchanged. See [Measuring the line](#measuring-the-line-measure_line---method-joint).
 
-**Tutorial notebook** (`examples/ViSta_tutorial.ipynb`, runs on Colab) and `examples/simulate.py` (synthetic ALMA-like Measurement Sets with a line, a continuum, a size, primary-beam attenuation, noise with wrong weights and Hanning smoothing).
+**Tutorial notebook** (`examples/ViSta_tutorial.ipynb`, runs on Colab) and `examples/simulate.py` (synthetic ALMA-like Measurement Sets with a line, a continuum, a size, primary-beam attenuation, noise with wrong weights and Hanning smoothing; each dataset also without noise, `noiseless=True`, same visibilities and weights). The warnings on the imaginary part and the line-free channels are given only when they scatter more than the noise (less means conservative errors).
 
 **Figures in your own style**: `measure_line` also writes `<prefix>_diagnostics.npz` (channel correlation matrix, standardised noise samples, null distributions), and `examples/plot_line.py` redraws the three figures from the output files alone (numpy + matplotlib, `STYLE` block, `--style file.mplstyle`, one commented function per figure). With `n_null=0` and several templates the p-value is a Bonferroni bound (it stopped with an error). The size test divides the χ² difference between the point and the Gaussian source by the factor by which the channel correlation inflates it (`size_test.correlation_factor`): the fits weight the cells by their noise alone, and with Hanning smoothing and a continuum subtraction the raw difference is 4-5 times too large, which made noisy point sources look resolved.
 

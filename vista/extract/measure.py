@@ -609,9 +609,10 @@ def measure_line(statistics: Union[str, SufficientStatistics],
             if "line_free_rms_over_noise" in chk else "")
          + f" x the noise (expected 1)", verbose)
     for name, key in (("imaginary part", "imaginary_rms_over_noise"),
-                      ("line-free channels", "line_free_rms_over_noise")):
+                      ("real part in the line-free channels", "line_free_rms_over_noise")):
         value, n_cells = chk.get(key), chk.get(key.replace("rms_over_noise", "n_cells"), 0)
-        if value is not None and n_cells and abs(value - 1) > max(0.1, 4 / math.sqrt(2 * n_cells)):
+        # only an excess matters: below 1 the errors are conservative
+        if value is not None and n_cells and value - 1 > max(0.1, 4 / math.sqrt(2 * n_cells)):
             _warn(f"measure: the {name} scatters {value:.2f} x the noise of the "
                   f"visibilities: {'centring or calibration' if 'imag' in key else 'residual continuum or baseline'} "
                   f"effects, the thermal errors are optimistic there")
