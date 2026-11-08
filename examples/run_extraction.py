@@ -13,8 +13,9 @@ The three ways of handling the continuum are shown in turn; pick the one that
 matches your data with ``--continuum``. The shell driver ``run_vista.sh`` does
 the same thing from the command line, with more options.
 
-Stacking and the two MS-reading steps need ``casatools``/``ms_ops``; the
-extraction itself only needs numpy and scipy, so it can be repeated cheaply.
+Stacking and the two MS-reading steps need ``python-casacore`` and the
+compiled kernel ``ms_ops``; the extraction itself only needs numpy and scipy,
+so it can be repeated cheaply.
 """
 
 import argparse

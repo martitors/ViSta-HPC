@@ -28,6 +28,7 @@
 #include <vector>
 #include <algorithm>
 #include <tuple>
+#include <cstdint>
 #include <omp.h>
 
 // ---------------------------------------------------------------------------
@@ -754,10 +755,342 @@ full_pipeline(
 
 
 // ===========================================================================
+// CONTINUUM SUBTRACTION (on the stacked MS, after the stacking)
+// ===========================================================================
+// For every spectrum (row, correlation) a polynomial of degree `order` is
+// fitted by least squares to the line-free channels, separately to the real
+// and to the imaginary part, and evaluated on every channel.  It is the fit
+// of numpy.polyfit / numpy.polyval on the line-free channels whose value is
+// finite; a spectrum with fewer such channels than order + 1 gets a model
+// of zero (and is left as it is).
+//
+//   vis    (nrow, nchan, ncorr) complex64, the layout of python-casacore
+//   x      (nchan,) channel frequencies, minus their mean on the fit channels
+//   fit    (nchan,) true for the channels the continuum is fitted on
+//
+// Returns (model, vis - model), both (nrow, nchan, ncorr) complex64.  The
+// sums are accumulated in double; the rows are split among the OpenMP
+// threads and the GIL is released, so Python threads can read and write the
+// table meanwhile.
+
+// Solve the (m x m) normal equations A c = b for the real and the imaginary
+// right-hand sides at once (Gaussian elimination, partial pivoting).
+// A[i][j] = pw[i + j].  Returns false if the system is singular.
+static bool solve_normal(int m, const double* pw, double* bre, double* bim,
+                         double* A)
+{
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m; ++j)
+            A[i * m + j] = pw[i + j];
+    for (int col = 0; col < m; ++col) {
+        int piv = col;
+        for (int i = col + 1; i < m; ++i)
+            if (std::fabs(A[i * m + col]) > std::fabs(A[piv * m + col])) piv = i;
+        if (std::fabs(A[piv * m + col]) < 1e-300) return false;
+        if (piv != col) {
+            for (int j = 0; j < m; ++j) std::swap(A[col * m + j], A[piv * m + j]);
+            std::swap(bre[col], bre[piv]);
+            std::swap(bim[col], bim[piv]);
+        }
+        for (int i = col + 1; i < m; ++i) {
+            const double f = A[i * m + col] / A[col * m + col];
+            for (int j = col; j < m; ++j) A[i * m + j] -= f * A[col * m + j];
+            bre[i] -= f * bre[col];
+            bim[i] -= f * bim[col];
+        }
+    }
+    for (int i = m - 1; i >= 0; --i) {
+        double sr = bre[i], si = bim[i];
+        for (int j = i + 1; j < m; ++j) {
+            sr -= A[i * m + j] * bre[j];
+            si -= A[i * m + j] * bim[j];
+        }
+        bre[i] = sr / A[i * m + i];
+        bim[i] = si / A[i * m + i];
+    }
+    return true;
+}
+
+std::pair<py::array_t<std::complex<float>>, py::array_t<std::complex<float>>>
+continuum_subtract(
+    py::array_t<std::complex<float>, py::array::c_style | py::array::forcecast> vis,
+    py::array_t<double, py::array::c_style | py::array::forcecast> x_arr,
+    py::array_t<bool,   py::array::c_style | py::array::forcecast> fit_arr,
+    int order)
+{
+    if (order < 0)
+        throw std::invalid_argument("continuum_subtract: order must be >= 0");
+    auto vb = vis.request();
+    if (vb.ndim != 3)
+        throw std::invalid_argument("continuum_subtract: vis must be (nrow, nchan, ncorr)");
+    const ssize_t nrow = vb.shape[0], nchan = vb.shape[1], ncorr = vb.shape[2];
+    if (x_arr.size() != nchan || fit_arr.size() != nchan)
+        throw std::invalid_argument("continuum_subtract: x and fit must have nchan elements");
+    const int m = order + 1;
+
+    // the abscissa scaled to [-1, 1]: the same fitted values, better conditioned
+    const double* xp = x_arr.data();
+    const bool*   fp = fit_arr.data();
+    double xscale = 0.0;
+    for (ssize_t k = 0; k < nchan; ++k) xscale = std::max(xscale, std::fabs(xp[k]));
+    if (xscale == 0.0) xscale = 1.0;
+    std::vector<double> s(nchan);
+    std::vector<ssize_t> fit_idx;
+    for (ssize_t k = 0; k < nchan; ++k) {
+        s[k] = xp[k] / xscale;
+        if (fp[k]) fit_idx.push_back(k);
+    }
+    const ssize_t nfit = static_cast<ssize_t>(fit_idx.size());
+
+    py::array_t<std::complex<float>> model({nrow, nchan, ncorr});
+    py::array_t<std::complex<float>> resid({nrow, nchan, ncorr});
+    const std::complex<float>* in = vis.data();
+    std::complex<float>* mo = model.mutable_data();
+    std::complex<float>* re_out = resid.mutable_data();
+
+    {
+        py::gil_scoped_release release;
+        #pragma omp parallel
+        {
+            std::vector<double> pw(2 * m - 1), bre(m), bim(m), A(m * m);
+            #pragma omp for schedule(static)
+            for (ssize_t r = 0; r < nrow; ++r) {
+                for (ssize_t c = 0; c < ncorr; ++c) {
+                    const ssize_t base = r * nchan * ncorr + c;   // channel k at base + k*ncorr
+                    std::fill(pw.begin(), pw.end(), 0.0);
+                    std::fill(bre.begin(), bre.end(), 0.0);
+                    std::fill(bim.begin(), bim.end(), 0.0);
+                    int nvalid = 0;
+                    for (ssize_t q = 0; q < nfit; ++q) {
+                        const ssize_t k = fit_idx[q];
+                        const double yr = in[base + k * ncorr].real();
+                        const double yi = in[base + k * ncorr].imag();
+                        if (!std::isfinite(yr) || !std::isfinite(yi)) continue;
+                        ++nvalid;
+                        double p = 1.0;
+                        for (int j = 0; j < 2 * m - 1; ++j) {
+                            pw[j] += p;
+                            if (j < m) { bre[j] += p * yr; bim[j] += p * yi; }
+                            p *= s[k];
+                        }
+                    }
+                    const bool ok = nvalid >= m &&
+                                    solve_normal(m, pw.data(), bre.data(), bim.data(), A.data());
+                    for (ssize_t k = 0; k < nchan; ++k) {
+                        const std::complex<float> v = in[base + k * ncorr];
+                        double mr = 0.0, mi = 0.0;
+                        if (ok) {
+                            for (int j = m - 1; j >= 0; --j) {     // Horner
+                                mr = mr * s[k] + bre[j];
+                                mi = mi * s[k] + bim[j];
+                            }
+                        }
+                        mo[base + k * ncorr] = std::complex<float>(
+                            static_cast<float>(mr), static_cast<float>(mi));
+                        re_out[base + k * ncorr] = std::complex<float>(
+                            static_cast<float>(static_cast<double>(v.real()) - mr),
+                            static_cast<float>(static_cast<double>(v.imag()) - mi));
+                    }
+                }
+            }
+        }
+    }
+    return {model, resid};
+}
+
+
+// ===========================================================================
+// COMPRESSION INTO SUFFICIENT STATISTICS (on the stacked MS)
+// ===========================================================================
+// One chunk of rows of one data descriptor is added to the five
+// accumulators of every (output channel, annulus) cell:
+//   0: sum w Re V   1: sum w Im V   2: sum w   3: sum w b   4: N
+// with b the projected baseline in wavelengths, sqrt(u^2 + v^2) nu / c, and
+// the annulus the last edge <= b (numpy.searchsorted(edges, b, 'right') - 1).
+//
+// A sample is used if it is not flagged (FLAG, FLAG_ROW), its weight is > 0,
+// its line value is non-zero and finite and, with a continuum column, the
+// continuum value is finite too; with max_amplitude >= 0 both amplitudes must
+// not exceed it.  Samples that pass the first three tests and fail the
+// others are counted as rejected.  It is the selection of the former NumPy
+// code (vista.extract.statistics), sample by sample.
+//
+//   line, cont   (nrow, nchan, ncorr) complex64; cont may be None
+//   weight       (nrow, nchan, ncorr) WEIGHT_SPECTRUM, or (nrow, ncorr) WEIGHT
+//   flag         (nrow, nchan, ncorr), flag_row (nrow,)
+//   uvw          (nrow, 3) metres; freq (nchan,) Hz
+//   grid_index   (nchan,) output channel of every channel (< 0 or >= n_grid:
+//                outside the grid, not used)
+//   edges        (n_bins + 1,) annulus edges in wavelengths
+//
+// Returns (sums_line, sums_cont or None, n_rejected); the sums are
+// (n_grid * n_bins, 5) float64, to be added to the running totals.  Each
+// OpenMP thread accumulates its own copy (static schedule), and the copies
+// are summed in thread order: for a given number of threads the result is
+// the same at every run.  The GIL is released.
+py::tuple compress_chunk(
+    py::array_t<std::complex<float>, py::array::c_style | py::array::forcecast> line,
+    py::object cont_obj,
+    py::array_t<float,   py::array::c_style | py::array::forcecast> weight,
+    py::array_t<bool,    py::array::c_style | py::array::forcecast> flag,
+    py::array_t<bool,    py::array::c_style | py::array::forcecast> flag_row,
+    py::array_t<double,  py::array::c_style | py::array::forcecast> uvw,
+    py::array_t<double,  py::array::c_style | py::array::forcecast> freq,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> grid_index,
+    py::array_t<double,  py::array::c_style | py::array::forcecast> edges,
+    int n_grid, double max_amplitude)
+{
+    constexpr double C_MS = 299792458.0;
+    auto lb = line.request();
+    if (lb.ndim != 3)
+        throw std::invalid_argument("compress_chunk: line must be (nrow, nchan, ncorr)");
+    const ssize_t nrow = lb.shape[0], nchan = lb.shape[1], ncorr = lb.shape[2];
+
+    const bool has_cont = !cont_obj.is_none();
+    py::array_t<std::complex<float>, py::array::c_style | py::array::forcecast> cont;
+    if (has_cont) {
+        cont = cont_obj.cast<py::array_t<std::complex<float>,
+                                         py::array::c_style | py::array::forcecast>>();
+        if (cont.ndim() != 3 || cont.shape(0) != nrow || cont.shape(1) != nchan
+                || cont.shape(2) != ncorr)
+            throw std::invalid_argument("compress_chunk: cont must have the shape of line");
+    }
+    const bool weight_spectrum = weight.ndim() == 3;
+    if (weight_spectrum ? (weight.shape(0) != nrow || weight.shape(1) != nchan
+                           || weight.shape(2) != ncorr)
+                        : (weight.ndim() != 2 || weight.shape(0) != nrow
+                           || weight.shape(1) != ncorr))
+        throw std::invalid_argument("compress_chunk: weight must be (nrow, nchan, ncorr) "
+                                    "or (nrow, ncorr)");
+    if (flag.ndim() != 3 || flag.shape(0) != nrow || flag.shape(1) != nchan
+            || flag.shape(2) != ncorr)
+        throw std::invalid_argument("compress_chunk: flag must have the shape of line");
+    if (flag_row.size() != nrow || uvw.ndim() != 2 || uvw.shape(0) != nrow
+            || uvw.shape(1) < 2)
+        throw std::invalid_argument("compress_chunk: flag_row must be (nrow,), uvw (nrow, 3)");
+    if (freq.size() != nchan || grid_index.size() != nchan)
+        throw std::invalid_argument("compress_chunk: freq and grid_index must have nchan elements");
+    const ssize_t n_edges = edges.size();
+    if (n_edges < 2 || n_grid < 1)
+        throw std::invalid_argument("compress_chunk: need at least one annulus and one channel");
+    const ssize_t n_bins = n_edges - 1;
+    const ssize_t size = static_cast<ssize_t>(n_grid) * n_bins;
+
+    const std::complex<float>* L = line.data();
+    const std::complex<float>* Cn = has_cont ? cont.data() : nullptr;
+    const float*   W  = weight.data();
+    const bool*    F  = flag.data();
+    const bool*    FR = flag_row.data();
+    const double*  U  = uvw.data();
+    const ssize_t  uvw_stride = uvw.shape(1);
+    const double*  E  = edges.data();
+    const int64_t* GI = grid_index.data();
+
+    // per channel: b = |uv| * (nu / c), as the NumPy code; the output cell
+    std::vector<double> nu_over_c(nchan);
+    std::vector<int64_t> cell(nchan);
+    std::vector<char> on_grid(nchan);
+    for (ssize_t k = 0; k < nchan; ++k) {
+        nu_over_c[k] = freq.data()[k] / C_MS;
+        on_grid[k] = GI[k] >= 0 && GI[k] < n_grid;
+        cell[k] = std::min<int64_t>(std::max<int64_t>(GI[k], 0), n_grid - 1);
+    }
+
+    py::array_t<double> out_line({size, static_cast<ssize_t>(5)});
+    py::array_t<double> out_cont({has_cont ? size : 0, static_cast<ssize_t>(5)});
+    std::fill(out_line.mutable_data(), out_line.mutable_data() + size * 5, 0.0);
+    if (has_cont)
+        std::fill(out_cont.mutable_data(), out_cont.mutable_data() + size * 5, 0.0);
+    double* OL = out_line.mutable_data();
+    double* OC = has_cont ? out_cont.mutable_data() : nullptr;
+    long long n_rejected = 0;
+    const int n_threads = omp_get_max_threads();
+    std::vector<std::vector<double>> part_l(n_threads), part_c(n_threads);
+    std::vector<long long> part_rej(n_threads, 0);
+
+    {
+        py::gil_scoped_release release;
+        #pragma omp parallel num_threads(n_threads)
+        {
+            const int tid = omp_get_thread_num();
+            std::vector<double>& acc_l = part_l[tid];
+            std::vector<double>& acc_c = part_c[tid];
+            acc_l.assign(size * 5, 0.0);
+            if (has_cont) acc_c.assign(size * 5, 0.0);
+            long long rej = 0;
+            #pragma omp for schedule(static)
+            for (ssize_t r = 0; r < nrow; ++r) {
+                if (FR[r]) continue;
+                const double bm = std::sqrt(U[r * uvw_stride] * U[r * uvw_stride]
+                                            + U[r * uvw_stride + 1] * U[r * uvw_stride + 1]);
+                for (ssize_t k = 0; k < nchan; ++k) {
+                    const double b = bm * nu_over_c[k];
+                    const ssize_t bin = (std::upper_bound(E, E + n_edges, b) - E) - 1;
+                    const bool in_band = on_grid[k] && bin >= 0 && bin < n_bins;
+                    const ssize_t key = cell[k] * n_bins
+                                        + std::min<ssize_t>(std::max<ssize_t>(bin, 0), n_bins - 1);
+                    for (ssize_t c = 0; c < ncorr; ++c) {
+                        const ssize_t idx = (r * nchan + k) * ncorr + c;
+                        if (F[idx]) continue;
+                        const double w = weight_spectrum ? W[idx] : W[r * ncorr + c];
+                        const double re = L[idx].real(), im = L[idx].imag();
+                        if (!(w > 0.0) || (re == 0.0 && im == 0.0)) continue;
+                        bool good = std::isfinite(re) && std::isfinite(im);
+                        if (good && max_amplitude >= 0.0)
+                            good = std::hypot(re, im) <= max_amplitude;
+                        double cre = 0.0, cim = 0.0;
+                        if (has_cont) {
+                            cre = Cn[idx].real();
+                            cim = Cn[idx].imag();
+                            bool corrupt = !(std::isfinite(cre) && std::isfinite(cim));
+                            if (!corrupt && max_amplitude >= 0.0)
+                                corrupt = std::hypot(cre, cim) > max_amplitude;
+                            good = good && !corrupt;
+                        }
+                        if (!good) { ++rej; continue; }
+                        if (!in_band) continue;
+                        double* a = &acc_l[key * 5];
+                        a[0] += w * re; a[1] += w * im; a[2] += w; a[3] += w * b; a[4] += 1.0;
+                        if (has_cont) {
+                            double* q = &acc_c[key * 5];
+                            q[0] += w * cre; q[1] += w * cim; q[2] += w; q[3] += w * b; q[4] += 1.0;
+                        }
+                    }
+                }
+            }
+            part_rej[tid] = rej;
+        }
+        for (int t = 0; t < n_threads; ++t) {          // in thread order
+            if (part_l[t].empty()) continue;
+            for (ssize_t i = 0; i < size * 5; ++i) OL[i] += part_l[t][i];
+            if (has_cont)
+                for (ssize_t i = 0; i < size * 5; ++i) OC[i] += part_c[t][i];
+            n_rejected += part_rej[t];
+        }
+    }
+    py::object cont_out = has_cont ? py::object(out_cont) : py::object(py::none());
+    return py::make_tuple(out_line, cont_out, n_rejected);
+}
+
+
+// ===========================================================================
 // PYBIND11
 // ===========================================================================
 PYBIND11_MODULE(ms_ops, m)
 {
+    m.def("compress_chunk", &compress_chunk,
+          py::arg("line"), py::arg("cont"), py::arg("weight"), py::arg("flag"),
+          py::arg("flag_row"), py::arg("uvw"), py::arg("freq"), py::arg("grid_index"),
+          py::arg("edges"), py::arg("n_grid"), py::arg("max_amplitude") = -1.0,
+          "Add one chunk of rows to the sufficient statistics (channel x annulus): "
+          "returns (sums_line, sums_cont or None, n_rejected), sums (n_grid*n_bins, 5).");
+
+    m.def("continuum_subtract", &continuum_subtract,
+          py::arg("vis"), py::arg("x"), py::arg("fit"), py::arg("order"),
+          "Fit a polynomial of the given order to the fit channels of every "
+          "spectrum (real and imaginary parts separately) and subtract it. "
+          "vis is (nrow, nchan, ncorr) complex64; returns (model, vis - model).");
+
     m.def("build_regrid_plan", &build_regrid_plan,
           py::arg("freq_old"), py::arg("factor"), py::arg("start_hz") = -1.0);
 

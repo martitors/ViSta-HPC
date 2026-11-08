@@ -14,11 +14,20 @@ visibilities to ``CORRECTED_DATA``: the input column is left untouched, so
 line quantities can be measured on the subtracted column, continuum
 quantities on the model one, and the step can be rerun without damaging the
 stack.
+
+The pass is organised as the stacking is: a reader thread reads the chunks
+of rows, the C++/OpenMP kernel (``ms_ops.continuum_subtract``) fits and
+subtracts the continuum of every spectrum, a writer thread writes the two
+columns; bounded queues connect them, so reading, fitting and writing
+overlap.  The table is read and written with python-casacore.
 """
 
 from __future__ import annotations
 
 import os
+import threading
+import time
+from queue import Queue
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
@@ -99,21 +108,24 @@ def subtract_continuum(ms_path: str,
     dict
         ``{dd: order_used}`` for the processed data descriptors.
     """
-    from casatools import table                      # noqa: local import
+    from casacore.tables import table, makecoldesc, maketabdesc
+    # imported here, not at the top: the extraction must import without the
+    # compiled kernel (see vista/__init__.py)
+    try:
+        from .. import ms_ops            # installed into vista/ by 'cmake --install'
+    except ImportError:                  # or found on PYTHONPATH
+        import ms_ops
 
     if not os.path.isdir(ms_path):
         raise FileNotFoundError(f"{ms_path!r} does not exist "
                                 f"(cwd={os.getcwd()})")
     wanted = set(only_dd) if only_dd else set()
 
-    tb = table()
-    tb.open(f"{ms_path}/SPECTRAL_WINDOW")
-    chan_freq_per_spw = [np.asarray(tb.getcell("CHAN_FREQ", i), dtype=float)
-                         for i in range(tb.nrows())]
-    tb.close()
-    tb.open(f"{ms_path}/DATA_DESCRIPTION")
-    dd_to_spw = tb.getcol("SPECTRAL_WINDOW_ID")
-    tb.close()
+    with table(f"{ms_path}/SPECTRAL_WINDOW", ack=False) as tb:
+        chan_freq_per_spw = [np.asarray(tb.getcell("CHAN_FREQ", i), dtype=float)
+                             for i in range(tb.nrows())]
+    with table(f"{ms_path}/DATA_DESCRIPTION", ack=False) as tb:
+        dd_to_spw = tb.getcol("SPECTRAL_WINDOW_ID")
 
     use_bic = config.order == -1
     label = (f"BIC (delta={config.delta_bic:.1f})" if use_bic
@@ -121,15 +133,17 @@ def subtract_continuum(ms_path: str,
     _log(f"[contsub] {ms_path}: {len(dd_to_spw)} data descriptors, "
          f"order={label}", verbose=verbose)
 
+    tb = table(ms_path, readonly=False, ack=False)
     # output columns, created on the fly if missing
-    tb.open(ms_path, nomodify=False)
     existing = tb.colnames()
     for column in (config.model_column, config.line_column):
         if column not in existing:
-            tb.addcols({column: tb.getcoldesc(config.data_column)})
-    tb.close()
+            tb.addcols(maketabdesc(makecoldesc(
+                column, tb.getcoldesc(config.data_column))))
+    dd_column = tb.getcol("DATA_DESC_ID")
 
-    orders_used = {}
+    # the work: one entry per data descriptor, its rows in contiguous runs
+    tasks = []
     for dd, spw in enumerate(dd_to_spw):
         if dd < start_dd:
             continue
@@ -154,63 +168,120 @@ def subtract_continuum(ms_path: str,
             continue
 
         x0 = chan_freq[fit_mask].mean()
-        x_fit = chan_freq[fit_mask] - x0
-        x_all = chan_freq - x0
-
-        tb.open(ms_path)
-        dd_column = tb.getcol("DATA_DESC_ID")
-        tb.close()
         rows = np.where(dd_column == dd)[0]
         if rows.size == 0:
             continue
         _log(f"  [dd {dd} spw {spw}] fit channels={n_fit}/{nchan}  "
              f"rows={rows.size}", verbose=verbose)
+        runs = np.split(rows, np.where(np.diff(rows) != 1)[0] + 1)
+        chunks = [(int(run[start]), int(min(config.chunk_rows, run.size - start)))
+                  for run in runs
+                  for start in range(0, run.size, config.chunk_rows)]
+        tasks.append({"dd": dd, "fit_mask": fit_mask,
+                      "x_fit": chan_freq[fit_mask] - x0,
+                      "x_all": chan_freq - x0, "chunks": chunks,
+                      "order": None if use_bic else config.order})
 
-        order = None if use_bic else config.order
-        tb.open(ms_path, nomodify=False)
-        for start in range(0, rows.size, config.chunk_rows):
-            chunk = rows[start:start + config.chunk_rows]
-            first, n = int(chunk[0]), len(chunk)
-            data = tb.getcol(config.data_column, startrow=first, nrow=n)
-            ncorr = data.shape[0]
-            model = np.zeros_like(data)
+    # reader -> kernel -> writer, as in the stacking
+    io_lock = threading.Lock()              # one table, one thread at a time
+    read_q = Queue(maxsize=2)
+    write_q = Queue(maxsize=2)
+    failure = [None]
+    timers = {"read": 0.0, "compute": 0.0, "write": 0.0,
+              "read_wait": 0.0, "write_wait": 0.0}
 
+    def reader():
+        try:
+            for task in tasks:
+                for first, n in task["chunks"]:
+                    t0 = time.perf_counter()
+                    with io_lock:
+                        data = tb.getcol(config.data_column, startrow=first,
+                                         nrow=n)
+                    timers["read"] += time.perf_counter() - t0
+                    read_q.put((task, first, n, data))
+                    if failure[0] is not None:
+                        return
+        except Exception as exc:                     # noqa: BLE001
+            failure[0] = exc
+        finally:
+            read_q.put(None)
+
+    def writer():
+        try:
+            while True:
+                t0 = time.perf_counter()
+                item = write_q.get()
+                timers["write_wait"] += time.perf_counter() - t0
+                if item is None:
+                    return
+                first, n, model, corrected = item
+                t0 = time.perf_counter()
+                with io_lock:
+                    tb.putcol(config.model_column, model, startrow=first, nrow=n)
+                    tb.putcol(config.line_column, corrected, startrow=first,
+                              nrow=n)
+                timers["write"] += time.perf_counter() - t0
+        except Exception as exc:                     # noqa: BLE001
+            failure[0] = exc
+            while write_q.get() is not None:         # let the producer finish
+                pass
+
+    threads = [threading.Thread(target=reader, daemon=True),
+               threading.Thread(target=writer, daemon=True)]
+    for th in threads:
+        th.start()
+
+    orders_used = {}
+    try:
+        while True:
+            t0 = time.perf_counter()
+            item = read_q.get()
+            timers["read_wait"] += time.perf_counter() - t0
+            if item is None:
+                break
+            if failure[0] is not None:
+                continue
+            task, first, n, data = item
             # the order is decided once per spectral window, on the mean
-            # spectrum of the first chunk: high S/N, no extra read
-            if use_bic and order is None:
+            # spectrum of its first chunk: high S/N, no extra read
+            if task["order"] is None:
                 nonzero = data != 0
                 denom = nonzero.sum(axis=(0, 2))
-                numer = data.sum(axis=(0, 2))
+                numer = data.sum(axis=(0, 2), dtype=np.complex128)
                 mean_spec = np.where(denom > 0,
                                      numer / np.maximum(denom, 1), np.nan)
-                y = mean_spec[fit_mask]
+                y = mean_spec[task["fit_mask"]]
                 valid = np.isfinite(y)
-                order = select_order(x_fit, x_all, y, valid,
-                                     config.delta_bic,
-                                     config.require_positive_slope)
-                _log(f"    [BIC] order chosen on the mean spectrum "
-                     f"({int(valid.sum())} channels) = {order}",
-                     verbose=verbose)
-
-            need = order + 1
-            for c in range(ncorr):
-                for r in range(n):
-                    y = data[c, :, r][fit_mask]
-                    valid = np.isfinite(y)
-                    if valid.sum() < need:
-                        continue
-                    cr = np.polyfit(x_fit[valid], y[valid].real, order)
-                    ci = np.polyfit(x_fit[valid], y[valid].imag, order)
-                    model[c, :, r] = (np.polyval(cr, x_all)
-                                      + 1j * np.polyval(ci, x_all))
-
-            tb.putcol(config.model_column, model, startrow=first, nrow=n)
-            tb.putcol(config.line_column, data - model,
-                      startrow=first, nrow=n)
+                task["order"] = select_order(task["x_fit"], task["x_all"], y,
+                                             valid, config.delta_bic,
+                                             config.require_positive_slope)
+                _log(f"    [BIC] dd {task['dd']}: order chosen on the mean "
+                     f"spectrum ({int(valid.sum())} channels) = "
+                     f"{task['order']}", verbose=verbose)
+            orders_used[task["dd"]] = task["order"]
+            t0 = time.perf_counter()
+            model, corrected = ms_ops.continuum_subtract(
+                data, task["x_all"], task["fit_mask"], task["order"])
+            timers["compute"] += time.perf_counter() - t0
+            write_q.put((first, n, model, corrected))
+    except Exception as exc:                         # noqa: BLE001
+        failure[0] = exc
+        while read_q.get() is not None:              # let the reader finish
+            pass
+    finally:
+        write_q.put(None)
+        for th in threads:
+            th.join()
+        tb.flush()
         tb.close()
-        orders_used[dd] = order
+    if failure[0] is not None:
+        raise failure[0]
 
-    _log("[contsub] done.", verbose=verbose)
+    _log(f"[contsub] done.  read {timers['read']:.1f} s, "
+         f"fit (C++) {timers['compute']:.1f} s, write {timers['write']:.1f} s "
+         f"(waits: read {timers['read_wait']:.1f} s, "
+         f"write {timers['write_wait']:.1f} s)", verbose=verbose)
     return orders_used
 
 

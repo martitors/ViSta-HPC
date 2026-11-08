@@ -180,8 +180,8 @@ ViSta-HPC/
 │   ├── pipeline.py      # Main ViSta class
 │   └── extract/         # post-processing and uv-domain extraction
 │       ├── config.py    # all user-facing options
-│       ├── contsub.py   # continuum subtraction on the stack
-│       ├── statistics.py# compression into sufficient statistics
+│       ├── contsub.py   # continuum subtraction on the stack (C++ kernel)
+│       ├── statistics.py# compression into sufficient statistics (C++ kernel)
 │       ├── sources.py   # source table, cosmology, flux normalisation
 │       ├── stack.py     # weighting, combination, bootstrap, driver
 │       ├── profiles.py  # line shape and per-annulus flux
@@ -291,8 +291,11 @@ python -m vista.extract flux     line_stats.npy --input input_list.txt \
         --rest-freq 345.7959899 --weighting democratic --out stack_democratic
 ```
 
-`casatools` is needed only by the two steps that read the MS; the extraction
-itself runs in a plain numpy/scipy environment. See `docs/extraction.md` for the full parameter reference.
+The two steps that read the MS, the continuum subtraction and the
+compression, read it with `python-casacore` (installed with `dask-ms`) and
+compute with the C++ kernel, like the stacking: the package no longer needs
+`casatools` (a few scripts in `examples/` still use it).
+The extraction itself runs in a plain numpy/scipy environment. See `docs/extraction.md` for the full parameter reference.
 
 ---
 

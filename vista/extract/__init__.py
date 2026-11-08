@@ -39,7 +39,8 @@ Typical workflow
 
     print(result.summary["flux_total"], result.summary["theta_fwhm_arcsec"])
 
-Steps 1 and 2 read the MS and need ``casatools``; step 3 works on the
+Steps 1 and 2 read the MS: they need ``python-casacore`` (installed with
+``dask-ms``) and the compiled kernel ``ms_ops``.  Step 3 works on the
 compressed statistics and only needs ``numpy`` and ``scipy``, so it can run
 on a laptop and be repeated cheaply for different subsamples, weighting
 schemes and source models.

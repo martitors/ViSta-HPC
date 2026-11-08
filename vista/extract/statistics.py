@@ -25,13 +25,23 @@ The MS is opened in **read-only** mode.  Each line of the input list is
 compressed as an independent descriptor, so that different observations of
 the same source can be combined later, and the result is checkpointed after
 every data descriptor, so an interrupted run resumes where it stopped.
+
+The pass is organised as the stacking is: a reader thread reads the chunks of
+rows with python-casacore, the C++/OpenMP kernel (``ms_ops.compress_chunk``)
+adds them to the accumulators, and a bounded queue between the two lets the
+reading of a chunk overlap the compression of the previous one.
+:func:`accumulate_annuli` is the same accumulation in NumPy, kept as the
+reference.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
+from queue import Queue
 from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
@@ -43,46 +53,43 @@ FORMAT_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
-# MS access helpers
+# MS access helpers (python-casacore)
 # ---------------------------------------------------------------------------
-def _table():
-    from casatools import table                      # noqa: local import
-    return table()
+# casacore tables are not safe to use from several threads at once: every
+# access goes through this lock, as in the stacking.
+_casacore_lock = threading.Lock()
+
+
+def _table(path: str):
+    from casacore.tables import table                # noqa: local import
+    return table(path, readonly=True, ack=False)
 
 
 def _subtable_path(ms_path: str, name: str) -> str:
-    tb = _table()
     try:
-        tb.open(ms_path)
-        keyword = tb.getkeyword(name)
-        tb.close()
+        with _table(ms_path) as tb:
+            keyword = tb.getkeyword(name)
         if isinstance(keyword, str) and keyword.startswith("Table:"):
             return keyword.split("Table:", 1)[1].strip()
     except Exception:
-        try:
-            tb.close()
-        except Exception:
-            pass
+        pass
     return f"{ms_path}/{name}"
 
 
 def data_descriptor_frequencies(ms_path: str) -> Dict[int, np.ndarray]:
     """Channel frequencies of every data descriptor of the MS."""
-    tb = _table()
-    tb.open(_subtable_path(ms_path, "SPECTRAL_WINDOW"))
-    n_chan = (tb.getcol("NUM_CHAN") if "NUM_CHAN" in tb.colnames()
-              else [None] * tb.nrows())
-    per_spw = []
-    for i in range(tb.nrows()):
-        freq = np.asarray(tb.getcell("CHAN_FREQ", i), dtype=np.float64)
-        if n_chan[i] is not None:                    # strip any zero padding
-            freq = freq[:int(n_chan[i])]
-        per_spw.append(freq)
-    tb.close()
-    tb = _table()
-    tb.open(_subtable_path(ms_path, "DATA_DESCRIPTION"))
-    dd_to_spw = tb.getcol("SPECTRAL_WINDOW_ID")
-    tb.close()
+    with _casacore_lock:
+        with _table(_subtable_path(ms_path, "SPECTRAL_WINDOW")) as tb:
+            n_chan = (tb.getcol("NUM_CHAN") if "NUM_CHAN" in tb.colnames()
+                      else [None] * tb.nrows())
+            per_spw = []
+            for i in range(tb.nrows()):
+                freq = np.asarray(tb.getcell("CHAN_FREQ", i), dtype=np.float64)
+                if n_chan[i] is not None:            # strip any zero padding
+                    freq = freq[:int(n_chan[i])]
+                per_spw.append(freq)
+        with _table(_subtable_path(ms_path, "DATA_DESCRIPTION")) as tb:
+            dd_to_spw = tb.getcol("SPECTRAL_WINDOW_ID")
     return {dd: per_spw[spw] for dd, spw in enumerate(dd_to_spw)}
 
 
@@ -96,15 +103,12 @@ def primary_beam_of_entry(entry: Entry, nu_obs_hz: float):
     """
     from .sources import primary_beam_gain
     try:
-        tb = _table()
-        tb.open(_subtable_path(entry.ms, "FIELD"))
-        direction = np.asarray(tb.getcell("PHASE_DIR", entry.field or 0),
-                               dtype=float).ravel()
-        tb.close()
-        tb = _table()
-        tb.open(_subtable_path(entry.ms, "ANTENNA"))
-        dish = np.asarray(tb.getcol("DISH_DIAMETER"), dtype=float)
-        tb.close()
+        with _casacore_lock:
+            with _table(_subtable_path(entry.ms, "FIELD")) as tb:
+                direction = np.asarray(tb.getcell("PHASE_DIR", entry.field or 0),
+                                       dtype=float).ravel()
+            with _table(_subtable_path(entry.ms, "ANTENNA")) as tb:
+                dish = np.asarray(tb.getcol("DISH_DIAMETER"), dtype=float)
     except Exception:
         return 1.0, float("nan"), float("nan")
     ra0, dec0 = float(direction[0]), float(direction[1])
@@ -150,7 +154,12 @@ def _checkpoint(path: str, payload: dict):
 # ---------------------------------------------------------------------------
 def accumulate_annuli(accumulator, data, weight, b_lambda, grid_index,
                       grid_ok, edges, n_grid, n_bins):
-    """Add one chunk of visibilities to the five accumulators."""
+    """Add one chunk of visibilities to the five accumulators.
+
+    The NumPy version of ``ms_ops.compress_chunk``, kept as the reference:
+    ``data`` and ``weight`` are (ncorr, nchan, nrow), with the rejected
+    samples already at weight zero.
+    """
     bin_index = np.searchsorted(edges, b_lambda, side="right") - 1
     in_band = (bin_index >= 0) & (bin_index < n_bins) & grid_ok[:, None]
     bin_index = np.clip(bin_index, 0, n_bins - 1)
@@ -263,8 +272,9 @@ def compress_visibilities(ms_path: str,
         handful of corrupt cells, and a single one of them would poison the
         accumulators of a whole annulus.
     chunk_mb
-        Target size, in MB, of one read chunk: it sets the number of rows read
-        at a time and therefore the memory footprint.
+        Target size, in MB, of the chunks in memory at the same time (the one
+        being compressed and the two waiting in the queue): it sets the number
+        of rows read at a time and therefore the memory footprint.
     resume
         Reuse the data descriptors already present in the output files.
 
@@ -313,15 +323,22 @@ def compress_visibilities(ms_path: str,
     for tag in stored:
         stored[tag]["freq_grid"] = grid
 
-    tb = _table()
-    tb.open(ms_path)                                  # read-only
-    columns = tb.colnames()
+    try:
+        from .. import ms_ops            # installed into vista/ by 'cmake --install'
+    except ImportError:                  # or found on PYTHONPATH
+        import ms_ops
+
+    with _casacore_lock:
+        tb = _table(ms_path)                          # read-only
+        columns = tb.colnames()
     if line_column is None:
         line_column = ("CORRECTED_DATA" if "CORRECTED_DATA" in columns
                        else "DATA")
     if line_column not in columns:
+        tb.close()
         raise RuntimeError(f"column {line_column!r} is missing from {ms_path}")
     if do_continuum and continuum_column not in columns:
+        tb.close()
         raise RuntimeError(f"continuum column {continuum_column!r} is missing "
                            f"from {ms_path}: run the continuum subtraction "
                            f"first, or drop out_continuum")
@@ -331,128 +348,168 @@ def compress_visibilities(ms_path: str,
               + (f"  continuum={continuum_column}" if do_continuum else "")
               + "  (read-only)")
 
+    todo = [dd for dd in range(n_dd)
+            if not all(dd in stored[tag] for tag in stored)]
+    max_amp = -1.0 if max_amplitude is None else float(max_amplitude)
+    read_q = Queue(maxsize=2)
+    failure = [None]
+    timers = {"read": 0.0, "compress": 0.0, "read_wait": 0.0}
+
+    def reader():
+        """Read every data descriptor, chunk by chunk, onto the queue:
+        ("empty", dd), or ("start", dd, n_rows), ("chunk", dd, arrays)...,
+        ("end", dd)."""
+        try:
+            for dd in todo:
+                entry = entries[dd] if dd < len(entries) else None
+                n_chan = len(dd_frequencies[dd])
+                if entry is None or n_chan == 0:
+                    read_q.put(("empty", dd))
+                    continue
+                t0 = time.perf_counter()
+                with _casacore_lock:
+                    selection = tb.query(
+                        f"DATA_DESC_ID=={dd} && ANTENNA1!=ANTENNA2")
+                    n_rows = selection.nrows()
+                    if n_rows:
+                        n_corr = selection.getcell("WEIGHT", 0).shape[0]
+                        has_weight_spectrum = ("WEIGHT_SPECTRUM"
+                                               in selection.colnames())
+                        if has_weight_spectrum:
+                            try:
+                                selection.getcell("WEIGHT_SPECTRUM", 0)
+                            except Exception:
+                                has_weight_spectrum = False
+                timers["read"] += time.perf_counter() - t0
+                if n_rows == 0:
+                    with _casacore_lock:
+                        selection.close()
+                    read_q.put(("empty", dd))
+                    continue
+                n_read = 1 + int(do_continuum)
+                bytes_per_row = ((8 * n_read + 1 + (4 if has_weight_spectrum
+                                                    else 0))
+                                 * n_corr * n_chan + 32)
+                chunk = max(1, int(chunk_mb * 1e6 / bytes_per_row / 3))
+                read_q.put(("start", dd, n_rows))
+                for start in range(0, n_rows, chunk):
+                    n = min(chunk, n_rows - start)
+                    t0 = time.perf_counter()
+                    with _casacore_lock:
+                        arrays = {
+                            "uvw": selection.getcol("UVW", start, n),
+                            "flag_row": selection.getcol("FLAG_ROW", start, n),
+                            "flag": selection.getcol("FLAG", start, n),
+                            "weight": selection.getcol(
+                                "WEIGHT_SPECTRUM" if has_weight_spectrum
+                                else "WEIGHT", start, n),
+                            "line": selection.getcol(line_column, start, n),
+                            "cont": (selection.getcol(continuum_column,
+                                                      start, n)
+                                     if do_continuum else None)}
+                    timers["read"] += time.perf_counter() - t0
+                    read_q.put(("chunk", dd, arrays))
+                    if failure[0] is not None:
+                        return
+                with _casacore_lock:
+                    selection.close()
+                read_q.put(("end", dd))
+        except Exception as exc:                     # noqa: BLE001
+            failure[0] = exc
+        finally:
+            read_q.put(None)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+
     n_rejected_total = 0
-    for dd in range(n_dd):
-        if all(dd in stored[tag] for tag in stored):
-            continue
-        entry = entries[dd] if dd < len(entries) else None
-        freq = dd_frequencies[dd]
-        n_chan = len(freq)
-        grid_index = np.rint((freq - f0) / dnu).astype(np.int64)
-        grid_ok = (grid_index >= 0) & (grid_index < n_grid)
-        empty = {"sums": np.zeros((n_grid, n_bins, 5)), "freq": freq}
-        if entry is None or n_chan == 0:
-            for tag in stored:
-                stored[tag][dd] = dict(empty)
-                _checkpoint(outputs[tag], stored[tag])
-            continue
+    state = {}
+    try:
+        while True:
+            t0 = time.perf_counter()
+            item = read_q.get()
+            timers["read_wait"] += time.perf_counter() - t0
+            if item is None:
+                break
+            if failure[0] is not None:
+                continue
+            kind, dd = item[0], item[1]
+            freq = dd_frequencies[dd]
+            if kind == "empty":
+                empty = {"sums": np.zeros((n_grid, n_bins, 5)), "freq": freq}
+                for tag in stored:
+                    stored[tag][dd] = dict(empty)
+                    _checkpoint(outputs[tag], stored[tag])
+            elif kind == "start":
+                grid_index = np.rint((freq - f0) / dnu).astype(np.int64)
+                state = {"n_rows": item[2], "n_rejected": 0,
+                         "grid_index": grid_index,
+                         "acc": {tag: np.zeros((n_grid * n_bins, 5))
+                                 for tag in outputs}}
+            elif kind == "chunk":
+                a = item[2]
+                t0 = time.perf_counter()
+                sums_line, sums_cont, n_rejected = ms_ops.compress_chunk(
+                    a["line"], a["cont"], a["weight"], a["flag"],
+                    a["flag_row"], a["uvw"], freq, state["grid_index"], edges,
+                    n_grid, max_amp)
+                timers["compress"] += time.perf_counter() - t0
+                state["acc"]["line"] += sums_line
+                if do_continuum:
+                    state["acc"]["continuum"] += sums_cont
+                state["n_rejected"] += int(n_rejected)
+            else:                                             # "end"
+                entry = entries[dd]
+                n_rows, n_rejected = state["n_rows"], state["n_rejected"]
+                n_rejected_total += n_rejected
+                nu_obs = ((line.rest_freq_hz if line is not None
+                           else float(np.median(freq))) / (1.0 + entry.z))
+                pb_gain, pb_offset, pb_dish = primary_beam_of_entry(entry, nu_obs)
+                for tag in stored:
+                    stored[tag].setdefault("primary_beam", {})[dd] = pb_gain
+                if verbose:
+                    if np.isfinite(pb_offset):
+                        print(f"  dd={dd:>3} primary beam A={pb_gain:.3f}  "
+                              f"offset={pb_offset:.1f}\"  D={pb_dish:.1f} m")
+                        if pb_gain < 0.5:
+                            print(f"  dd={dd:>3} WARNING: the source is beyond half the "
+                                  f"primary beam (A={pb_gain:.3f}, offset {pb_offset:.1f}\"): "
+                                  f"the correction is large and the Gaussian beam "
+                                  f"approximate there")
+                    else:
+                        print(f"  dd={dd:>3} WARNING: cannot read {entry.ms}, "
+                              f"primary beam not corrected (A=1)")
+                meta = {"z": entry.z, "ms": entry.ms,
+                        "ra_deg": entry.coordinates_deg[0],
+                        "dec_deg": entry.coordinates_deg[1],
+                        "n_rows": int(n_rows), "n_rejected": int(n_rejected)}
+                for tag, accumulator in state["acc"].items():
+                    stored[tag][dd] = {"sums": accumulator.reshape(n_grid, n_bins, 5),
+                                       "freq": freq, "meta": meta}
+                    _checkpoint(outputs[tag], stored[tag])
+                if verbose:
+                    note = (f"  rejected={n_rejected:,}" if n_rejected else "")
+                    print(f"  dd={dd:>3} z={entry.z:<7.4f} rows={n_rows:>9,}{note}"
+                          f"  [checkpoint]")
+                    sys.stdout.flush()
+    except Exception as exc:                                  # noqa: BLE001
+        failure[0] = exc
+        while read_q.get() is not None:                       # let the reader finish
+            pass
+    finally:
+        thread.join()
+        with _casacore_lock:
+            tb.close()
+    if failure[0] is not None:
+        raise failure[0]
 
-        selection = tb.query(f"DATA_DESC_ID=={dd} && ANTENNA1!=ANTENNA2")
-        n_rows = selection.nrows()
-        if n_rows == 0:
-            selection.close()
-            for tag in stored:
-                stored[tag][dd] = dict(empty)
-                _checkpoint(outputs[tag], stored[tag])
-            continue
-
-        n_corr = selection.getcell("WEIGHT", 0).shape[0]
-        has_weight_spectrum = "WEIGHT_SPECTRUM" in selection.colnames()
-        if has_weight_spectrum:
-            try:
-                selection.getcell("WEIGHT_SPECTRUM", 0)
-            except Exception:
-                has_weight_spectrum = False
-        n_read = 1 + int(do_continuum)
-        bytes_per_row = ((16 * n_read + 1 + (8 if has_weight_spectrum else 0))
-                         * n_corr * n_chan + 96)
-        chunk = max(1, int(chunk_mb * 1e6 / bytes_per_row))
-
-        accumulators = {"line": np.zeros((n_grid * n_bins, 5))}
-        if do_continuum:
-            accumulators["continuum"] = np.zeros((n_grid * n_bins, 5))
-        n_rejected = 0
-
-        for start in range(0, n_rows, chunk):
-            n = min(chunk, n_rows - start)
-            uvw = selection.getcol("UVW", start, n)
-            flag_row = selection.getcol("FLAG_ROW", start, n).astype(bool)
-            flag = selection.getcol("FLAG", start, n)
-            if has_weight_spectrum:
-                weight = selection.getcol("WEIGHT_SPECTRUM", start, n)
-            else:
-                weight = (selection.getcol("WEIGHT", start, n)[:, None, :]
-                          * np.ones((1, n_chan, 1)))
-            data_line = selection.getcol(line_column, start, n)
-            data_cont = (selection.getcol(continuum_column, start, n)
-                         if do_continuum else None)
-
-            good = ((~flag) & (~flag_row[None, None, :]) & (weight > 0)
-                    & (data_line != 0) & np.isfinite(data_line))
-            if max_amplitude is not None:
-                good &= np.abs(data_line) <= max_amplitude
-            if data_cont is not None:
-                corrupt = ~np.isfinite(data_cont)
-                if max_amplitude is not None:
-                    corrupt |= np.abs(data_cont) > max_amplitude
-                good &= ~corrupt
-            n_rejected += int(np.sum((~good) & (~flag)
-                                     & (~flag_row[None, None, :])
-                                     & (weight > 0) & (data_line != 0)))
-            weight = np.where(good, weight, 0.0)
-            data_line = np.where(good, data_line, 0.0)
-            if data_cont is not None:
-                data_cont = np.where(good, data_cont, 0.0)
-
-            b_lambda = (np.sqrt(uvw[0] ** 2 + uvw[1] ** 2)[None, :]
-                        * (freq[:, None] / C_MS))
-            accumulate_annuli(accumulators["line"], data_line, weight,
-                              b_lambda, grid_index, grid_ok, edges,
-                              n_grid, n_bins)
-            if do_continuum:
-                accumulate_annuli(accumulators["continuum"], data_cont,
-                                  weight, b_lambda, grid_index, grid_ok,
-                                  edges, n_grid, n_bins)
-            del uvw, data_line, data_cont, weight, good
-        selection.close()
-
-        n_rejected_total += n_rejected
-        nu_obs = ((line.rest_freq_hz if line is not None
-                   else float(np.median(freq))) / (1.0 + entry.z))
-        pb_gain, pb_offset, pb_dish = primary_beam_of_entry(entry, nu_obs)
-        for tag in stored:
-            stored[tag].setdefault("primary_beam", {})[dd] = pb_gain
-        if verbose:
-            if np.isfinite(pb_offset):
-                print(f"  dd={dd:>3} primary beam A={pb_gain:.3f}  "
-                      f"offset={pb_offset:.1f}\"  D={pb_dish:.1f} m")
-                if pb_gain < 0.5:
-                    print(f"  dd={dd:>3} WARNING: the source is beyond half the "
-                          f"primary beam (A={pb_gain:.3f}, offset {pb_offset:.1f}\"): "
-                          f"the correction is large and the Gaussian beam "
-                          f"approximate there")
-            else:
-                print(f"  dd={dd:>3} WARNING: cannot read {entry.ms}, "
-                      f"primary beam not corrected (A=1)")
-        meta = {"z": entry.z, "ms": entry.ms,
-                "ra_deg": entry.coordinates_deg[0],
-                "dec_deg": entry.coordinates_deg[1],
-                "n_rows": int(n_rows), "n_rejected": int(n_rejected)}
-        for tag, accumulator in accumulators.items():
-            stored[tag][dd] = {"sums": accumulator.reshape(n_grid, n_bins, 5),
-                               "freq": freq, "meta": meta}
-            _checkpoint(outputs[tag], stored[tag])
-        if verbose:
-            note = (f"  rejected={n_rejected:,}" if n_rejected else "")
-            print(f"  dd={dd:>3} z={entry.z:<7.4f} rows={n_rows:>9,}{note}"
-                  f"  [checkpoint]")
-            sys.stdout.flush()
-
-    tb.close()
     if verbose:
         if n_rejected_total:
             print(f"[compress] {n_rejected_total:,} corrupt or out-of-range "
                   f"samples discarded")
+        print(f"[compress] read {timers['read']:.1f} s, compression (C++) "
+              f"{timers['compress']:.1f} s (wait for the reader "
+              f"{timers['read_wait']:.1f} s)")
         print("[compress] done -> " + ", ".join(outputs.values()))
     return outputs
 

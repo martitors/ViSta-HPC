@@ -28,8 +28,8 @@ below refer to that text.
 | Step | Function | Reads | Needs |
 |------|----------|-------|-------|
 | 1. Stacking | `ViSta.run` | the input datasets | `dask-ms`, `ms_ops` |
-| 2. Continuum subtraction | `subtract_continuum` | the stacked MS, read/write | `casatools` |
-| 3. Compression | `compress_visibilities` | the stacked MS, read-only | `casatools` |
+| 2. Continuum subtraction | `subtract_continuum` | the stacked MS, read/write | `python-casacore`, `ms_ops` |
+| 3. Compression | `compress_visibilities` | the stacked MS, read-only | `python-casacore`, `ms_ops` |
 | 4. Extraction | `extract_flux` | the compressed statistics | `numpy`, `scipy` |
 
 Only steps 2 and 3 touch the MS. Step 4 works on a file of a few MB, so it
@@ -238,7 +238,7 @@ difference is itself informative about the depth distribution of the sample.
 | `require_positive_slope` | `True` | With `order=-1`, accept order 1 only for a rising continuum |
 | `exclude_kms_lo/hi` | the line window | Widen or skew the mask where a neighbouring line or feature falls inside the fitted range |
 | `exclude_v_kms` | `()` | Extra intervals, e.g. a known absorption feature |
-| `chunk_rows` | `50 000` | Lower it if memory is tight |
+| `chunk_rows` | `50 000` | Lower it if memory is tight (about 0.1 GB per 10 000 rows of 60 channels, queues included) |
 
 ### Radial binning
 

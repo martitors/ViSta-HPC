@@ -511,4 +511,4 @@ echo "done."
 echo "  stacked MS : $MS"
 echo "  statistics : $STATS_LINE$([ "$CONTINUUM" = before ] && echo ", $STATS_CONT")"
 echo "  results    : $OUTDIR/${TAG}_*_results.json"
-[ "$PLOT" = 1 ] && echo "  figures    : $OUTDIR/${TAG}_*.png"
+if [ "$PLOT" = 1 ]; then echo "  figures    : $OUTDIR/${TAG}_*.png"; fi
