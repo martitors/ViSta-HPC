@@ -7,6 +7,7 @@
 [![Documentation](https://readthedocs.org/projects/vista-hpc/badge/?version=latest)](https://vista-hpc.readthedocs.io/en/latest/)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martitors/ViSta-HPC/blob/extract_opt/examples/ViSta_tutorial.ipynb)
 [![PASP](https://img.shields.io/badge/PASP-137%2C%20124501-blue)](https://doi.org/10.1088/1538-3873/ae1faf)
+[![SPIE](https://img.shields.io/badge/Proc.%20SPIE-14153%2C%20141531X-blue)](https://doi.org/10.1117/12.3103792)
 
 **ViSta** stacks interferometric observations of many faint sources in the
 **visibility (uv) plane** and measures the stacked emission: line profile,
@@ -43,7 +44,7 @@ cmake --build build -j && cmake --install build
 ## Quick start
 
 ```bash
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --frame LSRK \
+./run_vista.sh --input input_list.txt --rest-freq 345.79599 \
                --velocity-range 900 --v-window "-500 500" --contsub before \
                --method joint --mode search --unit Jy --out-dir co32
 ```
@@ -56,14 +57,16 @@ from vista.extract import LineConfig, ContinuumConfig, measure_line
 
 line = LineConfig(rest_freq_ghz=345.79599, v_window_kms=(-500, 500))
 ViSta("input_list.txt").run("stack.zarr", central_freq=line.rest_freq_hz,
-                            velocity_range_kms=900, frame="LSRK",
+                            velocity_range_kms=900,
                             line=line, continuum=ContinuumConfig(order=0),
                             stats_line="line_stats.npy", stats_continuum="cont_stats.npy")
 result = measure_line("line_stats.npy", "input_list.txt", line, output_prefix="co32")
 ```
 
 with `input_list.txt` holding one dataset per line:
-`<ms_path> <redshift> <RA> <Dec> [FIELD_ID] [SPW_IDS] [NORM]`.
+`<ms_path> <redshift> <RA> <Dec> [FIELD_ID] [SPW_IDS] [NORM]`. The redshifts
+are taken in LSRK and the inputs are brought to it; add `--frame BARY`
+(`frame="BARY"`) if yours are barycentric.
 
 The [worked example](https://vista-hpc.readthedocs.io/en/latest/examples/index.html)
 (`examples/ViSta_tutorial.ipynb`, runs on
@@ -72,21 +75,41 @@ goes through every step on simulated ALMA data, against the true signal.
 
 ## Citation
 
-> Torsello et al. (2025), *The ViSta method for optimized stacking of broadband
-> interferometric data in the Fourier domain*, PASP 137, 124501,
+> Torsello et al. (2025), *The ViSta method for stacking in the Fourier domain
+> and its application to the dusty star-forming galaxies in the ALMA Science
+> Archive*, PASP 137, 124501,
 > [doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-3873/ae1faf)
+>
+> Torsello et al. (2026), *The ViSta method for optimized stacking of broadband
+> interferometric data in the Fourier domain*, Proc. SPIE 14153, 141531X,
+> [doi:10.1117/12.3103792](https://doi.org/10.1117/12.3103792)
 
 ```bibtex
 @article{Torsello2025,
   author  = {Torsello, M. and Massardi, M. and Liuzzo, E. and
              Gururajan, G. and Perrotta, F. and Lapi, A.},
-  title   = {The {ViSta} method for optimized stacking of broadband
-             interferometric data in the {Fourier} domain},
+  title   = {The {ViSta} method for stacking in the {Fourier} domain and its
+             application to the dusty star-forming galaxies in the {ALMA}
+             Science Archive},
   journal = {Publ. Astron. Soc. Pac.},
   volume  = {137},
+  number  = {12},
   pages   = {124501},
   year    = {2025},
   doi     = {10.1088/1538-3873/ae1faf}
+}
+
+@inproceedings{Torsello2026,
+  author    = {Torsello, M. and Massardi, M. and Liuzzo, E. and
+               Gururajan, G. and Perrotta, F. and Lapi, A.},
+  title     = {The {ViSta} method for optimized stacking of broadband
+               interferometric data in the {Fourier} domain},
+  booktitle = {Radio Telescopes, Technologies, and Methods},
+  series    = {Proc. SPIE},
+  volume    = {14153},
+  pages     = {141531X},
+  year      = {2026},
+  doi       = {10.1117/12.3103792}
 }
 ```
 

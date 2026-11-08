@@ -26,7 +26,6 @@ ViSta("input_list.txt").run(
     output="stack.zarr",                            # the stack (Zarr store)
     central_freq=line.rest_freq_hz,                 # centre of the output grid, Hz
     velocity_range_kms=900,                         # channels from -900 to +900 km/s
-    frame="LSRK",                                   # the frame of the redshifts
     line=line,
     continuum=ContinuumConfig(order=0),             # continuum fitted outside the window
     stats_line="line_stats.npy",                    # compressed statistics of the line
@@ -34,8 +33,9 @@ ViSta("input_list.txt").run(
     binning=BinningConfig(b_min_klambda=3, b_max_klambda=3000, n_bins=18))
 ```
 
-Each dataset is re-centred on its source, brought to the rest frame and
-regridded onto the common grid; the continuum is fitted row by row on the
+Each dataset is re-centred on its source, brought to the rest frame (its
+frequencies first corrected to LSRK, the frame of the redshifts by default:
+`frame="BARY"` if yours are barycentric) and regridded onto the common grid; the continuum is fitted row by row on the
 channels outside the line window and subtracted (`MODEL_DATA`,
 `CORRECTED_DATA`; `DATA` is kept); and the visibilities are summed in annuli
 of baseline length, channel by channel, into two files of a few MB. The
@@ -69,7 +69,7 @@ weighting, a size prior, another mode) without touching the stack.
 ## The same from the command line
 
 ```bash
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --frame LSRK \
+./run_vista.sh --input input_list.txt --rest-freq 345.79599 \
                --velocity-range 900 --v-window "-500 500" --contsub before \
                --method joint --mode search --unit Jy --out-dir co32
 ```

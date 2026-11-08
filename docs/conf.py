@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "ViSta"
 author = "Martina Torsello"
 copyright = "2025-2026, Martina Torsello"
-release = "2.5.0"
+release = "2.5.1"
 version = "2.5"
 
 extensions = [

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="vista-hpc",
-    version="2.5.0",
+    version="2.5.1",
     description="HPC-optimised visibility-domain stacking for interferometric data",
     author="Martina Torsello",
     packages=find_packages(),

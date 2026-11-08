@@ -324,12 +324,10 @@ class ViSta:
         """Correlations and spectral frame of every entry, and its Doppler
         factor if needed.
 
-        Sets ``self._doppler``: for every entry None (no correction) or a
-        :class:`vista.frames.EntryFrame`, when ``self.frame`` is set and the
-        SPWs are in another frame.  Every k is computed here, in the main
-        process and in a fixed order, so that a run is reproducible bit for
-        bit.  Without ``self.frame``, inputs in TOPO or GEO only give a
-        warning with the size of the effect.
+        Sets ``self._doppler``: for every entry None (its SPWs are already in
+        ``self.frame``) or a :class:`vista.frames.EntryFrame` (they are in
+        another frame).  Every k is computed here, in the main process and in
+        a fixed order, so that a run is reproducible bit for bit.
         """
         from .common import casacore_lock, parse_ra_dec
         from .frames import check_frames
@@ -364,7 +362,7 @@ class ViSta:
 
     def run(self, output=None, central_freq=None, scratch_dir=None, nchan_out=None,
             velocity_range_kms=None, channel_width_hz=None,
-            data_column="auto", frame=None, device="cpu", n_readers=2, n_threads=None,
+            data_column="auto", frame="LSRK", device="cpu", n_readers=2, n_threads=None,
             gpu_batch=8, output_format=None, n_writers=4, compress=True,
             timing=False, log_file=None, reader_mode="process", chunk_queue=None,
             out_queue=None, ms_out=None, line=None, continuum=None, stats_line=None,
@@ -401,15 +399,17 @@ class ViSta:
             Column to stack.  ``'auto'`` takes CORRECTED_DATA when present,
             otherwise DATA; any other name is read when present, otherwise
             DATA is used (with a warning).
-        frame : str or None, default None
+        frame : str, default 'LSRK'
             The frame of the redshifts: ``'LSRK'`` or ``'BARY'`` (also
             ``'LSRD'``, ``'GALACTO'``, ``'LGROUP'``, ``'CMB'``).  The input
-            frequencies are brought to it row by row before the rest-framing,
-            from the time of each row, the position of the array and the
-            direction of the source (see vista.frames): this removes the
-            motion of the Earth from TOPO data (ALMA, VLA).  Inputs already in
-            that frame are left as they are.  ``None``: the frequencies are
-            used as they are, with a warning for TOPO inputs.
+            frequencies are always brought to it, row by row, before the
+            rest-framing, from the time of each row, the position of the
+            array and the direction of the source (see vista.frames): this
+            removes the motion of the Earth from TOPO data (ALMA, VLA).
+            Inputs already in that frame are left as they are, so the
+            correction costs nothing when it is not needed.  Give ``'BARY'``
+            when the redshifts are barycentric or heliocentric, as optical
+            spectroscopic redshifts usually are.
         device : {'cpu', 'gpu'}, default 'cpu'
             Where the kernel runs.  ``'gpu'`` needs a CUDA build
             (``-DWITH_CUDA=ON``) and a visible GPU.  With an MS output the run
@@ -510,11 +510,12 @@ class ViSta:
             compute.check_gpu()
             chunk_queue = max(chunk_queue, gpu_batch)   # a whole batch must fit
         self.data_column = data_column
-        if frame is not None:
-            from .frames import TARGET_FRAMES
-            frame = str(frame).upper()
-            if frame not in TARGET_FRAMES:
-                raise ValueError(f"frame must be None or one of {TARGET_FRAMES}")
+        from .frames import TARGET_FRAMES
+        frame = None if frame is None else str(frame).upper()
+        if frame not in TARGET_FRAMES:
+            raise ValueError(f"frame must be the frame of the redshifts, one of "
+                             f"{TARGET_FRAMES} (default 'LSRK'), not {frame!r}: the "
+                             f"inputs are always brought to it")
         self.frame = frame
 
         n_ms = len(self.ms_list)

@@ -15,7 +15,7 @@ result = pipeline.run(
     output="stack.zarr",      # Zarr store, written in parallel (output_format="ms" for an MS)
     central_freq=153.253e9,   # Hz -- rest-frame central frequency of the output grid
     nchan_out=1000,           # number of output channels
-    frame="LSRK",             # frame of the redshifts ("LSRK" or "BARY"); None: no correction
+    frame="LSRK",             # frame of the redshifts: "LSRK" (default) or "BARY"
     device="cpu",             # "gpu" with a CUDA build of the kernel
     n_readers=2,              # MSs read in parallel
     timing=True,              # log how long reading, computing and writing took

@@ -16,7 +16,7 @@ works on a few MB and is cheap to repeat. The package must be importable
 
 ```bash
 # everything, the continuum subtracted first, the line searched for
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --frame LSRK \
+./run_vista.sh --input input_list.txt --rest-freq 345.79599 \
                --velocity-range 900 --v-window "-500 500" --contsub before \
                --method joint --mode search --unit Jy --out-dir co32
 
@@ -61,7 +61,7 @@ meaning of each is on the page of its step.
 | `--velocity-range KMS` | 2000 | half-width of the output band ([Spectral grid](stacking/spectral_grid)) |
 | `--nchan N` | | number of output channels instead |
 | `--width HZ` | coarsest rest-frame channel | common channel width |
-| `--frame {LSRK,BARY}` | none | frame of the redshifts ([Rest frame](stacking/restframing)) |
+| `--frame {LSRK,BARY}` | `LSRK` | frame of the redshifts: the inputs are always brought to it ([Rest frame](stacking/restframing)) |
 | `--in-column NAME` | `auto` | column read: `auto` prefers `CORRECTED_DATA` |
 | `--format {zarr,ms}` | `zarr` | format of the stack ([The stack on disk](stacking/combination)) |
 | `--export-ms` | | also write the stack as a Measurement Set |

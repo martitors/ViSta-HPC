@@ -79,6 +79,10 @@ New in v2.5:
       (mode='detect') or search with its significance from null realisations
     - examples/plot_line.py: the figures of measure_line from its output
       files (numpy + matplotlib only), to restyle them
+
+New in v2.5.1:
+    - frame='LSRK' by default: the inputs are always brought to the frame of
+      the redshifts (TOPO data corrected row by row); frame=None is refused
 """
 
 import logging as _logging
@@ -86,7 +90,7 @@ import sys as _sys
 import time as _time
 
 __all__ = ["ViSta", "set_verbosity", "export_ms", "open_stack"]
-__version__ = "2.5.0"
+__version__ = "2.5.1"
 
 
 # ---------------------------------------------------------------------------

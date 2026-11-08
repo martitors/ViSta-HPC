@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.5.1
+
+**The frame of the redshifts by default**: `run(frame="LSRK")` and `run_vista.sh --frame LSRK` are the default. The input frequencies are always brought to the frame of the redshifts, row by row (TOPO data from ALMA and the VLA have the Earth's motion removed); inputs already in that frame are left as they are, so stacks of inputs labelled LSRK, such as the simulated ones, do not change. `frame="BARY"` for barycentric redshifts. `frame=None`, which used the frequencies as they are, is refused.
+
+**Citation**: the PASP paper has its own title (*The ViSta method for stacking in the Fourier domain and its application to the dusty star-forming galaxies in the ALMA Science Archive*); the optimized version is described in Proc. SPIE 14153, 141531X (2026).
+
 ## v2.5
 
 **Documentation**: a Sphinx site for Read the Docs (`docs/`, `.readthedocs.yaml`): installation, every step of the stacking, the measurement, the command line, the worked example as pages with its results (generated from the executed notebook by `docs/_tools/notebook_to_pages.py`), the parameters, the API, performance and changelog. The README is now a short introduction. `examples/simulate.py`: `band_offset_kms` (the line away from the band centre), `t0` and `layout_seed` (other dates and arrays), `noise_seed` (a new noise realisation with the same weights).

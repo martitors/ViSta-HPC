@@ -3,14 +3,9 @@
 [![Documentation](https://readthedocs.org/projects/vista-hpc/badge/?version=latest)](https://vista-hpc.readthedocs.io/en/latest/)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martitors/ViSta-HPC/blob/extract_opt/examples/ViSta_tutorial.ipynb)
 [![PASP](https://img.shields.io/badge/PASP-137%2C%20124501-blue)](https://doi.org/10.1088/1538-3873/ae1faf)
+[![SPIE](https://img.shields.io/badge/Proc.%20SPIE-14153%2C%20141531X-blue)](https://doi.org/10.1117/12.3103792)
 
-**ViSta** stacks interferometric observations of many faint sources **in the
-visibility (uv) plane** and measures the stacked emission: line profile,
-flux, width, size, continuum and significance. It combines datasets of
-sources at different redshifts, observed with different telescopes, array
-configurations and spectral setups, by re-centring each one on its source,
-bringing it to the rest frame and regridding it onto a common grid, and then
-measures the stack directly on the visibilities, without imaging.
+**ViSta** is a visibility-domain stacking method that combines interferometric observations in the Fourier domain from radio to sub-millimeter wavelengths. It combines datasets of sources at different redshifts, observed with different telescopes, array configurations and spectral setups. By stacking visibilities directly and transforming them into the rest frame, ViSta enhances the signal and suppresses noise through extended uv-coverage, without requiring imaging reconstruction.
 
 ```{image} _static/stacked_line.png
 :alt: A stacked CO(3-2) line measured by ViSta on a simulated sample, with the true signal
@@ -21,10 +16,6 @@ measures the stack directly on the visibilities, without imaging.
 *A CO(3–2) line stacked from twelve simulated ALMA Band 3 observations at
 z = 2–3, none of which detects it alone (from the [Examples](examples/index)).*
 
-The method is described in Torsello et al. (2025), *The ViSta method for
-optimized stacking of broadband interferometric data in the Fourier domain*,
-PASP 137, 124501 ([doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-3873/ae1faf)).
-
 ```{list-table}
 :widths: 20 80
 
@@ -33,12 +24,39 @@ PASP 137, 124501 ([doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-38
 * - **Input**
   - Measurement Sets of any telescope (ALMA, VLA, NOEMA, MeerKAT, ...)
 * - **Output**
-  - a stack (Zarr store or Measurement Set), compressed statistics, the measured line and continuum, figures
+  - Stacked dataset (Zarr store or Measurement Set), compressed statistics, the measured line and continuum, figures
 * - **Repository**
   - [github.com/martitors/ViSta-HPC](https://github.com/martitors/ViSta-HPC)
 * - **License**
   - MIT
 ```
+
+## From ViSta 1.0 to this version
+
+**ViSta 1.0** ([github.com/martitors/ViSta](https://github.com/martitors/ViSta))
+is the first implementation of the method, built on CASA and presented in
+Torsello et al. (2025), *The ViSta method for stacking in the Fourier domain
+and its application to the dusty star-forming galaxies in the ALMA Science
+Archive*, PASP 137, 124501
+([doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-3873/ae1faf)).
+Each dataset is centred on its source, brought to the rest frame by scaling
+its frequencies, uv coordinates and antenna positions by (1 + z), rebinned
+onto a common spectral grid, and concatenated with the others into a single
+Measurement Set, as if it were one more epoch or configuration of the same
+target. The stack is then measured in the uv plane with UVMultiFit, or
+imaged with `tclean`. On simulations ViSta matches image-plane stacking for
+point sources and recovers the flux of faint extended sources more
+accurately; on the CO(3–2) emission of dusty star-forming galaxies from the
+ALMA Science Archive it outperforms image-plane stacking when the individual
+sources are hard to detect. Each CASA step, however, writes a full copy of
+the data before the next one starts, and the steps run one after the other.
+
+**This version** keeps the method and replaces the CASA functions with a
+self-contained Python package and a compiled C++/OpenMP kernel, with
+optional GPU acceleration, as described in Torsello et al. (2026), *The ViSta
+method for optimized stacking of broadband interferometric data in the
+Fourier domain*, Proc. SPIE 14153, 141531X
+([doi:10.1117/12.3103792](https://doi.org/10.1117/12.3103792)).
 
 ## What it does
 
@@ -53,9 +71,10 @@ PASP 137, 124501 ([doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-38
   data, the correlation between channels in every error, the size of the
   source and the significance of the detection.
 - **Heterogeneous samples**: every dataset can have its own redshift,
-  array, channel width, bandwidth, phase centre and spectral frame.
-- **Repeatable**: the measurement runs on a few MB of statistics, in
-  seconds, as often as needed (weighting, normalisation, source model).
+  array, channel width, bandwidth, phase centre and spectral frame; the
+  frequencies are always brought to the frame of the redshifts (LSRK by
+  default).
+
 
 ## In short
 
@@ -63,7 +82,7 @@ PASP 137, 124501 ([doi:10.1088/1538-3873/ae1faf](https://doi.org/10.1088/1538-38
 git clone https://github.com/martitors/ViSta-HPC.git && cd ViSta-HPC
 pip install -r requirements.txt pybind11
 cmake -S . -B build && cmake --build build -j && cmake --install build
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --frame LSRK
+./run_vista.sh --input input_list.txt --rest-freq 345.79599
 ```
 
 or from Python:
@@ -74,7 +93,7 @@ from vista.extract import LineConfig, ContinuumConfig, measure_line
 
 line = LineConfig(rest_freq_ghz=345.79599, v_window_kms=(-500, 500))
 ViSta("input_list.txt").run("stack.zarr", central_freq=line.rest_freq_hz,
-                            velocity_range_kms=900, frame="LSRK",
+                            velocity_range_kms=900,
                             line=line, continuum=ContinuumConfig(order=0),
                             stats_line="line_stats.npy", stats_continuum="cont_stats.npy")
 result = measure_line("line_stats.npy", "input_list.txt", line, output_prefix="stack")

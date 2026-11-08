@@ -76,8 +76,8 @@ CHUNK_ROWS=5000             # rows per chunk (bounds the memory in use)
 SCRATCH="${TMPDIR:-}"       # build the stack on fast local disk, then move it
 IN_COLUMN="auto"            # column read from each input MS: auto prefers
                             # CORRECTED_DATA, or name one (DATA, ...)
-FRAME=""                    # frame of the redshifts (LSRK, BARY): the inputs
-                            # are corrected to it row by row; empty = none
+FRAME="LSRK"                # frame of the redshifts (LSRK, BARY): the inputs
+                            # are always corrected to it, row by row
 DEVICE="cpu"                # cpu | gpu (needs a CUDA build of the kernel)
 READERS=2                   # reader processes
 THREADS=""                  # OpenMP threads; empty = OMP_NUM_THREADS or all cores
@@ -177,8 +177,9 @@ Options
                           DATA explicitly when CORRECTED_DATA holds something
                           you do not want, as in a corrupted simulation.
   --frame NAME            frame of the redshifts, LSRK or BARY: the inputs
-                          (ALMA, VLA: TOPO) are corrected to it row by row.
-                          Default: no correction, with a warning for TOPO
+                          (ALMA, VLA: TOPO) are always corrected to it, row
+                          by row; inputs already in it are left as they are.
+                          BARY for barycentric (optical) redshifts  (default LSRK)
   --device {cpu,gpu}      where the stacking kernel runs            (default cpu)
   --readers N             reader processes                          (default 2)
   --threads N             OpenMP threads of the CPU kernel  (default: all cores)
