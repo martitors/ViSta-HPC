@@ -1,6 +1,6 @@
 # 4. Measuring the stacked line at a known width
 
-`v.extract(...)` sets the measurement, `run(only="measure")` runs it: it fits **all channels and all annuli at once** with
+`v.extract(...)` sets the measurement, `run(only="measure")` runs it: it fits **all channels (within `fit_span`, 1500 km/s, of the line) and all annuli at once** with
 
     Re V(channel, b) = F · φ(v; v₀, FWHM) · g(b; θ)
 
@@ -16,10 +16,12 @@ channels from the imaginary part; both enter every error.
   the significance comes from running the same search on noise.
 * `model="auto"` (default): a point source and a Gaussian are both fitted and
   averaged with their Akaike weights; the error includes the difference.
+  How much the Gaussian improves on the point source (Δχ²) is in the title
+  of the profile; `theta_range` (0 to 15″) limits its size.
 * `flux_measure="auto"` (default): two fluxes are always given, the integral
   of the Gaussian and the sum of the spectrum over the window; the Gaussian
-  one is quoted unless the two differ by more than 2σ (the line is not
-  Gaussian).
+  one is quoted unless the two differ by more than `shape_nsigma` (2σ: the
+  line is not Gaussian).
 
 The galaxies are transported to `z_ref` (`z_norm=True`; `z_ref` is the
 median of the sample unless given, and the results say which) and corrected
@@ -93,27 +95,27 @@ compare(det.line, det0.line, "centre and width known")
 ```
 
 ```text
-[ViSta       3.4s]   noise: scatter/weights kappa = 1.303; imaginary 1.038, line-free 0.932 x the noise (expected 1)
+[ViSta       3.1s]   noise: scatter/weights kappa = 1.303; imaginary 1.038, line-free 0.932 x the noise (expected 1)
 ```
 
 ```text
-[ViSta       3.4s]   written: stack_detect_results.json, stack_detect_profile.txt, stack_detect_uvamp.txt, stack_detect_noise.txt, stack_detect_diagnostics.npz
+[ViSta       3.1s]   written: stack_detect_results.json, stack_detect_profile.txt, stack_detect_uvamp.txt, stack_detect_noise.txt, stack_detect_diagnostics.npz
 ```
 
 ```text
-[ViSta       3.4s] Line: F = 0.369 +- 0.0437 (Gaussian; Gaussian 0.369, area 0.4378)  peak = 0.001156  v0 = +0.0 km/s  FWHM = 300 km/s  size gauss 0.77"  chi2r = 0.93
+[ViSta       3.1s] Line: F = 0.369 +- 0.0437 (Gaussian; Gaussian 0.369, area 0.4378)  peak = 0.001156  v0 = +0.0 km/s  FWHM = 300 km/s  size gauss 0.77"  chi2r = 0.93
 ```
 
 ```text
-[ViSta       3.4s] z_ref = 2.6218 (median of the sample)
+[ViSta       3.1s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
-[ViSta       4.5s]   figures: stack_detect_profile.png, stack_detect_uv.png, stack_detect_noise.png
+[ViSta       4.3s]   figures: stack_detect_profile.png, stack_detect_uv.png, stack_detect_noise.png
 ```
 
 ```text
-[ViSta       4.5s] Continuum, from the channels outside the line windows (MODEL_DATA):
+[ViSta       4.3s] Continuum, from the channels outside the line windows (MODEL_DATA):
 ```
 
 ```text
@@ -145,11 +147,11 @@ compare(det.line, det0.line, "centre and width known")
 ```
 
 ```text
-[ViSta       0.8s]   plot written: stack_detect_continuum_uvamp.png
+[ViSta       0.9s]   plot written: stack_detect_continuum_uvamp.png
 ```
 
 ```text
-[ViSta       0.6s] z_ref = 2.6218 (median of the sample)
+[ViSta       0.5s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text

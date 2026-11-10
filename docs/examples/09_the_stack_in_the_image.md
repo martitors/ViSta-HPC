@@ -65,7 +65,7 @@ flux_table([
 ```
 
 ```text
-[ViSta       1.6s] no redshift rescaling, no flux normalisation
+[ViSta       1.5s] no redshift rescaling, no flux normalisation
 ```
 
 ```text

@@ -111,9 +111,9 @@ with no option to set:
   splits the channels they share. Their area fluxes hold part of each
   other, so `flux_measure="auto"` quotes the Gaussian ones.
 - **windows apart** — every line is measured on its own, as if it were alone:
-  on the channels near it (within `fit_span_kms`) and outside the windows of
-  the other lines, with its own size and source model, its own bootstrap and,
-  with `continuum="fit"`, its own continuum.
+  on the channels within `fit_span` of it (1500 km/s) and outside the windows
+  of the other lines, with its own size and source model, its own bootstrap
+  and, with `continuum="fit"`, its own continuum.
 
 Windows that only touch at an edge are apart. The log says which lines went
 together (`lines 1 + 2 fitted together`), and so do the results
@@ -144,7 +144,7 @@ times too small in the simulations.
 
 - `size_test` gives `χ²(point) − χ²(Gaussian)` and both fluxes. The
   Gaussian is called resolved (`size_test.adopted`) when it improves χ² by at
-  least 9 (a 3σ preference; `resolved_delta_chi2`). The fits weight the cells
+  least 9 (a 3σ preference; the Δχ² is on the figures). The fits weight the cells
   by their noise alone, so their χ² treats correlated channels as
   independent: the difference is first divided by `correlation_factor`, the
   factor by which the channel correlation inflates it (4–5 with Hanning

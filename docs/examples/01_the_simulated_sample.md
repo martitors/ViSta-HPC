@@ -69,7 +69,7 @@ print("\nthe input list:\n" + open(LIST).read())
 ```
 
 ```text
-2 x 12 Measurement Sets in 19 s, z_ref = 2.622
+2 x 12 Measurement Sets in 20 s, z_ref = 2.622
 
 dataset               z  nu_obs  F_line      peak  noise
 galaxy_00.ms      2.003  115.16   0.637  2.00 mJy  0.124

@@ -52,6 +52,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import warnings
+
 import numpy as np
 
 # below this many degrees of freedom a channel of an entry takes the
@@ -232,7 +234,8 @@ def correlation_matrix(z: np.ndarray, min_pairs: int = 10):
     nchan = z.shape[1]
     if z.shape[0] == 0:
         return np.eye(nchan), 0, float("nan")
-    with np.errstate(invalid="ignore"):
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)      # channels with no sample
         mean = np.nanmean(np.where(ok, z, np.nan), axis=0)
     z0 = np.where(ok, z - np.where(np.isfinite(mean), mean, 0.0), 0.0)
     rms = float(np.sqrt(np.sum(z0 ** 2) / max(ok.sum(), 1)))

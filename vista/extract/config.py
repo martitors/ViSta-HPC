@@ -317,9 +317,6 @@ class WeightingConfig:
         Reference value of that normalisation.  ``None`` uses the median of
         the sample, which however changes with the selection: fix it
         explicitly when comparing different stacks.
-    already_applied
-        Set to ``True`` if the amplitudes on disk already carry alpha, so
-        that the factor is not applied twice.
     primary_beam
         Correct every entry for the primary beam attenuation at the source
         position (default ``True``).  The response A is computed during the
@@ -335,7 +332,6 @@ class WeightingConfig:
     z_ref: Optional[float] = None
     flux_normalisation: bool = False
     norm_ref: Optional[float] = None
-    already_applied: bool = False
     primary_beam: bool = True
     H0: float = 67.4
     Om0: float = 0.315
@@ -419,6 +415,11 @@ class ProfileConfig:
 # ---------------------------------------------------------------------------
 # the joint fit of the whole cube  (vista.extract.measure)
 # ---------------------------------------------------------------------------
+#: Improvement of the chi square over a point source needed to call the stack
+#: resolved (a 3 sigma preference); the value found is always reported.
+RESOLVED_DELTA_CHI2 = 9.0
+
+
 @dataclass
 class LineFitConfig:
     """The lines fitted on all channels and annuli at once.
@@ -436,19 +437,17 @@ class LineFitConfig:
         The fit stays exactly inside both ranges.
     size
         ``'auto'`` (default): a Gaussian source only if it improves the
-        chi square by at least ``resolved_delta_chi2`` over a point source,
-        otherwise a point source; ``'point'``; ``'gauss'``.  A free size at
-        low S/N is biased high and drags the total flux up with it.
+        chi square by at least :data:`RESOLVED_DELTA_CHI2` over a point
+        source, otherwise a point source; ``'point'``; ``'gauss'``.  A free
+        size at low S/N is biased high and drags the total flux up with it.
     theta_fixed_arcsec
         Freeze the size (FWHM) to this value instead.
-    theta_max_arcsec
-        Upper bound of the size.
+    theta_min_arcsec, theta_max_arcsec
+        Range of the size of the Gaussian source.  A minimum above 0 leaves
+        the point source out (``'auto'`` fits the Gaussian only).
     theta_prior_arcsec
         ``(theta_ref, sigma_dex)``: soft tie of the size to a reference
         value, e.g. the continuum size of the same sources.
-    resolved_delta_chi2
-        Improvement of the chi square needed to call the stack resolved
-        (9: a 3 sigma preference).
     flux
         Which flux is quoted as *the* flux of each line; both are always
         given.  ``'gauss'``: the integral of the fitted Gaussian.
@@ -466,7 +465,8 @@ class LineFitConfig:
         Fit a continuum term (constant in frequency, same size as the line)
         together with the lines.
     fit_span_kms
-        Channels farther than this from every line are not fitted.
+        Channels farther than this from every line (in its own velocity)
+        are not fitted; None: every channel of the stack.
     min_sources_per_bin
         Annuli with fewer contributing sources are left out (min 2, or 1 for
         a single source).
@@ -490,14 +490,14 @@ class LineFitConfig:
     fwhm_range_kms: Optional[Sequence] = None
     size: str = "auto"
     theta_fixed_arcsec: Optional[float] = None
+    theta_min_arcsec: float = 0.0
     theta_max_arcsec: float = 15.0
     theta_prior_arcsec: Optional[Tuple[float, float]] = None
-    resolved_delta_chi2: float = 9.0
     flux: str = "auto"
     shape_nsigma: float = 2.0
     window_kms: Optional[Sequence] = None
     continuum: bool = False
-    fit_span_kms: float = 1500.0
+    fit_span_kms: Optional[float] = 1500.0
     min_sources_per_bin: int = 2
     noise: str = "scatter"
     channel_correlation: bool = True
@@ -512,10 +512,22 @@ class LineFitConfig:
             raise ValueError(f"flux must be 'auto', 'gauss' or 'area', got {self.flux!r}")
         if self.noise not in ("scatter", "weights"):
             raise ValueError(f"noise must be 'scatter' or 'weights', got {self.noise!r}")
-        if self.theta_max_arcsec <= 0:
-            raise ValueError("theta_max_arcsec must be > 0")
+        if not 0 <= self.theta_min_arcsec < self.theta_max_arcsec:
+            raise ValueError(f"theta_range: 0 <= min < max, not ({self.theta_min_arcsec:g}, "
+                             f"{self.theta_max_arcsec:g}) (to fix the size: model=theta)")
         if self.theta_fixed_arcsec is not None and self.theta_fixed_arcsec < 0:
             raise ValueError("theta_fixed_arcsec must be >= 0")
+        if self.theta_min_arcsec > 0 and (self.size == "point"
+                                          or self.theta_fixed_arcsec == 0):
+            raise ValueError(f"model='point' but theta_range starts at "
+                             f"{self.theta_min_arcsec:g}\": a point source is below it")
+        if self.fit_span_kms is not None and not self.fit_span_kms > 0:
+            raise ValueError(f"fit_span must be > 0 km/s (or None: every channel), "
+                             f"not {self.fit_span_kms!r}")
+        if self.min_sources_per_bin < 1:
+            raise ValueError("min_sources_per_annulus must be >= 1")
+        if self.shape_nsigma <= 0:
+            raise ValueError("shape_nsigma must be > 0")
 
 
 def ranges_per_line(value, n, what):
@@ -566,9 +578,9 @@ class UVFitConfig:
     theta_fixed_arcsec
         Freeze the FWHM at this value and fit the flux only.  Equivalent to
         ``model='point'`` when set to 0.
-    theta_max_arcsec
-        Upper bound on the fitted FWHM.  Lower it to a physically sensible
-        value if the fit converges to the bound.
+    theta_min_arcsec, theta_max_arcsec
+        Range of the fitted FWHM.  Lower the maximum to a physically
+        sensible value if the fit converges to the bound.
     theta_prior
         ``(theta_ref_arcsec, sigma_dex)``: soft tie of the size to a
         reference value, typically the continuum size in the same band.
@@ -595,6 +607,7 @@ class UVFitConfig:
 
     model: str = "gauss"                # 'gauss' | 'point' | 'gauss2'
     theta_fixed_arcsec: Optional[float] = None
+    theta_min_arcsec: float = 0.0
     theta_max_arcsec: float = 15.0
     theta_prior: Optional[Tuple[float, float]] = None
     b_max_klambda: Optional[float] = None

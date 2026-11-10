@@ -256,14 +256,24 @@ def summary_text(res, f, ulab):
     rows += [f"peak = {pm(ln['peak'] * f, _num(ln.get('peak_error')) * f)} {ulab}",
             f"v$_0$ = {v0} km s$^{{-1}}$",
             f"FWHM = {fw} km s$^{{-1}}$"]
+    # how much a Gaussian source improves on a point source
+    dchi2 = _num((res.get("size_test") or {}).get("delta_chi2_point_minus_gauss"))
+    dtext = f" ($\\Delta\\chi^2$ {dchi2:.1f})" if np.isfinite(dchi2) else ""
     if ln.get("theta_fwhm_arcsec"):
         # the larger of the thermal and the bootstrap error is at the top level
         te = res.get("theta_error_arcsec", ln.get("theta_error_arcsec"))
-        rows.append(f"size = {pm(ln['theta_fwhm_arcsec'], _num(te))}\"")
+        rows.append(f"size = {pm(ln['theta_fwhm_arcsec'], _num(te))}\"{dtext}")
+    else:
+        rows.append(f"point source{dtext}")
     rows.append(significance_text(res["detection"]))
+    # lines whose windows do not overlap the first are fitted on their own:
+    # each has its own size
+    separate = len(res.get("line_groups") or [[1]]) > 1
     for k, other in enumerate((res.get("lines") or [])[1:], start=2):
         rows.append(f"line {k}: F = {pm(other['flux'] * f, other['flux_error'] * f)}, "
-                    f"v$_0$ = {other['v0_kms']:+.0f}, FWHM = {other['fwhm_kms']:.0f}")
+                    f"v$_0$ = {other['v0_kms']:+.0f}, FWHM = {other['fwhm_kms']:.0f}"
+                    + (f", size {other['theta_fwhm_arcsec']:.2f}\""
+                       if separate and other.get("theta_fwhm_arcsec") else ""))
     return "\n".join(rows)
 
 

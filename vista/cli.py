@@ -71,6 +71,17 @@ def _freq(text):
         return text
 
 
+def _fit_span(text):
+    if text is None:
+        return 1500.0
+    if str(text).lower() == "none":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        sys.exit(f"vista: --fit-span: km/s or 'none', not {text!r}")
+
+
 def _size(text):
     if text in ("auto", "point", "gauss"):
         return text
@@ -156,10 +167,20 @@ def build_parser():
                    help="auto, point, gauss or a fixed FWHM in arcsec (default auto)")
     m.add_argument("--model-prior", type=float, nargs=2, default=None,
                    metavar=("ARCSEC", "DEX"), help="soft tie of the size")
+    m.add_argument("--theta-range", type=_pair, default=None, metavar="MIN:MAX",
+                   help="allowed size of the Gaussian, arcsec (default 0:15); min > 0 "
+                        "leaves the point source out")
     m.add_argument("--flux-measure", choices=["auto", "gauss", "area"], default="auto",
                    help="the flux quoted: Gaussian, sum over the window, or auto (default)")
+    m.add_argument("--shape-nsigma", type=float, default=None, metavar="X",
+                   help="threshold of the shape test of auto, sigma (default 2)")
     m.add_argument("--window", type=_pair, nargs="+", default=None, metavar="W",
                    help="window of the area flux (default: the line windows)")
+    m.add_argument("--fit-span", default=None, metavar="KMS",
+                   help="channels farther than this from every line are not fitted "
+                        "(default 1500; 'none': every channel)")
+    m.add_argument("--min-sources-per-annulus", type=int, default=None, metavar="N",
+                   help="annuli with fewer sources are left out (default 2)")
     m.add_argument("--n-bootstrap", type=int, default=500)
     m.add_argument("--n-null", type=int, default=1000)
     m.add_argument("--seed", type=int, default=42)
@@ -169,7 +190,8 @@ def build_parser():
 
 
 _EXTRACT_FLAGS = ("annuli", "no_z_norm", "z_ref", "no_pb_corr", "flux_norm", "flux_ref",
-                  "v0_range", "fwhm_range", "model_prior", "window", "no_figures")
+                  "v0_range", "fwhm_range", "model_prior", "theta_range", "shape_nsigma",
+                  "window", "fit_span", "min_sources_per_annulus", "no_figures")
 
 
 def main(argv=None):
@@ -207,8 +229,14 @@ def main(argv=None):
                       flux_norm=args.flux_norm, flux_ref=args.flux_ref,
                       v0_range=_range_arg(args.v0_range),
                       fwhm_range=_range_arg(args.fwhm_range), model=args.model,
-                      model_prior=args.model_prior, flux_measure=args.flux_measure,
+                      model_prior=args.model_prior,
+                      theta_range=(args.theta_range if isinstance(args.theta_range, tuple)
+                                   else (0.0, args.theta_range or 15.0)),
+                      flux_measure=args.flux_measure,
+                      shape_nsigma=2.0 if args.shape_nsigma is None else args.shape_nsigma,
                       window=_one_or_list(args.window),
+                      fit_span=_fit_span(args.fit_span),
+                      min_sources_per_annulus=args.min_sources_per_annulus or 2,
                       n_bootstrap=args.n_bootstrap, n_null=args.n_null, seed=args.seed,
                       figures_draw=not args.no_figures, figures_unit=args.figures_unit)
     except (ValueError, TypeError, FileNotFoundError) as exc:

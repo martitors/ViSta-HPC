@@ -150,19 +150,20 @@ def plot_profile(result, line: Lines, path: str, unit: Optional[str] = None,
             + f"\n   v$_0$ = {b['v0_kms']:+.0f}, FWHM = {b['fwhm_kms']:.0f} km/s, "
             f"peak {_pm(b['peak'] * f, b.get('peak_error', np.nan) * f)} {ulabel}"
             # lines fitted apart: each has its own size
-            + (f", size {b['size_model']}" + (f" {b['theta_fwhm_arcsec']:.2f}\""
-                                              if b.get("theta_fwhm_arcsec") else "")
+            + ("\n   size " + _size_text(b["size_model"], b.get("theta_fwhm_arcsec"),
+                                          b.get("size_test"))
                if separate and "size_model" in b else ""))
     ax.text(0.02, 0.97, "\n".join(rows), transform=ax.transAxes, va="top", fontsize=8,
             bbox=dict(boxstyle="round", fc="white", ec="0.8", alpha=0.9))
     ax.set_ylabel(f"flux density [{ulabel}]")
     lo_y, hi_y = ax.get_ylim()
-    ax.set_ylim(lo_y, hi_y + (0.35 + 0.12 * len(blocks)) * (hi_y - lo_y))
+    ax.set_ylim(lo_y, hi_y + (0.35 + (0.16 if separate else 0.12) * len(blocks))
+                * (hi_y - lo_y))
     ax.legend(loc="upper right", fontsize=7, frameon=False)
     p = s["line"]
     ax.set_title(f"stacked line{'s' if len(blocks) > 1 else ''}, zero spacing "
-                 f"({s['n_sources']} sources, {s['weighting_scheme']}, size {p['size_model']}"
-                 + (f" {p['theta_fwhm_arcsec']:.2f}\"" if p['theta_fwhm_arcsec'] else "")
+                 f"({s['n_sources']} sources, {s['weighting_scheme']}, size "
+                 f"{_size_text(p['size_model'], p['theta_fwhm_arcsec'], s.get('size_test'))}"
                  + (f", {rebin} channels per bin" if rebin > 1 else "") + ")", fontsize=9)
     # residuals
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -178,6 +179,15 @@ def plot_profile(result, line: Lines, path: str, unit: Optional[str] = None,
     fig.savefig(path, dpi=140, bbox_inches="tight")
     plt.close(fig)
     return path
+
+
+def _size_text(model, theta, size_test):
+    """'gauss 0.46" (Δχ² 35.2)': the size and how much a Gaussian improves
+    on a point source."""
+    out = str(model) + (f" {theta:.2f}\"" if theta else "")
+    if size_test and np.isfinite(size_test.get("delta_chi2_point_minus_gauss", np.nan)):
+        out += f" ($\\Delta\\chi^2$ {size_test['delta_chi2_point_minus_gauss']:.1f})"
+    return out
 
 
 def plot_uv(result, path: str, unit: Optional[str] = None):

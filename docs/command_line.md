@@ -87,7 +87,11 @@ The options below need `--extract` (without it the command stops and says so).
 | `--fwhm-range LO:HI [...]` | two channels to the window | allowed FWHM; `lo = hi` fixes it |
 | `--model {auto,point,gauss,ARCSEC}` | `auto` | the source model, or a fixed size |
 | `--model-prior ARCSEC DEX` | | soft tie of the size |
+| `--theta-range MIN:MAX` | 0:15 | allowed size of the Gaussian, arcsec; a minimum above 0 leaves the point source out |
 | `--flux-measure {auto,gauss,area}` | `auto` | the flux quoted (both are always given) |
+| `--shape-nsigma X` | 2 | threshold of the shape test of `auto` |
 | `--window W [W ...]` | the line windows | window of the area flux |
+| `--fit-span KMS` | 1500 | channels farther than this from every line are not fitted; `none`: every channel |
+| `--min-sources-per-annulus N` | 2 | annuli with fewer sources are left out |
 | `--n-bootstrap N`, `--n-null N`, `--seed N` | 500, 1000, 42 | bootstrap, null realisations, random seed |
 | `--figures-unit NAME`, `--no-figures` | `Jy` | unit of the data on the figures; no figures |

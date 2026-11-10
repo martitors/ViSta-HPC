@@ -41,8 +41,8 @@ from typing import List, Optional, Sequence, Union
 import numpy as np
 
 from .. import _reset_clock, _say, _warn
-from .config import (BootstrapConfig, Lines, LineFitConfig, WeightingConfig, per_line,
-                     ranges_per_line)
+from .config import (RESOLVED_DELTA_CHI2, BootstrapConfig, Lines, LineFitConfig,
+                     WeightingConfig, per_line, ranges_per_line)
 from .linefit import (Cube, FitResult, FitSpec, Scan, Whitener, fit, flux_per_annulus,
                       gaussian_fraction, global_significance, influence, model_cube,
                       peak_flux_density, residual_continuum, window_flux, window_influence,
@@ -206,7 +206,8 @@ def _fit_spec(cfg: LineFitConfig, ranges, start: dict, size: str, n_lines: int):
     (v0r, fwr) = ranges[0]
     free = ["F"]
     values = {"F": start["F"], "v0": start["v0"], "fwhm": start["fwhm"], "theta": 0.0}
-    bounds = {"v0": v0r, "fwhm": fwr, "theta": (1e-3, cfg.theta_max_arcsec)}
+    th_lo, th_hi = max(1e-3, cfg.theta_min_arcsec), cfg.theta_max_arcsec
+    bounds = {"v0": v0r, "fwhm": fwr, "theta": (th_lo, th_hi)}
     if v0r[0] < v0r[1]:
         free.append("v0")
     else:
@@ -219,7 +220,7 @@ def _fit_spec(cfg: LineFitConfig, ranges, start: dict, size: str, n_lines: int):
         values["theta"] = float(cfg.theta_fixed_arcsec)
     elif size == "gauss":
         free.append("theta")
-        values["theta"] = float(np.clip(start.get("theta", 0.5), 0.01, cfg.theta_max_arcsec))
+        values["theta"] = float(np.clip(start.get("theta", 0.5), max(0.01, th_lo), th_hi))
     for k in range(2, n_lines + 1):
         v0k, fwk = ranges[k - 1]
         values.update({f"F{k}": start.get(f"F{k}", 0.0),
@@ -240,7 +241,7 @@ def _fit_spec(cfg: LineFitConfig, ranges, start: dict, size: str, n_lines: int):
         free.append("C")
     prior = cfg.theta_prior_arcsec if "theta" in free else None
     if prior is not None:
-        values["theta"] = float(np.clip(prior[0], 0.01, cfg.theta_max_arcsec))
+        values["theta"] = float(np.clip(prior[0], max(0.01, th_lo), th_hi))
     return FitSpec(tuple(free), values, bounds, n_lines=n_lines, continuum=cfg.continuum,
                    theta_prior=prior)
 
@@ -348,32 +349,39 @@ def measure_line(statistics: Union[str, SufficientStatistics],
     var = noise.variance
     corr = noise.corr if cfg.channel_correlation else None
 
-    # ---- cells to fit ------------------------------------------------------
+    # ---- cells to fit: the channels within the fit span of a line ----------
     per_channel = sources_per_channel(sums)
-    in_span = np.zeros(len(freq), bool)
-    for vk in vel_k:
-        in_span |= np.abs(vk) < cfg.fit_span_kms
+
+    def near(lines_k):
+        """The channels within the fit span of any of these lines."""
+        if cfg.fit_span_kms is None:
+            return np.ones(len(freq), bool)
+        out = np.zeros(len(freq), bool)
+        for k in lines_k:
+            out |= np.abs(vel_k[k]) < cfg.fit_span_kms
+        return out
+
+    in_span = near(range(n_lines))
     per_annulus = sources_per_bin(sums, in_span)
     min_src = 1 if n_src == 1 else max(2, cfg.min_sources_per_bin)
     bin_ok = per_annulus >= min_src
     usable = np.isfinite(real) & np.isfinite(var) & (var > 0) & bin_ok[None, :] & (weight > 0)
     ok = usable & in_span[:, None]
     if not ok.any():
-        raise RuntimeError("measure: no usable cell (check the line window, the fit "
-                           "span and the minimum number of sources per annulus)")
+        raise RuntimeError("measure: no usable cell (check the line windows, the fit span "
+                           "and the minimum number of sources per annulus)")
     baseline = np.where(np.isfinite(mean_b), mean_b, 0.0)
 
     # ---- the groups: lines whose windows overlap are fitted together; the
-    # others each on its own, on the channels near its lines and outside the
-    # windows of the other lines, sharing nothing (size, model, continuum)
+    # others each on its own, on the channels within the fit span of its
+    # lines and outside the windows of the other lines, sharing nothing
+    # (size, model, continuum)
     groups = line.groups()
     group_of = {k: g for g, members in enumerate(groups) for k in members}
     line_windows = [line.window_mask(freq, k) for k in range(n_lines)]
     G = []
     for members in groups:
-        span = np.zeros(len(freq), bool)
-        for k in members:
-            span |= np.abs(vel_k[k]) < cfg.fit_span_kms
+        span = near(members)
         for j in range(n_lines):
             if j not in members:
                 span &= ~line_windows[j]
@@ -406,15 +414,18 @@ def measure_line(statistics: Union[str, SufficientStatistics],
     cw = np.cumsum(wmed[ok][order_b])
     b_med = float(baseline[ok][order_b][np.searchsorted(cw, 0.5 * cw[-1])])
     theta_half = 2 * np.log(2) / (np.pi * max(b_med, 1.0)) * 206264.806
+    th_min, th_max = cfg.theta_min_arcsec, cfg.theta_max_arcsec
     if cfg.theta_fixed_arcsec is not None:
         thetas = [float(cfg.theta_fixed_arcsec)]
     elif cfg.theta_prior_arcsec is not None:
-        thetas = [float(cfg.theta_prior_arcsec[0])]
+        thetas = [float(np.clip(cfg.theta_prior_arcsec[0], th_min, th_max))]
     elif cfg.size == "point":
         thetas = [0.0]
     else:
-        thetas = [0.0] + [t for t in (0.5 * theta_half, theta_half, 2 * theta_half)
-                          if t < cfg.theta_max_arcsec]
+        thetas = ([0.0] if th_min == 0 else []) + [
+            t for t in (0.5 * theta_half, theta_half, 2 * theta_half) if th_min <= t <= th_max]
+        if not thetas:                       # a narrow range: its middle
+            thetas = [0.5 * (th_min + th_max)]
     scanners, bests, detections, nulls = [], [], [], []
     for k in range(n_lines):
         gs = G[group_of[k]]
@@ -472,6 +483,8 @@ def measure_line(statistics: Union[str, SufficientStatistics],
     # preferred ---------------------------------------------------------------
     if cfg.theta_prior_arcsec is not None and cfg.theta_fixed_arcsec is None:
         sizes = ["gauss"]                # the prior decides the size
+    elif cfg.size == "auto" and cfg.theta_fixed_arcsec is None and th_min > 0:
+        sizes = ["gauss"]                # a point source is below the range
     else:
         sizes = ([cfg.size] if cfg.size != "auto" or cfg.theta_fixed_arcsec is not None
                  else ["point", "gauss"])
@@ -495,12 +508,12 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                                                 fits["gauss"][0].params.get("theta", 0.0),
                                                 theta_half)
             dchi2 = dchi2_raw / size_factor
-            adopted = "gauss" if dchi2 >= cfg.resolved_delta_chi2 else "point"
+            adopted = "gauss" if dchi2 >= RESOLVED_DELTA_CHI2 else "point"
             w_gauss = akaike_weight(dchi2)
             size_test = {"delta_chi2_point_minus_gauss": float(dchi2),
                          "delta_chi2_uncorrelated": float(dchi2_raw),
                          "correlation_factor": size_factor,
-                         "threshold": cfg.resolved_delta_chi2, "adopted": adopted,
+                         "threshold": RESOLVED_DELTA_CHI2, "adopted": adopted,
                          "flux_point": fits["point"][0].params["F"],
                          "flux_point_error": fits["point"][0].errors.get("F"),
                          "flux_gauss": fits["gauss"][0].params["F"],

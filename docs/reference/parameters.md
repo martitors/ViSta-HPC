@@ -84,10 +84,14 @@ options are given by name.
 |---|---|---|
 | `v0_range` | `None` | Allowed centres, km/s, in the velocity of each line: a pair `(lo, hi)` for all the lines, or one per line. `lo = hi` fixes the centre. `None`: anywhere in the window (shrunk by half the smallest width) |
 | `fwhm_range` | `None` | Allowed FWHM, as above. `lo = hi` fixes the width; with the centre and the size fixed too, the flux is a matched filter and its S/N is the significance. `None`: two channels to the width of the window. The fit stays exactly inside both ranges |
-| `model` | `"auto"` | The source. `"auto"`: a Gaussian only if it improves the χ² by 9 over a point source, the flux averaged over the two with their Akaike weights. `"point"`, `"gauss"`, or a number: a Gaussian of that FWHM, arcsec |
+| `model` | `"auto"` | The source. `"auto"`: a Gaussian only if it improves the χ² by 9 over a point source (a 3σ preference; the Δχ² found is in the results and on the figures), the flux averaged over the two with their Akaike weights. `"point"`, `"gauss"`, or a number: a Gaussian of that FWHM, arcsec |
 | `model_prior` | `None` | `(θ, σ_dex)`: soft tie of the size of the Gaussian, e.g. to the continuum size |
-| `flux_measure` | `"auto"` | The flux quoted for every line; both are always given and drawn. `"gauss"`: the integral of the fitted Gaussian. `"area"`: the sum of the spectrum over the window. `"auto"`: the Gaussian, unless the two differ by more than 2σ of their difference (a non-Gaussian line), the window holds the fitted line and no other line overlaps it |
+| `theta_range` | `(0, 15)` | Allowed size (FWHM) of the Gaussian source, arcsec, for the lines and the continuum. A minimum above 0 leaves the point source out (`"auto"` fits the Gaussian only, `"point"` is refused); a fixed size (`model=θ`) must be inside it |
+| `flux_measure` | `"auto"` | The flux quoted for every line; both are always given and drawn. `"gauss"`: the integral of the fitted Gaussian. `"area"`: the sum of the spectrum over the window. `"auto"`: the Gaussian, unless the two differ by more than `shape_nsigma` times the error of their difference (a non-Gaussian line), the window holds the fitted line and no other line overlaps it |
+| `shape_nsigma` | `2` | Threshold of that test |
 | `window` | `None` | Window of the area flux of every line (same forms as `line_window`); `None`: the line windows. It can be changed and the measurement repeated (`run(only="measure")`) without stacking again |
+| `fit_span` | `1500` | Channels farther than this (km/s) from every line, in its own velocity, are not fitted: a wide band (`velocity_range`) then does not slow the fit down, nor bring in a continuum that is no longer flat far from the lines. `None`: every channel of the stack. With several lines measured apart, every one uses the channels within it and outside the windows of the others |
+| `min_sources_per_annulus` | `2` | Annuli with fewer sources are left out, so that no point of the fit is set by a single object (a single source: 1) |
 | `n_bootstrap` | `500` | Resamplings of the sources, for the population errors (0: none) |
 | `n_null` | `1000` | Searches on noise, for the significance (0: a Bonferroni bound) |
 | `seed` | `42` | Seed of the random numbers of the bootstrap and of the null searches: the same seed gives the same numbers, another seed numbers that differ within their errors |
@@ -103,17 +107,15 @@ Advanced keywords, for diagnostics:
 
 | Keyword | Default | Description |
 |---|---|---|
-| `noise` | `"scatter"` | `scatter`: the noise of every cell from the scatter of its visibilities. `weights`: from the weights alone |
-| `channel_correlation` | `True` | Measure and use the correlation between adjacent channels |
-| `n_null_phase` | `200` | Data-driven null: stacks with a random phase per source; 0 to skip |
-| `resolved_delta_chi2` | `9` | χ² improvement needed to call the stack resolved |
-| `theta_max_arcsec` | `15` | Upper bound of the size |
-| `fit_span_kms` | `1500` | Channels farther than this from every line are not fitted |
-| `min_sources_per_bin` | `2` | Annuli with fewer sources are left out |
-| `shape_nsigma` | `2` | Threshold of the shape test of `flux_measure="auto"` |
+| `noise` | `"scatter"` | `scatter`: the noise of every cell (channel × annulus) measured from the scatter of its visibilities, so it holds whatever is really there (weights off by a factor, residual RFI, calibration). `weights`: from the weights alone, right only when they are right in absolute terms; a check, and the only choice for noiseless simulations ([The noise](../extraction/measure_line.md#the-noise)) |
+| `channel_correlation` | `True` | Adjacent channels are not independent (the spectral response of the correlator, and the regridding to the common rest-frame grid, which spreads every input channel over two output ones): their correlation is measured on the line-free channels and used in the fit and the errors. `False` treats them as independent, which underestimates the error of a flux summed over channels; a check |
+| `n_null_phase` | `200` | Significance without assuming Gaussian noise: stacks in which every source gets a random phase, so the line no longer adds up while noise, weights, correlations and artefacts stay the same; the same search on each, and `p_value_phase_null` the fraction that reaches the measured S/N. 0 to skip |
 | `residual_nsigma` | `3` | Threshold of the residual-continuum check |
 | `H0`, `Om0` | 67.4, 0.315 | Cosmology of the redshift rescaling |
-| `already_applied` | `False` | The amplitudes on disk already carry the redshift factor |
+
+Nothing on disk is rescaled: the redshift factor, the primary-beam correction
+and the flux normalisation are applied to the statistics of every source
+while they are combined, at every measurement.
 
 ## run(): what runs
 

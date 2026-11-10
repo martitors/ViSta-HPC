@@ -144,6 +144,11 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
     if n_used < n_par + 1:
         return UVFitResult(n_bins=n_used, model=config.model)
     flux0 = float(np.nanmax(flux[good]))
+    theta_lo = max(1e-3, float(config.theta_min_arcsec))
+
+    def start(theta):
+        """A starting size inside the allowed range."""
+        return float(np.clip(theta, theta_lo * 1.001, config.theta_max_arcsec * 0.999))
 
     # -- circular Gaussian with a soft tie on the size ----------------------
     if theta_prior is not None and config.model == "gauss":
@@ -159,8 +164,8 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
 
             try:
                 solution = least_squares(
-                    residuals, x0=[flux0, theta_ref],
-                    bounds=([-np.inf, 1e-3], [np.inf, config.theta_max_arcsec]),
+                    residuals, x0=[flux0, start(theta_ref)],
+                    bounds=([-np.inf, theta_lo], [np.inf, config.theta_max_arcsec]),
                     max_nfev=20000)
             except Exception:
                 return UVFitResult(n_bins=n_used, model="gauss_prior")
@@ -177,9 +182,9 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
     try:
         if config.model == "gauss":
             p, _ = curve_fit(gaussian_visibility, b_lambda[good], flux[good],
-                             p0=[flux0, 1.0], sigma=err,
+                             p0=[flux0, start(1.0)], sigma=err,
                              absolute_sigma=sigma is not None,
-                             bounds=([-np.inf, 1e-3],
+                             bounds=([-np.inf, theta_lo],
                                      [np.inf, config.theta_max_arcsec]),
                              maxfev=10000)
             f_tot, theta = float(p[0]), abs(float(p[1]))
@@ -187,9 +192,9 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
         else:
             p, _ = curve_fit(two_gaussian_visibility, b_lambda[good],
                              flux[good],
-                             p0=[0.6 * flux0, 2.5, 0.4 * flux0, 0.4],
+                             p0=[0.6 * flux0, start(2.5), 0.4 * flux0, start(0.4)],
                              sigma=err, absolute_sigma=sigma is not None,
-                             bounds=([0, 1e-3, 0, 1e-3],
+                             bounds=([0, theta_lo, 0, theta_lo],
                                      [np.inf, config.theta_max_arcsec,
                                       np.inf, config.theta_max_arcsec]),
                              maxfev=20000)

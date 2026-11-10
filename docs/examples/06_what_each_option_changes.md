@@ -10,6 +10,7 @@ and width known).
 | `model="gauss"` | Gaussian only | clearly resolved |
 | `model_prior=(θ, σ_dex)` | soft prior on the size | a weak line, with a size from the continuum or another line |
 | `model=θ` | size fixed | the same, a hard version |
+| `theta_range=(lo, hi)` | the size kept between lo and hi (a minimum above 0 leaves the point source out) | the size is known to be in a range |
 | `noise="weights"` | noise from the weights, not the scatter | weights known to be absolute |
 | `channel_correlation=False` | channels treated as independent | (shown to see the effect) |
 | `weighting_scheme="democratic"` | every galaxy counts the same | the mean of the galaxies rather than of the data |
@@ -32,6 +33,7 @@ variants = {
     "model = gauss": variant(model="gauss"),
     "model prior 0.8\" ± 0.15 dex": variant(model_prior=(0.8, 0.15)),
     "model: size fixed 0.8\"": variant(model=0.8),
+    "size between 0.3\" and 2\"": variant(theta_range=(0.3, 2)),
     "noise from the weights": variant(noise="weights"),
     "no channel correlation": variant(channel_correlation=False),
     "democratic weighting": variant(weighting_scheme="democratic"),
@@ -63,19 +65,15 @@ save(fig, "options")
 ```
 
 ```text
-[ViSta       1.5s] z_ref = 2.6218 (median of the sample)
+[ViSta       1.7s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
-[ViSta       0.4s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.1 sigma; quoted: gauss (flux_measure='gauss')
+[ViSta       0.3s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.1 sigma; quoted: gauss (flux_measure='gauss')
 ```
 
 ```text
-[ViSta       0.4s] z_ref = 2.6218 (median of the sample)
-```
-
-```text
-[ViSta       1.3s] z_ref = 2.6218 (median of the sample)
+[ViSta       0.3s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
@@ -83,27 +81,11 @@ save(fig, "options")
 ```
 
 ```text
-[ViSta       1.3s] z_ref = 2.6218 (median of the sample)
+[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
-[ViSta       2.1s] WARNING: measure: the imaginary part scatters 1.30 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
-```
-
-```text
-[ViSta       2.1s] WARNING: measure: the real part in the line-free channels scatters 1.17 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
-```
-
-```text
-[ViSta       2.1s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.2 sigma; quoted: gauss (flux_measure='gauss')
-```
-
-```text
-[ViSta       2.1s] z_ref = 2.6218 (median of the sample)
-```
-
-```text
-[ViSta       1.7s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.9 sigma; quoted: gauss (flux_measure='gauss')
+[ViSta       1.2s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
@@ -111,11 +93,23 @@ save(fig, "options")
 ```
 
 ```text
-[ViSta       1.8s] z_ref = 2.6218 (median of the sample)
+[ViSta       1.7s] WARNING: measure: the imaginary part scatters 1.30 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
 ```
 
 ```text
-[ViSta       1.5s] no redshift rescaling, no flux normalisation
+[ViSta       1.7s] WARNING: measure: the real part in the line-free channels scatters 1.17 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
+```
+
+```text
+[ViSta       1.7s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.2 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       1.7s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.6s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.9 sigma; quoted: gauss (flux_measure='gauss')
 ```
 
 ```text
@@ -123,15 +117,27 @@ save(fig, "options")
 ```
 
 ```text
-[ViSta       1.6s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +3.3 sigma; quoted: gauss (flux_measure='gauss')
+[ViSta       1.5s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
-[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
+[ViSta       1.4s] no redshift rescaling, no flux normalisation
 ```
 
 ```text
-[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
+[ViSta       1.7s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.7s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +3.3 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       1.7s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.9s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```{image} figures/06_01.png

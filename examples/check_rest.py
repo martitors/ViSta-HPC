@@ -3,9 +3,9 @@
 Recover the rest frequency the data were built with, from the rest-framed
 copies that sit next to each dataset.
 
-    python check_rest.py sim_gauss_input.txt
-    python check_rest.py sim_gauss_input.txt --suffix .ms.rest.center
-    python check_rest.py sim_gauss_input.txt --candidates 345.7959899 345.758964
+    python check_rest.py input_list.txt
+    python check_rest.py input_list.txt --suffix .ms.rest.center
+    python check_rest.py input_list.txt --candidates 345.7959899 345.758964
 
 For each entry it opens the observed MS and its ``.rest`` counterpart, and
 reports three things: the redshift implied by the ratio of the two frequency

@@ -1,9 +1,9 @@
 """Run a command and measure it: wall time per stage, memory, disk.
 
 * **Stages**: the command prints marker lines ``@@stage <name>`` (the
-  pipelines of this benchmark do; for ``run_vista.sh`` its ``== [k/4]``
-  headers are recognised too).  A stage lasts until the next marker or the
-  end of the run.
+  pipelines of this benchmark do; the ``== [k/4]`` headers printed by the
+  ``run_vista.sh`` of the extract branch are recognised too).  A stage lasts
+  until the next marker or the end of the run.
 * **Memory**: the proportional set size (PSS) of the whole process tree,
   sampled every ``interval`` s.  PSS counts a page shared by several processes
   once in total (each gets its share), so the sum over the tree is the memory

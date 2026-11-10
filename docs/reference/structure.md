@@ -40,6 +40,9 @@ ViSta-HPC/
 │   ├── plot_line.py         the figures of the lines, in your own style
 │   ├── run_vista.py         a run in a script
 │   ├── run_extraction.py    the measurement repeated with different options
+│   ├── inspect_ms.py        the bands of the datasets: velocity_range, line_window, annuli
+│   ├── inspect_line.py      one dataset imaged: where the line is, its width
+│   ├── check_rest.py        the rest frequency rest-framed copies were written with
 │   └── example_input_list.txt
 ├── docs/                    this documentation (Sphinx, Read the Docs)
 ├── benchmarks/              ViSta 1.0 against this version: time, memory, accuracy

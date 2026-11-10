@@ -3,9 +3,9 @@
 Read one dataset and work out the ranges the stacking and the extraction
 should use, instead of guessing them.
 
-    python inspect_ms.py sim_gauss_input.txt --rest-freq 345.7959899
-    python inspect_ms.py sim_gauss_input.txt --rest-freq 345.7959899 -n 7
-    python inspect_ms.py sim_gauss_input.txt --rest-freq 345.7959899 --all
+    python inspect_ms.py input_list.txt --line-freq 345.796GHz
+    python inspect_ms.py input_list.txt --line-freq 345.796GHz -n 7
+    python inspect_ms.py input_list.txt --line-freq 345.796GHz --all
 
 Prints, for the chosen entry: the spectral coverage in velocity around the
 line, the channel width in km/s, the range of projected baselines in the rest
@@ -23,6 +23,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vista.extract.config import parse_freq_ghz
 from vista.extract.sources import read_input_list
 
 C_KMS = 299792.458
@@ -90,7 +91,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("input_list")
-    parser.add_argument("--rest-freq", type=float, required=True, metavar="GHZ")
+    parser.add_argument("--line-freq", "--rest-freq", dest="rest_freq", type=parse_freq_ghz,
+                        required=True, metavar="FREQ",
+                        help="rest frequency of the line: GHz, or with the unit (345.796GHz)")
     parser.add_argument("-n", "--index", type=int, default=0,
                         help="which entry to inspect (default the first)")
     parser.add_argument("--all", action="store_true",

@@ -272,7 +272,7 @@ def amplitude_factors(groups: Sequence[Sequence[Entry]],
     factors, missing = [], []
     for k, group in enumerate(groups):
         factor = 1.0
-        if weighting.redshift_rescaling and not weighting.already_applied:
+        if weighting.redshift_rescaling:
             factor *= alpha_factor(group[0].z, z_ref, weighting.H0,
                                    weighting.Om0)
         if weighting.flux_normalisation:

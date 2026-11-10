@@ -38,7 +38,7 @@ Every file starts with ``output_name``: the stack (``co32.zarr`` or
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -55,6 +55,12 @@ def _check_count(name, value):
     if isinstance(value, bool) or not float(value).is_integer() or int(value) < 1:
         raise ValueError(f"{name} must be a whole number >= 1 (or None: automatic), "
                          f"not {value!r}")
+    return int(value)
+
+
+def _check_min_sources(value):
+    if isinstance(value, bool) or not float(value).is_integer() or int(value) < 1:
+        raise ValueError(f"min_sources_per_annulus must be a whole number >= 1, not {value!r}")
     return int(value)
 
 
@@ -137,11 +143,18 @@ _HELP = {
                                                          "prefer it | point | Gaussian | "
                                                          "Gaussian of this FWHM"),
         ("model_prior", "(arcsec, dex) | None", "soft tie of the size of the Gaussian"),
+        ("theta_range", "(min, max)", "arcsec, allowed size of the Gaussian (lines and "
+                                      "continuum); min > 0 leaves the point source out"),
         ("flux_measure", "'auto' | 'gauss' | 'area'", "flux quoted (both are given): Gaussian "
                                                       "unless not Gaussian | Gaussian | sum over "
                                                       "the window"),
+        ("shape_nsigma", "float", "threshold of that test: area and Gaussian differ by more "
+                                  "than this many sigma"),
         ("window", "W | (lo, hi) | list | None", "window of the area flux; None: the line "
                                                  "windows"),
+        ("fit_span", "km/s | None", "channels farther than this from every line are not "
+                                    "fitted; None: every channel"),
+        ("min_sources_per_annulus", "int", "annuli with fewer sources are left out"),
         ("n_bootstrap", "int", "resamplings of the sources, for the errors (0: none)"),
         ("n_null", "int", "searches on noise, for the significance (0: Bonferroni bound)"),
         ("seed", "int", "seed of the random numbers of bootstrap and null searches: the same "
@@ -149,9 +162,7 @@ _HELP = {
         ("figures_draw", "True | False", "draw the figures (profile, uv, noise, continuum)"),
         ("figures_unit", "str", "unit of the data, for the labels"),
         ("(advanced)", "keywords", "noise, channel_correlation, n_null_phase, "
-                                   "resolved_delta_chi2, theta_max_arcsec, fit_span_kms, "
-                                   "min_sources_per_bin, shape_nsigma, residual_nsigma, "
-                                   "H0, Om0, already_applied"),
+                                   "residual_nsigma, H0, Om0"),
     ],
     "run": [
         ("only", "None | 'stack' | 'continuum' | 'measure' | list",
@@ -416,8 +427,9 @@ class ViSta:
     # ---- the measurement ----------------------------------------------------
     def extract(self, *, annuli=(3.0, 3000.0, 18), weighting_scheme="natural", z_norm=True,
                 z_ref=None, pb_corr=True, flux_norm=False, flux_ref=None, v0_range=None,
-                fwhm_range=None, model="auto", model_prior=None, flux_measure="auto",
-                window=None, n_bootstrap=500, n_null=1000, seed=42,
+                fwhm_range=None, model="auto", model_prior=None, theta_range=(0.0, 15.0),
+                flux_measure="auto", shape_nsigma=2.0, window=None, fit_span=1500.0,
+                min_sources_per_annulus=2, n_bootstrap=500, n_null=1000, seed=42,
                 figures_draw=True, figures_unit="Jy", **advanced):
         """What is measured on the stack.  Without this call, :meth:`run`
         only writes the stack.  Every option is given by name.
@@ -428,7 +440,8 @@ class ViSta:
         through another line, are fitted together, each with its own flux,
         centre and width and sharing the size, so the fit separates them;
         every other line is measured on its own (its own size and model, on
-        the channels near it and outside the windows of the other lines).
+        the channels within ``fit_span`` of it and outside the windows of
+        the other lines).
 
         Parameters
         ----------
@@ -458,19 +471,32 @@ class ViSta:
             ``lo == hi`` fixes the value.  None: the centre anywhere in the
             window, the FWHM from two channels to the width of the window.
         model : 'auto', 'point', 'gauss' or a number, default 'auto'
-            The source: a Gaussian only if the data prefer it (Δχ² ≥ 9),
-            always a point, always a Gaussian, or a Gaussian of this FWHM
-            (arcsec).
+            The source: a Gaussian only if the data prefer it (Δχ² ≥ 9 over
+            a point source; the Δχ² is reported and drawn), always a point,
+            always a Gaussian, or a Gaussian of this FWHM (arcsec).
         model_prior : (theta_arcsec, sigma_dex) or None
             Soft tie of the size of the Gaussian (e.g. to the continuum size).
+        theta_range : (min, max), default (0, 15)
+            Allowed size (FWHM) of the Gaussian source, arcsec, for the lines
+            and the continuum.  A minimum above 0 leaves the point source
+            out (``model='auto'`` fits the Gaussian only).
         flux_measure : {'auto', 'gauss', 'area'}, default 'auto'
             Which flux is quoted for every line (both are always given and
             drawn): the integral of the Gaussian, the sum of the spectrum
             over the window, or the Gaussian unless the line is not Gaussian
-            (the two differ by more than 2 sigma).
+            (the two differ by more than ``shape_nsigma``).
+        shape_nsigma : float, default 2
+            Threshold of that test, in sigma of the difference of the two.
         window : number, (lo, hi), a list of them, or None
             Window of the area flux of every line; None: the line windows.
             It can be changed and the measurement repeated without stacking.
+        fit_span : float or None, default 1500
+            Channels farther than this (km/s) from every line are not
+            fitted, so that a wide band does not slow the fit down or bring
+            in a continuum that is no longer flat; None: every channel.
+        min_sources_per_annulus : int, default 2
+            Annuli with fewer sources are left out, so that no point is set
+            by a single object (one source alone: 1).
         n_bootstrap : int, default 500
             Resamplings of the sources, for the population errors (0: none).
         n_null : int, default 1000
@@ -483,20 +509,20 @@ class ViSta:
         figures_unit : str, default 'Jy'
             Unit of the data, for the labels (scaled to mJy, μJy as needed).
         advanced
-            ``noise`` ('scatter' or 'weights'), ``channel_correlation``,
-            ``n_null_phase``, ``resolved_delta_chi2``, ``theta_max_arcsec``,
-            ``fit_span_kms``, ``min_sources_per_bin``, ``shape_nsigma``,
-            ``residual_nsigma``; for the weighting ``H0``, ``Om0``,
-            ``already_applied``.
+            ``noise`` ('scatter': the noise of every cell from the scatter of
+            its visibilities; 'weights': from the weights alone),
+            ``channel_correlation`` (measure and use the correlation between
+            adjacent channels), ``n_null_phase`` (stacks with a random phase
+            per source, for a significance that does not assume Gaussian
+            noise), ``residual_nsigma`` (threshold of the residual-continuum
+            check); for the redshift rescaling ``H0``, ``Om0``.
         """
         from .extract.config import (BinningConfig, BootstrapConfig, LineFitConfig,
                                      WeightingConfig)
 
-        line_keys = {f.name for f in fields(LineFitConfig)}
-        weight_keys = {"H0", "Om0", "already_applied"}
-        own = {"v0_range_kms", "fwhm_range_kms", "size", "theta_fixed_arcsec",
-               "theta_prior_arcsec", "flux", "window_kms", "n_null", "continuum"}
-        bad = sorted(set(advanced) - (line_keys | weight_keys) | (set(advanced) & own))
+        line_keys = {"noise", "channel_correlation", "n_null_phase", "residual_nsigma"}
+        weight_keys = {"H0", "Om0"}
+        bad = sorted(set(advanced) - (line_keys | weight_keys))
         if bad:
             raise TypeError(f"extract: unknown option(s) {', '.join(bad)} "
                             f"(v.help('extract') lists them)")
@@ -542,13 +568,29 @@ class ViSta:
         if flux_measure not in ("auto", "gauss", "area"):
             raise ValueError(f"flux_measure must be 'auto', 'gauss' or 'area', "
                              f"not {flux_measure!r}")
+        try:
+            th_min, th_max = (float(x) for x in theta_range)
+        except (TypeError, ValueError):
+            raise ValueError(f"theta_range: (min, max) in arcsec, not {theta_range!r}") from None
+        if theta_fixed and not th_min <= theta_fixed <= th_max:
+            raise ValueError(f"model={theta_fixed:g}: outside theta_range ({th_min:g}, "
+                             f"{th_max:g})")
+        if fit_span is not None:
+            try:
+                fit_span = float(fit_span)
+            except (TypeError, ValueError):
+                raise ValueError(f"fit_span: km/s or None, not {fit_span!r}") from None
         n_boot = int(n_bootstrap)
         if n_boot < 0 or int(n_null) < 0:
             raise ValueError("n_bootstrap and n_null must be >= 0")
         line_cfg = LineFitConfig(
             v0_range_kms=v0_range, fwhm_range_kms=fwhm_range, size=size,
             theta_fixed_arcsec=theta_fixed if theta_fixed else None,
-            theta_prior_arcsec=model_prior, flux=flux_measure, window_kms=window,
+            theta_min_arcsec=th_min, theta_max_arcsec=th_max,
+            theta_prior_arcsec=model_prior, flux=flux_measure,
+            shape_nsigma=float(shape_nsigma), window_kms=window,
+            fit_span_kms=fit_span,
+            min_sources_per_bin=_check_min_sources(min_sources_per_annulus),
             n_null=int(n_null),
             **{k: v for k, v in advanced.items() if k in line_keys})
         opts = dict(binning=binning, weighting=weighting, line=line_cfg,
@@ -558,8 +600,11 @@ class ViSta:
                                 weighting_scheme=weighting_scheme, z_norm=z_norm, z_ref=z_ref,
                                 pb_corr=pb_corr, flux_norm=flux_norm, flux_ref=flux_ref,
                                 v0_range=v0_range, fwhm_range=fwhm_range, model=model,
-                                model_prior=model_prior, flux_measure=flux_measure,
-                                window=window, n_bootstrap=n_boot,
+                                model_prior=model_prior, theta_range=(th_min, th_max),
+                                flux_measure=flux_measure, shape_nsigma=float(shape_nsigma),
+                                window=window, fit_span=fit_span,
+                                min_sources_per_annulus=int(min_sources_per_annulus),
+                                n_bootstrap=n_boot,
                                 n_null=int(n_null), seed=int(seed), figures_draw=figures_draw,
                                 figures_unit=str(figures_unit)))
         if self.lines is not None:
@@ -839,7 +884,11 @@ class ViSta:
                  verbose)
             cont = extract_flux(f["continuum_statistics"], self.input_list, self.lines,
                                 ex["weighting"], profile=ProfileConfig(method="continuum"),
-                                uvfit=UVFitConfig(model="gauss"), bootstrap=ex["bootstrap"],
+                                uvfit=UVFitConfig(
+                                    model="gauss", theta_min_arcsec=ex["line"].theta_min_arcsec,
+                                    theta_max_arcsec=ex["line"].theta_max_arcsec,
+                                    min_sources_per_bin=ex["line"].min_sources_per_bin),
+                                bootstrap=ex["bootstrap"],
                                 output_prefix=f"{prefix}_continuum", verbose=verbose)
             if ex["draw"]:
                 from .extract.plots import plot_all

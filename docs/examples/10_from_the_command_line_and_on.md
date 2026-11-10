@@ -8,7 +8,7 @@ as §3–4; the results go to `cli/`:
 
 ```python
 fw = SIM["fwhm_kms"]
-cmd = (f"PYTHONPATH={REPO} bash {REPO}/run_vista.sh --input {LIST} --line-freq {REST_GHZ} "
+cmd = (f"PYTHONPATH={REPO} bash {REPO}/run_vista.sh --input {LIST} --line-freq {REST_GHZ}GHz "
        f"--line-window {WINDOW} --velocity-range 900 --output-name cli/stack "
        f"--extract --v0-range 0:0 --fwhm-range {fw:g}:{fw:g} --figures-unit Jy")
 print(cmd, "\n")
@@ -18,13 +18,13 @@ print(f"true line flux {T['flux']:.4f}")
 ```
 
 ```text
-PYTHONPATH=/content/ViSta-HPC bash /content/ViSta-HPC/run_vista.sh --input sim/input_list.txt --line-freq 345.79599 --line-window 500 --velocity-range 900 --output-name cli/stack --extract --v0-range 0:0 --fwhm-range 300:300 --figures-unit Jy
+PYTHONPATH=/content/ViSta-HPC bash /content/ViSta-HPC/run_vista.sh --input sim/input_list.txt --line-freq 345.79599GHz --line-window 500 --velocity-range 900 --output-name cli/stack --extract --v0-range 0:0 --fwhm-range 300:300 --figures-unit Jy
 ```
 
 ```text
 [ViSta       8.1s] z_ref = 2.6218 (median of the sample)
 RunResult(
-  stack: cli/stack.zarr (433,440 rows, 90 channels, 10 s)
+  stack: cli/stack.zarr (433,440 rows, 90 channels, 7 s)
   line 1 (345.796 GHz): F = 0.369 ± 0.044 (Gaussian), v0 = +0 km/s, FWHM = 300 km/s, 10.9 sigma
   z_ref = 2.6218 (median of the sample)
   continuum: 0.000216 ± 3.9e-05, size 0.80"
@@ -43,6 +43,9 @@ On your own data:
 1. write the input list, one line per dataset:
    `<ms_path> <redshift> <RA> <Dec> [FIELD_ID] [SPW_IDS] [NORM]`, with the
    position of the galaxy (hh:mm:ss.s ±dd:mm:ss.s);
+   `python examples/inspect_ms.py input_list.txt --line-freq 345.796GHz --all`
+   reads the bands of all the datasets and suggests `velocity_range`,
+   `line_window` and `annuli`;
 2. `v = ViSta(input_list, output_name=...)`, then `v.stack(line_freq=...,
    line_window=...)` with a window wide enough to contain the whole line
    (and one per line if the band holds more than one), `v.extract(...)` and
@@ -94,7 +97,7 @@ stack_detect_continuum_uvamp.txt            1.8 kB
 stack_detect_diagnostics.npz               58.1 kB
 stack_detect_noise.png                     94.7 kB
 stack_detect_noise.txt                      6.9 kB
-stack_detect_profile.png                  110.6 kB
+stack_detect_profile.png                  112.2 kB
 stack_detect_profile.txt                   22.7 kB
 stack_detect_results.json                  12.3 kB
 stack_detect_uv.png                        47.3 kB
@@ -108,7 +111,7 @@ stack_noiseless_detect_continuum_uvamp.txt        1.8 kB
 stack_noiseless_detect_diagnostics.npz        9.3 kB
 stack_noiseless_detect_noise.png          110.4 kB
 stack_noiseless_detect_noise.txt            6.9 kB
-stack_noiseless_detect_profile.png         94.4 kB
+stack_noiseless_detect_profile.png         96.3 kB
 stack_noiseless_detect_profile.txt         22.7 kB
 stack_noiseless_detect_results.json        11.2 kB
 stack_noiseless_detect_uv.png              50.5 kB
@@ -121,7 +124,7 @@ stack_noiseless_plain_continuum_uvamp.txt        1.8 kB
 stack_noiseless_plain_diagnostics.npz        9.3 kB
 stack_noiseless_plain_noise.png           109.6 kB
 stack_noiseless_plain_noise.txt             6.9 kB
-stack_noiseless_plain_profile.png          88.8 kB
+stack_noiseless_plain_profile.png          90.7 kB
 stack_noiseless_plain_profile.txt          22.7 kB
 stack_noiseless_plain_results.json         11.1 kB
 stack_noiseless_plain_uv.png               50.1 kB
@@ -133,7 +136,7 @@ stack_noiseless_search_continuum_uvamp.txt        1.8 kB
 stack_noiseless_search_diagnostics.npz        9.3 kB
 stack_noiseless_search_noise.png          110.4 kB
 stack_noiseless_search_noise.txt            6.9 kB
-stack_noiseless_search_profile.png         94.3 kB
+stack_noiseless_search_profile.png         96.3 kB
 stack_noiseless_search_profile.txt         22.7 kB
 stack_noiseless_search_results.json        12.2 kB
 stack_noiseless_search_uv.png              50.5 kB
@@ -151,7 +154,7 @@ stack_plain_continuum_uvamp.txt             1.8 kB
 stack_plain_diagnostics.npz                55.3 kB
 stack_plain_noise.png                     102.9 kB
 stack_plain_noise.txt                       6.9 kB
-stack_plain_profile.png                   109.0 kB
+stack_plain_profile.png                   110.8 kB
 stack_plain_profile.txt                    22.7 kB
 stack_plain_results.json                   11.8 kB
 stack_plain_uv.png                         48.3 kB
@@ -163,7 +166,7 @@ stack_redo_continuum_uvamp.txt              1.8 kB
 stack_redo_diagnostics.npz                 54.4 kB
 stack_redo_noise.png                       89.7 kB
 stack_redo_noise.txt                        6.9 kB
-stack_redo_profile.png                    110.1 kB
+stack_redo_profile.png                    111.7 kB
 stack_redo_profile.txt                     22.7 kB
 stack_redo_results.json                    12.0 kB
 stack_redo_uv.png                          46.7 kB
@@ -175,7 +178,7 @@ stack_search_continuum_uvamp.txt            1.8 kB
 stack_search_diagnostics.npz               57.9 kB
 stack_search_noise.png                     95.2 kB
 stack_search_noise.txt                      6.9 kB
-stack_search_profile.png                  113.6 kB
+stack_search_profile.png                  114.9 kB
 stack_search_profile.txt                   22.7 kB
 stack_search_results.json                  13.3 kB
 stack_search_uv.png                        47.7 kB

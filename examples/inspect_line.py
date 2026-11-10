@@ -3,9 +3,9 @@
 Image one dataset as a cube, measure the line in it, and print the limits the
 stacking and the extraction should use.
 
-    python inspect_line.py sim_gauss_input.txt --rest-freq 345.7959899
-    python inspect_line.py sim_gauss_input.txt --rest-freq 345.7959899 -n 25
-    python inspect_line.py sim_gauss_input.txt --rest-freq 345.7959899 --keep
+    python inspect_line.py input_list.txt --line-freq 345.796GHz
+    python inspect_line.py input_list.txt --line-freq 345.796GHz -n 25
+    python inspect_line.py input_list.txt --line-freq 345.796GHz --keep
 
 Runs tclean with no deconvolution, finds the source in the collapsed cube,
 takes the spectrum at that position, and fits a Gaussian to it.  From the
@@ -24,6 +24,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from vista.extract.config import parse_freq_ghz
 from vista.extract.sources import read_input_list
 
 C_KMS = 299792.458
@@ -82,7 +83,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("input_list")
-    parser.add_argument("--rest-freq", type=float, required=True, metavar="GHZ")
+    parser.add_argument("--line-freq", "--rest-freq", dest="rest_freq", type=parse_freq_ghz,
+                        required=True, metavar="FREQ",
+                        help="rest frequency of the line: GHz, or with the unit (345.796GHz)")
     parser.add_argument("-n", "--index", type=int, default=0)
     parser.add_argument("--imsize", type=int, default=256)
     parser.add_argument("--cell", type=float, default=0.05, metavar="ARCSEC")
@@ -134,8 +137,9 @@ def main():
         print(f"    peak / baseline = {amplitude:.4g} / {offset:.4g}  "
               f"(ratio {amplitude / offset if offset else float('nan'):.2f})")
         if abs(offset) > 0.1 * abs(amplitude):
-            print(f"    the baseline is not negligible: there is a continuum, "
-                  f"so use\n    --contsub after (or before), not the default")
+            print(f"    the baseline is not negligible: there is a continuum, so "
+                  f"keep\n    stack(..., continuum='subtract') (the default) or use "
+                  f"continuum='fit', not 'none'")
     except Exception as exc:
         print(f"\n  the line fit failed ({exc}); falling back to the moments")
         weights = np.clip(spectrum - np.median(spectrum), 0, None)

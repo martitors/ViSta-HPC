@@ -40,7 +40,7 @@ print(f"   continuum [mJy]          {T['cont'] * 1e3:8.3f}           {cf['flux_d
 ```
 
 ```text
-[ViSta       3.4s] z_ref = 2.6218 (median of the sample)
+[ViSta       3.1s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
@@ -62,7 +62,7 @@ recorded: {'mode': 'separate', 'order': 1, 'lines': {'exclude_between': False, '
 ```
 
 ```text
-[ViSta       3.7s] z_ref = 2.6218 (median of the sample)
+[ViSta       3.6s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text

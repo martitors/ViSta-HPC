@@ -20,7 +20,7 @@ save(add_noiseless(pl.plot_profile(pl.load("stack_search"), unit="Jy", rebin=2, 
 ```
 
 ```text
-[ViSta       4.9s] z_ref = 2.6218 (median of the sample)
+[ViSta       5.0s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text

@@ -103,23 +103,23 @@ help(ViSta), help(v.stack), help(v.extract): the full description.
 ```
 
 ```text
-[ViSta       0.5s] Frame: inputs 12 LSRK, already LSRK
+[ViSta       0.6s] Frame: inputs 12 LSRK, already LSRK
 ```
 
 ```text
-[ViSta       0.5s] Output grid: 90 channels × 23069.0 kHz (20.00 km/s), ±900 km/s around 345.7960 GHz
+[ViSta       0.6s] Output grid: 90 channels × 23069.0 kHz (20.00 km/s), ±900 km/s around 345.7960 GHz
 ```
 
 ```text
-[ViSta       0.5s]   (width: the coarsest rest-frame channel of the sample; channels: velocity range -900 to +900 km/s)
+[ViSta       0.6s]   (width: the coarsest rest-frame channel of the sample; channels: velocity range -900 to +900 km/s)
 ```
 
 ```text
-[ViSta       0.9s] During the stacking: continuum subtracted (order 0) -> MODEL_DATA, CORRECTED_DATA; statistics from CORRECTED_DATA -> stack_line_stats.npy, stack_cont_stats.npy
+[ViSta       1.0s] During the stacking: continuum subtracted (order 0) -> MODEL_DATA, CORRECTED_DATA; statistics from CORRECTED_DATA -> stack_line_stats.npy, stack_cont_stats.npy
 ```
 
 ```text
-[ViSta       0.9s] Setup done (516 antennas in total); stacking 12 MS...
+[ViSta       1.0s] Setup done (516 antennas in total); stacking 12 MS...
 ```
 
 ```text
@@ -127,60 +127,60 @@ help(ViSta), help(v.stack), help(v.extract): the full description.
 ```
 
 ```text
-[ViSta       1.3s] [ 2/12] galaxy_01.ms  z=2.0165  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       1.4s] [ 2/12] galaxy_01.ms  z=2.0165  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       1.5s] [ 3/12] galaxy_02.ms  z=2.0410  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       1.7s] [ 3/12] galaxy_02.ms  z=2.0410  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       1.8s] [ 4/12] galaxy_03.ms  z=2.2698  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       2.0s] [ 4/12] galaxy_03.ms  z=2.2698  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       2.1s] [ 5/12] galaxy_04.ms  z=2.5436  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       2.4s] [ 5/12] galaxy_04.ms  z=2.5436  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       2.3s] [ 6/12] galaxy_05.ms  z=2.6066  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       2.9s] [ 6/12] galaxy_05.ms  z=2.6066  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       2.6s] [ 7/12] galaxy_06.ms  z=2.6370  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       3.3s] [ 7/12] galaxy_06.ms  z=2.6370  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       2.9s] [ 8/12] galaxy_07.ms  z=2.7295  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       3.7s] [ 8/12] galaxy_07.ms  z=2.7295  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       3.3s] [ 9/12] galaxy_08.ms  z=2.8133  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       4.4s] [ 9/12] galaxy_08.ms  z=2.8133  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       3.5s] [10/12] galaxy_09.ms  z=2.8159  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       4.7s] [10/12] galaxy_09.ms  z=2.8159  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       3.9s] [11/12] galaxy_10.ms  z=2.9128  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       5.0s] [11/12] galaxy_10.ms  z=2.9128  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       4.2s] [12/12] galaxy_11.ms  z=2.9351  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
+[ViSta       5.3s] [12/12] galaxy_11.ms  z=2.9351  36,120 rows  DATA  1 SPW, 91 ch  covers 100% of the grid  offset 2.2"
 ```
 
 ```text
-[ViSta       5.5s] Done in 5.5 s: stack.zarr · 12 SPW × 90 channels · 433,440 rows · 679.6 MB of visibilities, 1.1 GB on disk · 0.0% of the output flagged (no data)
+[ViSta       6.4s] Done in 6.4 s: stack.zarr · 12 SPW × 90 channels · 433,440 rows · 679.6 MB of visibilities, 1.1 GB on disk · 0.0% of the output flagged (no data)
 ```
 
 ```text
-[ViSta       5.5s]   (Zarr store: vista.export_ms() writes it as a Measurement Set)
+[ViSta       6.4s]   (Zarr store: vista.export_ms() writes it as a Measurement Set)
 ```
 
 ```text
 
-both stacked in 11 s
+both stacked in 12 s
 ```
 
 **A first look at the stack**: all visibilities of all galaxies averaged
