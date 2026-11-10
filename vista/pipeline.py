@@ -57,7 +57,8 @@ processed (the content does not depend on it).
 
 Where the code is
 -----------------
-    pipeline.py        the ViSta class: input list, the run, its threads
+    pipeline.py        the Stacker: input list, the run, its threads
+    resources.py       cores, memory, readers / writers / threads, GPU batch
     spectral_grid.py   the common rest-frame channel grid
     ms_input.py        reading the input MSs (metadata, rows, SPW merging)
     frames.py          spectral frame of the inputs, Doppler factor per row
@@ -73,8 +74,8 @@ Where the code is
 
 # Threads of OpenMP / OpenBLAS / MKL.  They are read once, when the libraries
 # are loaded, so they are set here, before NumPy and the kernel are imported.
-# A value already set by the user (or by SLURM) is kept; run(n_threads=...)
-# changes the kernel threads afterwards.
+# A value already set by the user (or by SLURM) is kept; the run sets the
+# kernel threads afterwards (vista.resources).
 import os
 
 _n_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or (os.cpu_count() or 4)
@@ -83,10 +84,16 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS",   os.environ["OMP_NUM_THREADS"])
 os.environ.setdefault("MKL_NUM_THREADS",        os.environ["OMP_NUM_THREADS"])
 os.environ.setdefault("NUMEXPR_NUM_THREADS",    os.environ["OMP_NUM_THREADS"])
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", os.environ["OMP_NUM_THREADS"])
-os.environ.setdefault("OMP_PROC_BIND", "close")
-os.environ.setdefault("OMP_PLACES",    "cores")
+# No OpenMP thread binding by default: with OMP_PROC_BIND set, loading the
+# kernel pins the main thread to one core, and every reader process and
+# writer thread started afterwards inherits that single core.
+try:
+    _AFFINITY = os.sched_getaffinity(0)
+except (AttributeError, OSError):
+    _AFFINITY = None
 
 import gc
+import logging
 import shutil
 import threading
 import time
@@ -97,13 +104,22 @@ from typing import Optional
 import numpy as np
 import dask
 
-from . import __version__, _reset_clock, set_verbosity
+from . import __version__, _logger, _reset_clock
 from . import compute, ms_output
 from .common import detail, fmt_size, fmt_time, log, warn
 from .ms_input import EntryJob, read_ms_metadata
 from .readers import ReaderPool, release
 from .spectral_grid import C_LIGHT_KMS, compute_grid
 from .stackio import ZarrStackWriter, store_size
+
+# a binding set by the user (OMP_PROC_BIND) has now pinned the main thread:
+# give it back all its cores, for the readers and writers it starts
+if _AFFINITY is not None:
+    try:
+        if os.sched_getaffinity(0) != _AFFINITY:
+            os.sched_setaffinity(0, _AFFINITY)
+    except OSError:
+        pass
 
 _DONE = object()            # end of the stream of processed chunks
 
@@ -178,8 +194,9 @@ class _Run:
         self.abort.set()
 
 
-class ViSta:
-    """Visibility-domain stacking of a list of Measurement Sets.
+class Stacker:
+    """Visibility-domain stacking of a list of Measurement Sets (internal:
+    the user drives it through :class:`vista.ViSta`).
 
     Reader processes, the compute kernel and the writers run at the same
     time, connected by bounded queues (see the module docstring).  The
@@ -198,25 +215,15 @@ class ViSta:
         the phase centre of field 0.  ``SPW_IDS`` is a comma-separated list;
         without it every SPW is used.  ``NORM`` is only used by
         ``vista.extract``.  Text after ``#`` is a comment.
-    chunk_rows : int, default 5000
-        Rows read and processed at a time.  More rows mean less overhead but
-        more memory; it is lowered automatically for very wide spectra.
-    verbose : bool or 'debug', default True
-        ``True``: one line per step and per entry, with the elapsed time,
-        plus the warnings.  ``False``: warnings and errors only.
-        ``'debug'``: also the details (metadata, queues, GPU buffers).
-
-    Examples
-    --------
-    >>> v = ViSta("input_list.txt")
-    >>> v.run("stack.zarr", central_freq=345.796e9, velocity_range_kms=2000)
+    verbose : bool or 'debug'
+        Passed on to the steps run during the stacking.
     """
 
     # ---- input list -----------------------------------------------------------
 
-    def __init__(self, input_file, chunk_rows=5000, verbose=True):
+    def __init__(self, input_file, verbose=False, chunk_rows=5000):
         self.input_file  = input_file
-        self.chunk_rows  = chunk_rows
+        self.chunk_rows  = chunk_rows        # at most; fewer for wide spectra (ms_input)
         self.verbose     = verbose
         self.data_column = "auto"
         self.frame = None
@@ -360,155 +367,92 @@ class ViSta:
 
     # ---- the run -----------------------------------------------------------------
 
-    def run(self, output=None, central_freq=None, scratch_dir=None, nchan_out=None,
+    def run(self, output, central_freq, scratch_dir=None, nchan_out=None,
             velocity_range_kms=None, channel_width_hz=None,
-            data_column="auto", frame="LSRK", device="cpu", n_readers=2, n_threads=None,
-            gpu_batch=8, output_format=None, n_writers=4, compress=True,
-            timing=False, log_file=None, reader_mode="process", chunk_queue=None,
-            out_queue=None, ms_out=None, line=None, continuum=None, stats_line=None,
-            stats_continuum=None, binning=None, max_amplitude=None):
+            data_column="auto", frame="LSRK", device="cpu", n_readers=None, n_threads=None,
+            gpu_batch=None, output_format=None, n_writers=None, line=None, continuum=None,
+            stats_line=None, stats_continuum=None, binning=None, max_amplitude=None):
         """Stack all the entries and write the stack.
 
         Parameters
         ----------
         output : str
-            Where the stack is written: a Zarr store (default, e.g.
-            ``stack.zarr``) or a Measurement Set (``output_format="ms"``).
-            Anything already at this path is deleted.  ``ms_out`` is accepted
-            as an alias, as in earlier versions.
+            Where the stack is written: a Zarr store or a Measurement Set.
+            Anything already at this path is deleted.
         central_freq : float
             Rest-frame centre of the output grid [Hz], normally the rest
             frequency of the line.
-        scratch_dir : str or None, default None
-            Write the stack here first (a fast local disk, ``$TMPDIR``,
-            ``/scratch``) and move it to *output* at the end.  ``None``
-            writes directly to *output*.
-        nchan_out : int or None, default None
+        scratch_dir : str or None
+            Write the stack here first (a fast local disk) and move it to
+            *output* at the end.
+        nchan_out : int or None
             Number of output channels.  ``None`` takes the largest number any
-            single entry can fill; entries with less bandwidth are then only
-            partly covered.
-        velocity_range_kms : float, (float, float) or None, default None
+            single entry can fill.
+        velocity_range_kms : float, (float, float) or None
             Output bandwidth as a velocity range around *central_freq*
-            (optical convention): ``2000`` means -2000 to +2000 km/s.
-            Overrides *nchan_out*.
-        channel_width_hz : float or None, default None
+            (``2000``: -2000 to +2000 km/s).  Overrides *nchan_out*.
+        channel_width_hz : float or None
             Rest-frame channel width.  ``None`` takes the widest channel of
-            the sample, the finest grid every dataset supports; a finer value
-            is refused.
-        data_column : str, default 'auto'
-            Column to stack.  ``'auto'`` takes CORRECTED_DATA when present,
-            otherwise DATA; any other name is read when present, otherwise
-            DATA is used (with a warning).
-        frame : str, default 'LSRK'
-            The frame of the redshifts: ``'LSRK'`` or ``'BARY'`` (also
-            ``'LSRD'``, ``'GALACTO'``, ``'LGROUP'``, ``'CMB'``).  The input
-            frequencies are always brought to it, row by row, before the
-            rest-framing, from the time of each row, the position of the
-            array and the direction of the source (see vista.frames): this
-            removes the motion of the Earth from TOPO data (ALMA, VLA).
-            Inputs already in that frame are left as they are, so the
-            correction costs nothing when it is not needed.  Give ``'BARY'``
-            when the redshifts are barycentric or heliocentric, as optical
-            spectroscopic redshifts usually are.
-        device : {'cpu', 'gpu'}, default 'cpu'
-            Where the kernel runs.  ``'gpu'`` needs a CUDA build
-            (``-DWITH_CUDA=ON``) and a visible GPU.  With an MS output the run
-            is usually limited by its single writer, so the GPU pays off only
-            when the computation dominates (many channels, many rows).
-        n_readers : int, default 2
-            Reader processes, each reading a different entry; more readers
-            help only on fast filesystems.
-        n_threads : int or None, default None
-            OpenMP threads of the CPU kernel.  ``None`` keeps
-            ``OMP_NUM_THREADS``, else ``SLURM_CPUS_PER_TASK``, else all cores.
-        gpu_batch : int, default 8
-            GPU only: maximum chunks per GPU launch.  The compute takes the
-            chunks already read, without waiting for more; larger values use
-            more host memory.
-        output_format : {'zarr', 'ms'} or None, default None
-            ``'zarr'``: a Zarr store with the layout of dask-ms, written by
-            *n_writers* threads at once and compressed;
-            :func:`vista.export_ms` makes a Measurement Set from it when one
-            is needed.  ``'ms'``: a Measurement Set, written by one thread
-            (a casacore table cannot be written in parallel).  ``None``:
-            ``'ms'`` when *output* ends in ``.ms``, otherwise ``'zarr'``.
-        n_writers : int, default 4
-            Zarr only: threads writing the store at the same time.
-        compress : bool, default True
-            Zarr only: compress the columns (Blosc lz4); flags and empty
-            channels then take almost no space.
-        timing : bool, default False
-            At the end, also log how long setup, reading, computing and
-            writing took, and which stage limited the run.
-        log_file : str or None, default None
-            Also append the log to this file.
-        reader_mode : {'process', 'thread'}, default 'process'
-            ``'process'``: parallel reads, data passed through shared memory
-            (``/dev/shm``).  ``'thread'``: readers as threads, no shared
-            memory needed (e.g. containers with a small ``/dev/shm``), but
-            the reads take turns.
-        chunk_queue, out_queue : int or None, default None
-            Advanced: chunks waiting for the compute (default
-            ``n_readers + 1``, at least ``gpu_batch`` on the GPU) and for the
-            writers (default 3, at least ``n_writers + 1``).  They bound the
-            memory in use.
-        line : vista.extract.LineConfig or None, default None
-            The line, needed by the two options below: its window (with the
-            second line and ``exclude_v_kms``) sets the channels left out of
-            the continuum fit.
-        continuum : vista.extract.ContinuumConfig or None, default None
-            Subtract the continuum while the stack is written, chunk by
-            chunk: the stack gets ``MODEL_DATA`` and ``CORRECTED_DATA`` next
-            to ``DATA``, identical to those of
-            :func:`vista.extract.subtract_continuum` on the finished stack,
-            without reading it back.  ``DATA`` is kept, so the subtraction can
-            be redone later with another window.
-        stats_line, stats_continuum : str or None, default None
-            Also compress the stack into these statistics files while it is
-            written, as :func:`vista.extract.compress_visibilities` would:
-            the line from ``CORRECTED_DATA`` (``DATA`` without *continuum*),
-            the continuum from ``MODEL_DATA`` (needs *continuum*).
-        binning, max_amplitude : default None
-            Options of that compression (``BinningConfig()`` by default).
+            the sample, the finest grid every dataset supports.
+        data_column : str
+            Column to stack: ``'auto'`` takes CORRECTED_DATA when present,
+            otherwise DATA.
+        frame : str
+            The frame of the redshifts (``'LSRK'``, ``'BARY'``, ...): the
+            input frequencies are always brought to it, row by row.
+        device : {'cpu', 'gpu'}
+            Where the kernel runs (``'gpu'`` needs a CUDA build and a GPU).
+        n_readers, n_writers, n_threads : int or None
+            Reader processes, writer threads (Zarr) and kernel threads.
+            ``None``: from the cores available (:mod:`vista.resources`).
+        gpu_batch : int or None
+            GPU only: chunks per launch.  ``None``: as many as fit in the
+            memory of the GPU and of the host.
+        output_format : {'zarr', 'ms'} or None
+            ``None``: ``'ms'`` when *output* ends in ``.ms``, otherwise
+            ``'zarr'``.
+        line, continuum, stats_line, stats_continuum, binning, max_amplitude
+            Continuum subtraction and compression while the stack is written
+            (:mod:`vista.extract.inline`): the lines
+            (:class:`~vista.extract.config.Lines`), the subtraction
+            (``ContinuumConfig``, None: none), the statistics files and the
+            annuli.
 
         Returns
         -------
         dict
-            ``output`` (also as ``ms_out``), ``format``, ``n_rows``,
-            ``n_spw``, ``nchan``, ``df_hz``, ``flagged_fraction``,
-            ``skipped`` (lines of the input list without data),
-            ``bytes_on_disk`` and ``seconds``; with *continuum*,
-            ``contsub_orders``; with *stats_line*, ``statistics``.
+            ``output``, ``format``, ``n_rows``, ``n_spw``, ``nchan``,
+            ``df_hz``, ``flagged_fraction``, ``skipped`` (lines of the input
+            list without data), ``bytes_on_disk``, ``seconds`` and the
+            ``resources`` used; with *continuum*, ``contsub_orders``; with
+            *stats_line*, ``statistics``.
         """
-        if output is None:
-            output = ms_out
-        if output is None or central_freq is None:
+        from .resources import (available_memory, chunk_bytes, plan_gpu_batch,
+                                plan_workers, reader_mode as choose_reader_mode,
+                                shared_memory_free)
+        if not output or central_freq is None:
             raise TypeError("run() needs the output path and central_freq")
         if output_format is None:
             output_format = "ms" if output.rstrip("/").lower().endswith(".ms") else "zarr"
         if output_format not in ("zarr", "ms"):
-            raise ValueError("output_format must be 'zarr', 'ms' or None")
+            raise ValueError("output_format must be 'zarr' or 'ms'")
         use_zarr = output_format == "zarr"
-        n_writers = max(1, int(n_writers)) if use_zarr else 1
-        out_queue = int(out_queue) if out_queue else max(3, n_writers + 1)
-        set_verbosity(self.verbose, log_file)
+        if device not in ("cpu", "gpu"):
+            raise ValueError("device must be 'cpu' or 'gpu'")
+        n_ms = len(self.ms_list)
+        plan = plan_workers(n_ms, use_zarr, n_readers, n_writers, n_threads)
+        n_readers, n_writers = plan.n_readers, plan.n_writers
+        out_queue = max(3, n_writers + 1)
         _reset_clock()
         t_start = time.perf_counter()
         dask.config.set(scheduler="synchronous")
 
-        if device not in ("cpu", "gpu"):
-            raise ValueError("device must be 'cpu' or 'gpu'")
-        if reader_mode not in ("process", "thread"):
-            raise ValueError("reader_mode must be 'process' or 'thread'")
-        n_readers = max(1, int(n_readers))
-        gpu_batch = max(1, int(gpu_batch))
-        chunk_queue = int(chunk_queue) if chunk_queue else n_readers + 1
-        if n_threads:
-            compute.set_threads(n_threads)
+        compute.set_threads(plan.n_threads)
         use_gpu = device == "gpu"
         if use_gpu:
             compute.check_gpu()
-            chunk_queue = max(chunk_queue, gpu_batch)   # a whole batch must fit
+            gpu_batch = int(gpu_batch) if gpu_batch is not None else None
+        chunk_queue = n_readers + 1
         self.data_column = data_column
         from .frames import TARGET_FRAMES
         frame = None if frame is None else str(frame).upper()
@@ -518,28 +462,48 @@ class ViSta:
                              f"inputs are always brought to it")
         self.frame = frame
 
-        n_ms = len(self.ms_list)
         final = output
-        if use_gpu:
-            where = (f"GPU ({compute.gpu_memory_gb():.0f} GB, up to {gpu_batch} "
-                     f"chunks per launch)")
-        else:
-            n_omp = compute.cpu_threads()
-            where = f"CPU ({n_omp} thread{'s' if n_omp > 1 else ''})"
         log(f"ViSta {__version__} · {n_ms} MS from {os.path.basename(self.input_file)} "
-            f"→ {final} ({'Zarr' if use_zarr else 'MS'}) · {where} · "
-            f"{n_readers} reader{'s' if n_readers > 1 else ''}"
-            + (f" · {n_writers} writer{'s' if n_writers > 1 else ''}" if use_zarr else ""))
-        detail(f"chunk_rows={self.chunk_rows}  reader_mode={reader_mode}  "
-               f"chunk_queue={chunk_queue}  out_queue={out_queue}")
+            f"→ {final} ({'Zarr' if use_zarr else 'MS'}) · "
+            + ("GPU" if use_gpu else "CPU") + f" · {plan.describe()}")
 
         # The readers start now, so that they import numpy / casacore while
-        # the setup runs here; their jobs arrive once the setup is done.
-        readers = ReaderPool(reader_mode, n_readers, chunk_queue)
+        # the setup runs here; their jobs arrive once the setup is done.  On
+        # the GPU (the queue must hold a whole batch) and with a small
+        # /dev/shm they start after the setup, which tells how large the
+        # chunks are.
+        shm = shared_memory_free()
+        early = not use_gpu and (shm is None or shm >= 4 * 2**30)
+        readers = ReaderPool("process", n_readers, chunk_queue) if early else None
         try:
             output, subtables, ant_offsets = self._setup(
                 final, scratch_dir, central_freq, nchan_out,
                 velocity_range_kms, channel_width_hz)
+            nchan_in = max(sum(len(f) for f in m.freq) for m in self._meta)
+            rows_in = min(self.chunk_rows, max(1000, (512 * 2**20) // max(1, nchan_in * 16)))
+            bytes_in = chunk_bytes(rows_in, nchan_in, 4)
+            bytes_out = chunk_bytes(self.chunk_rows, self._grid.nchan, 4)
+            if use_gpu:
+                free_gpu = None
+                try:
+                    from . import ms_ops
+                    free_gpu = int(ms_ops.gpu_memory_info()[0])
+                except Exception:
+                    pass
+                gpu_batch = plan_gpu_batch(gpu_batch, bytes_in, bytes_out, free_gpu,
+                                           available_memory(), n_writers)
+                chunk_queue = max(chunk_queue, gpu_batch)   # a whole batch must fit
+            if readers is None:
+                mode = choose_reader_mode(n_readers, chunk_queue, bytes_in)
+                if mode == "thread":
+                    log(f"/dev/shm has {fmt_size(shm or 0)} free: the readers run as "
+                        f"threads (their reads take turns)")
+                readers = ReaderPool(mode, n_readers, chunk_queue)
+            if use_gpu:
+                log(f"GPU ({compute.gpu_memory_gb():.0f} GB): up to {gpu_batch} chunks "
+                    f"per launch")
+            detail(f"chunk_rows={self.chunk_rows}  reader_mode={readers.mode}  "
+                   f"chunk_queue={chunk_queue}  out_queue={out_queue}")
             inline = None
             if continuum is not None or stats_line is not None:
                 from .extract.inline import InlineExtraction
@@ -553,21 +517,22 @@ class ViSta:
                      "nothing to do during the stacking")
             store = None
             if use_zarr:
-                store = ZarrStackWriter(output, compress=compress, attrs={
+                store = ZarrStackWriter(output, compress=True, attrs={
                     "vista_version": __version__, "central_freq_hz": float(central_freq),
                     "channel_width_hz": float(self._grid.df), "nchan": int(self._grid.nchan),
                     "n_ms": n_ms, "input_list": os.path.abspath(self.input_file),
                     "ms_list": list(self.ms_list), "z_list": [float(z) for z in self.z_list],
                     "frame": self.frame})
         except BaseException:
-            readers.stop()
+            if readers is not None:
+                readers.stop()
             raise
         jobs = self._make_jobs(ant_offsets)
         readers.submit(jobs)
 
         run = _Run(output=output, jobs=jobs, readers=readers,
                    out_q=Queue(maxsize=out_queue), store=store, n_writers=n_writers,
-                   gpu_batch=gpu_batch, inline=inline)
+                   gpu_batch=gpu_batch or 1, inline=inline)
         if use_gpu:
             run.gpu = compute.GpuEngine(out_queue + gpu_batch + n_writers + 1,
                                         self.chunk_rows, self._grid.nchan)
@@ -602,7 +567,11 @@ class ViSta:
         if scratch_dir is not None and output != final:
             log(f"Moving the output from the scratch directory to {final}...")
             shutil.move(output, final)
-        summary = self._log_summary(run, final, output_format, t_start, timing)
+        summary = self._log_summary(run, final, output_format, t_start)
+        summary["resources"] = {"cores": plan.cores, "n_readers": n_readers,
+                                "n_writers": n_writers, "n_threads": plan.n_threads,
+                                "reader_mode": readers.mode,
+                                "gpu_batch": gpu_batch if use_gpu else None}
         summary.update(extra)
         return summary
 
@@ -908,8 +877,9 @@ class ViSta:
         for w in info.warnings:
             warn(f"{job.tag} {job.name}: {w}")
 
-    def _log_summary(self, run, final, output_format, t_start, timing):
-        """Skipped entries, timing (if asked) and a summary; returns the run summary."""
+    def _log_summary(self, run, final, output_format, t_start):
+        """Skipped entries, timing (with verbose='debug') and a summary;
+        returns the run summary."""
         n_ms = len(run.jobs)
         t_end = time.perf_counter()
         total = t_end - t_start
@@ -918,16 +888,16 @@ class ViSta:
         if run.skipped:
             names = ", ".join(run.jobs[i].name for i in sorted(run.skipped))
             warn(f"{len(run.skipped)} of {n_ms} MS skipped, no data in the output: {names}")
-        if timing:
+        if _logger.isEnabledFor(logging.DEBUG):
             loop = run.t_loop_end - run.t_loop
             busy = {"reading": run.t_read / run.readers.n_readers,
                     "computing": run.t_compute, "writing": run.t_write / run.n_writers}
             limit = max(busy, key=busy.get)
             share = busy[limit] / max(loop, 1e-9)
-            log(f"Timing: setup {fmt_time(run.t_loop - t_start)} · stacking "
+            detail(f"Timing: setup {fmt_time(run.t_loop - t_start)} · stacking "
                 f"{fmt_time(loop)} · subtables and closing "
                 f"{fmt_time(t_end - run.t_loop_end)}")
-            log(f"  during the stacking (overlapping): reading "
+            detail(f"  during the stacking (overlapping): reading "
                 f"{fmt_time(busy['reading'])} per reader · computing "
                 f"{fmt_time(busy['computing'])} · writing {fmt_time(busy['writing'])}"
                 + (" per writer" if run.n_writers > 1 else "")
@@ -935,11 +905,11 @@ class ViSta:
                    f"  → no stage busy for half of the time: the first data arrived "
                    f"after {fmt_time(run.t_first or 0.0)} (start of the readers)"))
             if run.inline is not None:
-                log(f"  of the computing: continuum subtraction "
+                detail(f"  of the computing: continuum subtraction "
                     f"{fmt_time(run.inline.t_contsub)} · statistics "
                     f"{fmt_time(run.inline.t_stats)}")
             if run.gpu is not None and run.gpu.launches:
-                log(f"  GPU: {run.gpu.launches} launches, "
+                detail(f"  GPU: {run.gpu.launches} launches, "
                     f"{run.gpu.chunks / run.gpu.launches:.1f} chunks per launch on average")
         on_disk = store_size(final)
         size = (f"{fmt_size(run.bytes)} of visibilities, {fmt_size(on_disk)} on disk"
@@ -949,7 +919,7 @@ class ViSta:
             f"{100 * flagged:.1f}% of the output flagged (no data)")
         if output_format == "zarr":
             log("  (Zarr store: vista.export_ms() writes it as a Measurement Set)")
-        return {"output": final, "ms_out": final, "format": output_format,
+        return {"output": final, "format": output_format,
                 "n_rows": run.rows, "n_spw": n_spw,
                 "nchan": self._grid.nchan, "df_hz": float(self._grid.df),
                 "flagged_fraction": flagged, "skipped": sorted(run.skipped),

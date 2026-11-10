@@ -330,9 +330,19 @@ class ReaderPool:
                 w.terminate()
         self.discard_queued()
 
-    def discard_queued(self):
-        """Stop the readers and free the chunks still queued (after an error)."""
+    def discard_queued(self, timeout=5.0):
+        """Stop the readers and free the chunks still queued (after an error).
+
+        A reader terminated while it was sending can leave half a message in
+        the pipe, and reading it would wait for ever: the queue is drained in
+        a helper thread, given up after ``timeout`` seconds (the error that
+        stopped the run is then reported, not hidden by a hang)."""
         self._stop.set()
+        drain = threading.Thread(target=self._drain, name="vista-drain", daemon=True)
+        drain.start()
+        drain.join(timeout)
+
+    def _drain(self):
         while True:
             try:
                 msg = self.messages.get_nowait()

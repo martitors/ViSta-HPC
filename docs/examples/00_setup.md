@@ -51,7 +51,7 @@ print("ViSta", vista.__version__, "· kernel", os.path.basename(ms_ops.__file__)
 
 ```text
 ViSta source: /content/ViSta-HPC
-ViSta 2.5.0 · kernel ms_ops.cpython-313-x86_64-linux-gnu.so
+ViSta 3.0.0 · kernel ms_ops.cpython-313-x86_64-linux-gnu.so
 ```
 
 ```python
@@ -66,9 +66,6 @@ from casatools import image as iatool
 import simulate                                        # the simulated observations
 import plot_line as pl                                 # the figures of a line measurement
 from vista import ViSta, export_ms
-from vista.extract import (LineConfig, ContinuumConfig, BinningConfig, WeightingConfig,
-                           LineFitConfig, BootstrapConfig, ProfileConfig, UVFitConfig,
-                           measure_line, extract_flux, subtract_continuum, compress_visibilities)
 
 logging.getLogger("daskms").setLevel(logging.ERROR)    # quiet about empty optional columns
 WORK = "/content/vista_demo" if IN_COLAB else os.path.abspath("vista_demo")

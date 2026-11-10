@@ -5,14 +5,15 @@ The line measured on the whole stacked cube, channels x uv annuli, at once.
 
 Model of the real part of every cell (channel c, annulus b)::
 
-    Re V(c, b) = [F phi_c(v0, sigma) + F2 phi2_c] g(b; theta) [+ C g(b; theta_c)]
+    Re V(c, b) = [F phi_c(v0, sigma) + F2 phi2_c + ...] g(b; theta) [+ C g(b; theta_c)]
 
 ``phi_c`` is a Gaussian of unit integral *averaged over the channel* (not
 sampled at its centre: a line a few channels wide is not distorted),
 ``F`` the velocity-integrated flux (``[data units] km/s``), ``g`` the
 visibility of a circular Gaussian of FWHM ``theta`` (1 for a point source)
-at the mean baseline of the cell, ``F2 phi2`` an optional second line and
-``C`` an optional continuum.  The cells are fitted by weighted least
+at the mean baseline of the cell, ``Fk phik`` the other lines of the band
+(each in its own velocity, sharing the size) and ``C`` an optional
+continuum.  The cells are fitted by weighted least
 squares with the noise of :mod:`vista.extract.noise`: every cell weighted by
 the inverse of its variance (from the scatter of its visibilities), and the
 correlation between adjacent channels taken into account in every error, S/N
@@ -27,13 +28,14 @@ errors come out of the same fit.
 
 Detection and significance
 --------------------------
-With the centre and the width fixed in advance (``mode='detect'``) the flux
-is linear in the data -- a matched filter: unbiased, Gaussian, and its S/N is
-the significance.  With them free (``mode='search'``) the best S/N over a grid
-of centres and widths is the statistic, and its significance comes from the
-same search run on noise (:func:`null_max_snr`): this accounts for the
-freedom of the fit (the look-elsewhere effect), which would otherwise make
-noise peaks look like detections.
+The centre and the width are searched within their ranges: the best S/N
+over a grid of centres, widths and sizes is the statistic, and its
+significance comes from the same search run on noise (:func:`null_max_snr`):
+this accounts for the freedom of the fit (the look-elsewhere effect), which
+would otherwise make noise peaks look like detections.  With the centre and
+the width fixed (ranges with lo = hi) and the size fixed, the flux is linear
+in the data -- a matched filter: unbiased, Gaussian, and its S/N is the
+significance.
 """
 
 from __future__ import annotations
@@ -83,7 +85,7 @@ class Cube:
     dv: float                           # channel width, km/s (> 0)
     ok: np.ndarray                      # (nchan, nbins) cells to fit
     corr: Optional[np.ndarray] = None   # (nchan, nchan) noise correlation, None: independent
-    velocity2: Optional[np.ndarray] = None   # (nchan,) km/s, second line
+    velocities: Optional[Sequence[np.ndarray]] = None   # [(nchan,)] km/s, lines 2, 3, ...
     edges: Optional[np.ndarray] = None  # (nbins+1,) annulus edges [lambda]: average the
                                         # source model over each annulus, not at its mean
 
@@ -239,10 +241,10 @@ class Whitener:
 class FitSpec:
     """Which parameters are free, their bounds and starting values."""
 
-    free: Tuple[str, ...]                    # among F, v0, fwhm, theta, F2, v02, fwhm2, C, theta_c
+    free: Tuple[str, ...]                    # among F, v0, fwhm, theta, Fk, v0k, fwhmk, C, theta_c
     values: Dict[str, float]                 # start (free) or value (fixed)
     bounds: Dict[str, Tuple[float, float]]
-    second: bool = False                     # second line present
+    n_lines: int = 1                         # lines in the model (2, 3, ...: Fk, v0k, fwhmk)
     tie: str = "free"                        # 'free' | 'centroid' | 'centroid+width'
     continuum: bool = False
     theta_prior: Optional[Tuple[float, float]] = None   # (theta_ref, sigma_dex): soft tie
@@ -251,11 +253,11 @@ class FitSpec:
         p = dict(self.values)
         for name, value in zip(self.free, x):
             p[name] = float(value)
-        if self.second:
+        for k in range(2, self.n_lines + 1):
             if self.tie in ("centroid", "centroid+width"):
-                p["v02"] = p["v0"]
+                p[f"v0{k}"] = p["v0"]
             if self.tie == "centroid+width":
-                p["fwhm2"] = p["fwhm"]
+                p[f"fwhm{k}"] = p["fwhm"]
         return p
 
 
@@ -265,10 +267,11 @@ def model_cube(cube: Cube, p: dict):
     spec = p["F"] * channel_gaussian(cube.velocity, cube.dv, p["v0"], s1)
     g = cube.uv(p.get("theta", 0.0))
     m = spec[:, None] * g
-    if cube.velocity2 is not None and "F2" in p:
-        s2 = p["fwhm2"] / FWHM_PER_SIGMA
-        spec2 = p["F2"] * channel_gaussian(cube.velocity2, cube.dv, p["v02"], s2)
-        m = m + spec2[:, None] * g
+    for k, vk in enumerate(cube.velocities or (), start=2):
+        if f"F{k}" in p:
+            sk = p[f"fwhm{k}"] / FWHM_PER_SIGMA
+            speck = p[f"F{k}"] * channel_gaussian(vk, cube.dv, p[f"v0{k}"], sk)
+            m = m + speck[:, None] * g
     if "C" in p:
         m = m + p["C"] * cube.uv(p.get("theta_c", p.get("theta", 0.0)))
     return m
@@ -284,6 +287,8 @@ class FitResult:
     dof: int
     converged: bool
     size_model: str = "point"
+    jac: Optional[np.ndarray] = None      # whitened Jacobian of the data rows, (n_cells, n_free)
+    scale: float = 1.0                    # factor applied to the covariance (chi2_r if > 1)
 
     @property
     def chi2_reduced(self) -> float:
@@ -302,7 +307,8 @@ class FitResult:
                "converged": self.converged, "free": list(self.free)}
         if "F" in self.errors and self.errors["F"] > 0:
             out["peak_error"] = peak_flux_density(self.errors["F"], p.get("fwhm"))
-        for k in ("F2", "v02", "fwhm2", "C", "theta_c"):
+        extra = [f"{x}{k}" for k in range(2, 100) if f"F{k}" in p for x in ("F", "v0", "fwhm")]
+        for k in extra + ["C", "theta_c"]:
             if k in p:
                 out[k] = p[k]
                 if k in self.errors:
@@ -362,6 +368,7 @@ def fit(cube: Cube, spec: FitSpec, whitener: Optional[Whitener] = None) -> FitRe
     chi2 = float(r @ r)
     dof = int(r.size - len(names))
     errors, cov = {}, None
+    scale = 1.0
     if jac is not None:
         try:
             inv = np.linalg.pinv(jac.T @ jac)
@@ -376,7 +383,8 @@ def fit(cube: Cube, spec: FitSpec, whitener: Optional[Whitener] = None) -> FitRe
                 errors[n] = float(np.sqrt(max(cov[i, i], 0.0)))
         except np.linalg.LinAlgError:
             pass
-    return FitResult(spec.params(x), errors, cov, names, chi2, dof, ok)
+    return FitResult(spec.params(x), errors, cov, names, chi2, dof, ok,
+                     jac=None if jac is None else np.asarray(jac[:wh.size]), scale=scale)
 
 
 # ---------------------------------------------------------------------------
@@ -501,11 +509,29 @@ def global_significance(snr, null):
     n_eff = float(np.median(np.log(q[upper]) / np.where(logphi < 0, logphi, -1e-300)))
     n_eff = max(1.0, n_eff)
     p_ext = float(-np.expm1(n_eff * norm.logcdf(snr)))
+    # its logarithm, which stays finite where p itself underflows (S/N > 37)
+    log_p_ext = (math.log(n_eff) + float(norm.logsf(snr)) if p_ext < 1e-12
+                 else math.log(max(p_ext, 1e-300)))
     p = p_mc if p_mc > 5.0 / (n + 1) else min(p_mc, p_ext)
+    log_p = math.log(p) if p > 1e-300 else log_p_ext
     # one-sided Gaussian equivalent, 0 for p >= 0.5 (no evidence at all)
-    sigma = float(norm.isf(min(p, 0.5))) if p > 0 else float("inf")
-    return {"p_value": float(p), "p_value_mc": float(p_mc), "p_value_extrapolated": p_ext,
+    sigma = max(0.0, _sigma_from_log_p(min(log_p, math.log(0.5))))
+    return {"p_value": float(p), "log10_p_value": log_p / math.log(10),
+            "p_value_mc": float(p_mc), "p_value_extrapolated": p_ext,
             "n_effective_trials": n_eff, "significance_sigma": sigma, "n_null": int(n)}
+
+
+def _sigma_from_log_p(log_p):
+    """One-sided Gaussian equivalent of a p-value given by its logarithm."""
+    try:
+        from scipy.special import ndtri_exp
+        return float(-ndtri_exp(log_p))
+    except ImportError:                            # SciPy < 1.10: asymptotic inverse
+        from scipy.stats import norm
+        if log_p > -700:
+            return float(norm.isf(math.exp(log_p)))
+        y = -2.0 * log_p
+        return float(math.sqrt(y - math.log(y) - math.log(2 * math.pi)))
 
 
 def zero_spacing_spectrum(cube: Cube, theta=0.0, y=None, variance=None):
@@ -543,6 +569,76 @@ def window_flux(spectrum, error, dv, mask, corr=None):
     return flux, float(np.sqrt(max(cov.sum(), 0.0)) * dv), int(idx.size)
 
 
+def influence(result: FitResult, name: str):
+    """How a fitted parameter moves with the data: the whitened vector ``a``
+    such that a change ``dz`` of the whitened cells changes the parameter by
+    ``a^T dz`` (the least squares linearised at the solution).  None when the
+    parameter is fixed or the Jacobian is not available."""
+    if result.jac is None or name not in result.free:
+        return None
+    jac = result.jac
+    inv = np.linalg.pinv(jac.T @ jac)
+    return jac @ inv[:, result.free.index(name)]
+
+
+def window_influence(cube: Cube, wh: Whitener, theta, mask, dv):
+    """The same for the window flux ``dv * sum_W S_c`` of the zero-spacing
+    spectrum at size ``theta`` (:func:`zero_spacing_spectrum`)."""
+    var = cube.variance
+    g = cube.uv(theta)
+    ok = cube.ok & np.isfinite(cube.real) & (var > 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        den = np.where(ok, g * g / var, 0.0).sum(axis=1)
+        use = ok & np.asarray(mask, bool)[:, None] & (den > 0)[:, None]
+        # coefficient of every cell y_cb, times var: wh() divides by sigma
+        coef_var = np.where(use, dv * g / np.where(den > 0, den, 1.0)[:, None], 0.0)
+    return wh(coef_var)
+
+
+def gaussian_fraction(lo, hi, v0, fwhm):
+    """Fraction of a Gaussian line (centre ``v0``, FWHM ``fwhm``) inside the
+    velocity interval ``[lo, hi]``."""
+    if fwhm is None or not np.isfinite(fwhm) or fwhm <= 0:
+        return float("nan")
+    s = float(fwhm) / FWHM_PER_SIGMA * math.sqrt(2.0)
+    return float(0.5 * (erf((hi - v0) / s) - erf((lo - v0) / s)))
+
+
+def residual_continuum(spectrum, error, velocity, mask, corr=None):
+    """Offset and slope of a spectrum over the channels of ``mask`` (those
+    outside the windows of the lines): ``S(v) = a + b v / 1000``, ``v`` in
+    km/s from the first line, by least squares weighted by the errors, with
+    the correlation between channels in the covariance (sandwich), scaled by
+    the reduced chi square when it exceeds 1.  None with fewer than 4
+    channels."""
+    spectrum, error = np.asarray(spectrum, float), np.asarray(error, float)
+    idx = np.flatnonzero(np.asarray(mask, bool) & np.isfinite(spectrum)
+                         & np.isfinite(error) & (error > 0))
+    if idx.size < 4:
+        return None
+    y, e = spectrum[idx], error[idx]
+    x = np.asarray(velocity, float)[idx] / 1000.0
+    X = np.column_stack([np.ones_like(x), x])
+    w = 1.0 / e ** 2
+    a_inv = np.linalg.pinv(X.T @ (w[:, None] * X))
+    beta = a_inv @ (X.T @ (w * y))
+    r = np.eye(idx.size) if corr is None else corr[np.ix_(idx, idx)]
+    wx = w[:, None] * X
+    cov = a_inv @ (wx.T @ (r * np.outer(e, e)) @ wx) @ a_inv
+    chi2 = float(np.sum(w * (y - X @ beta) ** 2))
+    dof = idx.size - 2
+    cov = cov * max(1.0, chi2 / dof)
+    ea, eb = (float(np.sqrt(max(cov[i, i], 0.0))) for i in (0, 1))
+    a, b = float(beta[0]), float(beta[1])
+    return {"offset": a, "offset_error": ea,
+            "offset_nsigma": a / ea if ea > 0 else float("nan"),
+            "slope_per_1000kms": b, "slope_error": eb,
+            "slope_nsigma": b / eb if eb > 0 else float("nan"),
+            "n_channels": int(idx.size),
+            "velocity_range_kms": [float(np.min(velocity[idx])), float(np.max(velocity[idx]))],
+            "chi2_reduced": chi2 / dof if dof > 0 else float("nan")}
+
+
 def flux_per_annulus(cube: Cube, wh: Whitener, p: dict):
     """Line flux of every annulus at the fitted line shape (amplitude of the
     shape fitted annulus by annulus, continuum and second line held at their
@@ -550,7 +646,8 @@ def flux_per_annulus(cube: Cube, wh: Whitener, p: dict):
     nb = cube.shape[1]
     flux, err = np.full(nb, np.nan), np.full(nb, np.nan)
     unit = dict(p, F=1.0, theta=0.0)
-    unit.pop("F2", None)
+    for k in [k for k in unit if k[0] == "F" and k[1:].isdigit()]:
+        unit.pop(k)
     unit.pop("C", None)
     shape = model_cube(cube, unit)                     # phi_c, constant over b
     rest = model_cube(cube, dict(p, F=0.0))            # second line + continuum
@@ -570,4 +667,5 @@ __all__ = ["Cube", "Whitener", "FitSpec", "FitResult", "fit", "model_cube", "Sca
            "annulus_nodes",
            "channel_gaussian", "uv_gaussian", "scan_templates", "scan", "null_max_snr",
            "global_significance", "zero_spacing_spectrum", "window_flux",
+           "influence", "window_influence", "gaussian_fraction", "residual_continuum",
            "flux_per_annulus", "peak_flux_density", "FWHM_PER_SIGMA"]

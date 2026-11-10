@@ -43,31 +43,24 @@ frequency of the line, offset of the source).
 
 ## During the stacking, or after
 
-```python
-ViSta("input_list.txt").run(..., stats_line="line_stats.npy", stats_continuum="cont_stats.npy",
-                            binning=BinningConfig(b_min_klambda=3, b_max_klambda=3000, n_bins=18))
-```
-
-or on an existing stack (Zarr store or MS):
-
-```python
-from vista.extract import compress_visibilities
-compress_visibilities("stack.zarr", "input_list.txt", line,
-                      out_line="line_stats.npy", out_continuum="cont_stats.npy")
-```
+The compression runs on every chunk while the stack is written, into
+`<output_name>_line_stats.npy` (from `CORRECTED_DATA`, or `DATA` without a
+subtraction) and `<output_name>_cont_stats.npy` (from `MODEL_DATA`), with the
+annuli of `v.extract(annuli=(3, 3000, 18))` (without `extract()` there is no compression;
+`run(only="measure")` then compresses the stack first).
+`run(only="continuum")` subtracts the continuum again on the existing stack
+and compresses it again, reading the stack once more.
 
 The statistics are the same both ways (bit for bit on a Zarr store, to
 1e-15 on an MS, read there in larger pieces). The compression reads the
-stack with `n_io` threads and does its per-row work in the kernel (OpenMP);
+stack with a few threads at once and does its per-row work in the kernel (OpenMP);
 without the kernel it falls back to NumPy.
 
 ## Choosing the annuli
 
-- `b_min_klambda`, `b_max_klambda` should bracket the baselines of the stack
-  (in kλ: the observed ones, see [Rest frame](restframing)).
+- `b_min`, `b_max` (kλ) should bracket the baselines of the stack (the
+  observed ones, see [Rest frame](restframing)).
 - More annuli resolve `V(b)` better but leave fewer visibilities, hence less
   S/N, in each. The number is fixed here: changing it means compressing
   again.
-- `max_amplitude` discards visibilities above that amplitude (NaN and
-  infinities are always discarded): a few corrupt cells can spoil a whole
-  annulus.
+- NaN and infinities are always discarded.

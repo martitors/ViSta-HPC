@@ -35,7 +35,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from .. import _say, _warn
-from .config import BinningConfig, ContinuumConfig, LineConfig
+from .config import BinningConfig, ContinuumConfig, Lines
 from .contsub import (_kernel as _contsub_kernel, fit_plan, fit_rows,
                       min_fit_channels, order_from_sample, record)
 from .sources import read_input_list
@@ -56,8 +56,8 @@ class InlineExtraction:
     output
         The stack being written (recorded in the statistics files).
     line
-        The line: its window (with the second line and ``exclude_v_kms``)
-        sets the channels left out of the continuum fit.
+        The lines (:class:`~vista.extract.config.Lines`): their windows set
+        the channels left out of the continuum fit.
     continuum
         Continuum subtraction options, or None for no subtraction.
     stats_line, stats_continuum
@@ -70,13 +70,13 @@ class InlineExtraction:
     """
 
     def __init__(self, input_file: str, freqs: Sequence[np.ndarray], output: str,
-                 line: Optional[LineConfig], continuum: Optional[ContinuumConfig] = None,
+                 line: Optional[Lines], continuum: Optional[ContinuumConfig] = None,
                  stats_line: Optional[str] = None, stats_continuum: Optional[str] = None,
                  binning: Optional[BinningConfig] = None,
                  max_amplitude: Optional[float] = None, verbose=True):
         if line is None:
             raise ValueError("the continuum subtraction and the statistics during the "
-                             "stacking need line=LineConfig(...)")
+                             "stacking need line=Lines(...)")
         if stats_continuum is not None and continuum is None:
             raise ValueError("stats_continuum needs the continuum subtraction "
                              "(continuum=ContinuumConfig(...)): it is computed from "

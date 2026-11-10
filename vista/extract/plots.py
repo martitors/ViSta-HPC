@@ -32,7 +32,7 @@ from typing import List, Optional
 import numpy as np
 
 from .. import _say
-from .config import LineConfig
+from .config import Lines
 from .stack import ExtractionResult
 from .uvfit import gaussian_visibility, two_gaussian_visibility
 
@@ -225,7 +225,7 @@ def plot_uv_profile(result: ExtractionResult, path: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # spectrum
 # ---------------------------------------------------------------------------
-def _velocity_limits(result: ExtractionResult, line: LineConfig,
+def _velocity_limits(result: ExtractionResult, line: Lines,
                      v_limits=None, pad_frac: float = 0.02):
     """Velocity range actually covered by the stacked spectrum."""
     if v_limits is not None:
@@ -238,7 +238,7 @@ def _velocity_limits(result: ExtractionResult, line: LineConfig,
     return lo - pad, hi + pad
 
 
-def plot_spectrum(result: ExtractionResult, line: LineConfig,
+def plot_spectrum(result: ExtractionResult, line: Lines,
                   path: Optional[str] = None, unit: Optional[str] = None,
                   dpi: int = 150, v_limits=None, show_sources: bool = True):
     """Spatially integrated spectrum with the fitted line profile.
@@ -313,7 +313,7 @@ def plot_spectrum(result: ExtractionResult, line: LineConfig,
 # ---------------------------------------------------------------------------
 # line and continuum fitted together
 # ---------------------------------------------------------------------------
-def plot_joint(result: ExtractionResult, line: LineConfig,
+def plot_joint(result: ExtractionResult, line: Lines,
                path: Optional[str] = None, unit: Optional[str] = None,
                dpi: int = 150, v_limits=None):
     """The single figure of a joint line-plus-continuum fit.
@@ -452,7 +452,7 @@ def plot_joint(result: ExtractionResult, line: LineConfig,
 # ---------------------------------------------------------------------------
 # the line profile in flux units
 # ---------------------------------------------------------------------------
-def plot_line_profile(result: ExtractionResult, line: LineConfig,
+def plot_line_profile(result: ExtractionResult, line: Lines,
                       path: Optional[str] = None, unit: Optional[str] = None,
                       dpi: int = 150, v_limits=None):
     """The line profile in flux units, as an image-plane fit would give it.
@@ -511,7 +511,7 @@ def plot_line_profile(result: ExtractionResult, line: LineConfig,
     return figure
 
 
-def plot_all(result: ExtractionResult, line: LineConfig, prefix: str,
+def plot_all(result: ExtractionResult, line: Lines, prefix: str,
              unit: Optional[str] = None, dpi: int = 150,
              v_limits=None) -> List[str]:
     """Write the figures that fit the way the continuum was handled.

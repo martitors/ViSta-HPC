@@ -1,26 +1,32 @@
 """
-Minimal example showing how to run ViSta.
+Minimal example: stack a sample and measure its line.
 """
 from vista import ViSta, export_ms
 
-# Initialise pipeline from input list
-pipeline = ViSta(
-    input_file="input_list.txt",
-    chunk_rows=5000,   # number of baseline rows processed per chunk
-    verbose=True,      # True: progress and warnings; "debug": every detail
-)
+# input, output, how it runs
+v = ViSta("input_list.txt",
+          output_name="stacked",     # stacked.zarr, stacked_results.json, stacked_profile.png ...
+          verbose=True)              # progress and results (default: warnings only)
 
-# Run stacking
-result = pipeline.run(
-    output="stack.zarr",      # Zarr store, written in parallel (output_format="ms" for an MS)
-    central_freq=153.253e9,   # Hz -- rest-frame central frequency of the output grid
-    nchan_out=1000,           # number of output channels
-    frame="LSRK",             # frame of the redshifts: "LSRK" (default) or "BARY"
-    device="cpu",             # "gpu" with a CUDA build of the kernel
-    n_readers=2,              # MSs read in parallel
-    timing=True,              # log how long reading, computing and writing took
-)
-print(result["output"], result["n_rows"], "rows")
+# what makes the stack
+v.stack(line_freq=345.79599,                   # GHz: rest frequency of the line (a list for more lines)
+        line_window=500,             # km/s: the line is within -500..+500 (or (lo, hi))
+        velocity_range=1500,         # band of the stack, km/s (None: the widest of one dataset)
+        continuum="subtract")        # 'subtract' | 'fit' | 'none'
 
-# Optional: a Measurement Set, e.g. for imaging with tclean
-export_ms("stack.zarr", "stack.ms")
+# what is measured (without this call, run() only writes the stack)
+v.extract(fwhm_range=(100, 600))     # limits on the width (lo = hi: fixed)
+
+v.help()                             # every option: its value now, what it can be
+result = v.run()
+print(result)
+ln = result.line.summary["line"]
+print(f"F = {ln['flux']:.3f} ± {ln['flux_error']:.3f} ({ln['flux_method']}); "
+      f"Gaussian {ln['flux_gauss']:.3f}, area {ln['flux_area']:.3f}")
+
+# the measurement again, with other options, from the statistics (seconds)
+v.extract(fwhm_range=(300, 300), flux_measure="area")
+print(v.run(only="measure"))
+
+# the stack as a Measurement Set, e.g. for imaging with tclean
+export_ms("stacked.zarr", "stacked.ms")

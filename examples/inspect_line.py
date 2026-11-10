@@ -10,7 +10,7 @@ stacking and the extraction should use.
 Runs tclean with no deconvolution, finds the source in the collapsed cube,
 takes the spectrum at that position, and fits a Gaussian to it.  From the
 fitted centroid and width, and from the channels the band actually covers, it
-works out the velocity window, the fit span and the radial binning.
+works out the line window and the band of the stack.
 
 The absolute scale of a dirty cube is not the source flux, so the amplitudes
 printed here are only indicative; the shape is what this is for.
@@ -156,18 +156,16 @@ def main():
     print(f"\n{'=' * 62}")
     print("limits for this dataset")
     print(f"{'=' * 62}")
-    print(f"  --v-window \"-{window} {window}\"")
+    print(f"  {f'v.stack(..., line_window={window})':40s} (--line-window {window})")
     print(f"      +-3 sigma of the fitted line, {2 * window / dv:.0f} channels; "
           f"it leaves\n      {span - window} km/s of line-free band on each "
           f"side for the continuum.")
-    print(f"  --fit-span-kms {span}")
-    print(f"      the shape fit cannot use more than the band.")
-    print(f"  --velocity-range {span}")
+    print(f"  {f'v.stack(..., velocity_range={span})':40s} (--velocity-range {span})")
     print(f"      ask for more and ViSta slides the window to the band edge "
           f"for the\n      datasets that fall short.")
     if span <= window:
         print(f"\n  WARNING: the window fills the band, no line-free channels "
-              f"are left.\n  Narrow --v-window, or accept that the continuum "
+              f"are left.\n  Narrow line_window, or accept that the continuum "
               f"cannot be fitted here.")
     print(f"\n  run inspect_ms.py --all to see what the whole sample supports: "
           f"these\n  numbers come from one dataset, and the stack is bound by "

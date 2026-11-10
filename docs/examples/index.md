@@ -24,8 +24,8 @@ cell.
 | [1. The simulated sample](01_the_simulated_sample) | twelve galaxies at z = 2–3, with and without noise, and the true values of the stack |
 | [2. One galaxy, without and with noise](02_one_galaxy_without_and_with) | the uv plane (mean over the baselines, flux per annulus) and the image (CLEANed cube: peak, aperture), against the truth |
 | [3. Stacking](03_stacking) | stacking, continuum subtraction and compression in one pass; a first look |
-| [4. Measuring the line at a known width](04_measuring_the_stacked_line) | `detect`: profile, flux per annulus, noise, against the truth |
-| [5. Searching for the line](05_searching_for_the_line) | `search`: centre and width free, significance |
+| [4. Measuring the line at a known width](04_measuring_the_stacked_line) | centre and width fixed: profile, the two fluxes, flux per annulus, noise, against the truth |
+| [5. Searching for the line](05_searching_for_the_line) | centre and width free within limits, significance |
 | [6. What each option changes](06_what_each_option_changes) | size model, size prior, noise, weighting, rescaling, primary beam, assumed width |
 | [7. The continuum](07_the_continuum) | its flux and size |
 | [8. Redoing the continuum subtraction](08_redoing_the_continuum) | another window and order, without stacking again |

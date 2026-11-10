@@ -1,15 +1,22 @@
 # Python API
 
-The public interface: the stacking (`vista`), its configuration and the
-measurement (`vista.extract`). Every function is documented in its
-docstring; this page collects them.
-
-## Stacking
+The whole method is driven by one object, {class}`vista.ViSta`: its
+constructor takes the input, the output and how the run uses the machine;
+`stack()` says what makes the stack (the lines, the band, the continuum);
+`extract()` what is measured on it (without it, `run()` only writes the
+stack); `help()` lists every option with its value, and `run()` runs them.
+The options are listed in [Parameters](parameters).
 
 ```{eval-rst}
 .. autoclass:: vista.ViSta
-   :members: run
+   :members: stack, extract, run, help, files
 
+.. autoclass:: vista.RunResult
+```
+
+## Other functions
+
+```{eval-rst}
 .. autofunction:: vista.export_ms
 
 .. autofunction:: vista.open_stack
@@ -17,59 +24,29 @@ docstring; this page collects them.
 .. autofunction:: vista.set_verbosity
 ```
 
-## Configuration
+## The results
 
 ```{eval-rst}
-.. autoclass:: vista.extract.LineConfig
-   :members:
-
-.. autoclass:: vista.extract.ContinuumConfig
-
-.. autoclass:: vista.extract.BinningConfig
-
-.. autoclass:: vista.extract.WeightingConfig
-
-.. autoclass:: vista.extract.LineFitConfig
-
-.. autoclass:: vista.extract.BootstrapConfig
-
-.. autoclass:: vista.extract.ProfileConfig
-
-.. autoclass:: vista.extract.UVFitConfig
-```
-
-## Continuum subtraction and compression
-
-```{eval-rst}
-.. autofunction:: vista.extract.subtract_continuum
-
-.. autofunction:: vista.extract.compress_visibilities
-
-.. autoclass:: vista.extract.SufficientStatistics
-   :members: load
-```
-
-## Measurement
-
-```{eval-rst}
-.. autofunction:: vista.extract.measure_line
-
 .. autoclass:: vista.extract.LineResult
    :members: save
 
-.. autofunction:: vista.extract.extract_flux
-
 .. autoclass:: vista.extract.ExtractionResult
-
-.. autofunction:: vista.extract.alpha_factor
-
-.. autofunction:: vista.extract.read_input_list
 ```
 
 ## Figures
 
 ```{eval-rst}
 .. autofunction:: vista.extract.plots_line.plot_line_result
-
-.. autofunction:: vista.extract.plots.plot_all
 ```
+
+`examples/plot_line.py` draws the same figures from the output files alone
+(NumPy and matplotlib), to restyle them ([Output files](../extraction/outputs)).
+
+## The steps underneath
+
+`ViSta.run()` calls these; they are documented in their modules for whoever
+needs a step on its own: {mod}`vista.pipeline` (the stacking),
+{mod}`vista.extract.contsub` (the continuum subtraction),
+{mod}`vista.extract.statistics` (the compression), {mod}`vista.extract.measure`
+(the lines), {mod}`vista.extract.stack` (the continuum measurement) and
+{mod}`vista.resources` (how the cores and the memory are shared).

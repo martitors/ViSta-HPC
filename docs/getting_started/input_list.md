@@ -17,7 +17,7 @@ line:
 | `RA`, `Dec` | the position of the **source**, not the phase centre: the visibilities are re-centred on it. `hh:mm:ss.s ±dd:mm:ss.s` |
 | `FIELD_ID` | optional. Without it every field is read and the phase centre is that of field 0. Give it when the MS holds several fields (a mosaic, calibrators) |
 | `SPW_IDS` | optional, comma-separated spectral windows; without it all are used. Needs `FIELD_ID` before it |
-| `NORM` | optional normalisation of the flux scale, used only by the measurement with `flux_normalisation` (a luminosity, a continuum flux, any proxy). Recognised because it is neither an integer nor a list of integers; `norm=2.91e13` also works |
+| `NORM` | optional normalisation of the flux scale, used only by the measurement with `v.extract(flux_norm=True)` (a luminosity, a continuum flux, any proxy). Recognised because it is neither an integer nor a list of integers; `norm=2.91e13` also works |
 
 Text after `#` is a comment.
 

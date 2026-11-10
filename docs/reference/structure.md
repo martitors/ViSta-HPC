@@ -3,7 +3,10 @@
 ```text
 ViSta-HPC/
 ├── vista/                   the Python package
-│   ├── pipeline.py          the ViSta class: input list, the run, its threads
+│   ├── api.py               the ViSta class: the options of every step, run()
+│   ├── cli.py               the command line (python -m vista, run_vista.sh)
+│   ├── pipeline.py          the stacking: input list, the run, its threads
+│   ├── resources.py         cores and memory: readers, writers, threads, GPU batch
 │   ├── spectral_grid.py     the common rest-frame channel grid
 │   ├── ms_input.py          reading the input MSs (metadata, rows, spectral windows)
 │   ├── readers.py           reader processes, shared memory
@@ -14,20 +17,19 @@ ViSta-HPC/
 │   ├── stackio.py           the stack on disk: Zarr writer, Zarr/MS reader, export_ms
 │   ├── common.py            log, lock, coordinates, small helpers
 │   └── extract/             the measurement
-│       ├── config.py        all the options
+│       ├── config.py        the lines and the options of every step (internal)
 │       ├── contsub.py       continuum subtraction on the stack
 │       ├── statistics.py    compression into statistics
 │       ├── inline.py        subtraction and compression during the stacking (one pass)
 │       ├── noise.py         the noise: scatter, weights, imaginary part, channel correlation
 │       ├── linefit.py       the joint fit of the channel × annulus cube, significance
-│       ├── measure.py       measure_line (--method joint)
+│       ├── measure.py       the measurement of the lines
 │       ├── sources.py       input list, source grouping, cosmology, normalisation
-│       ├── stack.py         weighting, combination, bootstrap, extract_flux
+│       ├── stack.py         weighting, combination, bootstrap, the continuum measurement
 │       ├── profiles.py      line shape and flux per annulus
 │       ├── uvfit.py         circular Gaussian / point-source model
-│       ├── plots.py         figures of extract_flux
-│       ├── plots_line.py    figures of measure_line
-│       └── cli.py           python -m vista.extract
+│       ├── plots.py         figures of the continuum
+│       └── plots_line.py    figures of the lines
 ├── src/                     the kernel (Python module ms_ops)
 │   ├── ms_ops.cpp           OpenMP kernel, Python bindings, GPU dispatch
 │   ├── ms_ops_cuda.cu       CUDA engine
@@ -35,12 +37,13 @@ ViSta-HPC/
 ├── examples/
 │   ├── ViSta_tutorial.ipynb the worked example (Colab)
 │   ├── simulate.py          synthetic ALMA-like Measurement Sets
-│   ├── plot_line.py         the figures of measure_line, in your own style
-│   ├── run_extraction.py    the whole workflow in a script
-│   ├── run_vista.py         the stacking in a script
+│   ├── plot_line.py         the figures of the lines, in your own style
+│   ├── run_vista.py         a run in a script
+│   ├── run_extraction.py    the measurement repeated with different options
 │   └── example_input_list.txt
 ├── docs/                    this documentation (Sphinx, Read the Docs)
-├── run_vista.sh             the command-line driver
+├── benchmarks/              ViSta 1.0 against this version: time, memory, accuracy
+├── run_vista.sh             the command line (python -m vista)
 ├── CMakeLists.txt
 ├── requirements.txt
 └── setup.py

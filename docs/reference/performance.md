@@ -63,6 +63,27 @@ Zarr most of the time saved by not reading the stack back is spent there; on
 a node with more cores the stacking is limited by reading and the extra
 computing is hidden.
 
+## Readers, writers, threads (v3.0)
+
+From v3.0 the readers, the writers and the kernel threads share the cores
+the process may use (its CPU affinity, a SLURM allocation, a container
+quota): readers and writers about a quarter each (at most 8), the kernel the
+rest; on two cores one of each. Until v2.5.1 the defaults were 2 readers, 4
+writers and all the cores for the kernel, and `OMP_PROC_BIND=close` pinned
+the main thread — and with it every reader process and writer thread — to a
+single core. On the 2-core test machine, the twelve simulated datasets of the
+[Examples](../examples/index) (433,440 rows, 90 channels; stacking,
+subtraction and compression in one pass, Zarr), best of two or three runs (they vary by about 5%):
+
+| | time |
+|---|---|
+| v2.5.1 defaults (2 readers, 4 writers, 2 threads, pinned) | 9.0 s |
+| the same numbers, not pinned | 7.4 s |
+| v3.0 defaults (1 reader, 1 writer, 1 thread, not pinned) | 6.6 s |
+
+More workers than cores only made them compete: 2 readers, 2 writers and 2
+threads took 7.8 s.
+
 ## CPU or GPU?
 
 On the Leonardo runs above (MS output) the stacking was limited by the single

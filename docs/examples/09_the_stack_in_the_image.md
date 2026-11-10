@@ -4,20 +4,18 @@ The stack exported as a Measurement Set (`export_ms`) and imaged as in §2.
 The stacked visibilities are the plain weighted mean of the galaxies: no
 redshift rescaling and no primary-beam correction, which ViSta applies only
 when it measures. For a like-for-like comparison, ViSta is run here without
-them too. The true signal is the noiseless stack: the same visibilities
+them too (`extract(z_norm=False, pb_corr=False)`). The true signal is the noiseless stack: the same visibilities
 without noise.
 
 ```python
 stack_img, plain = {}, {}
-for tag, store, stats, lst in (("noisy", "stack.zarr", "line_stats.npy", LIST),
-                               ("noiseless", "stack_noiseless.zarr", "line_stats_noiseless.npy", LIST0)):
+for tag, v in (("noisy", stack), ("noiseless", stack0)):
+    store = v.files["stack"]
     export_ms(store, f"{store[:-5]}.ms", verbose=False)
     stack_img[tag] = image_line(f"{store[:-5]}.ms", f"img_{tag}", noiseless=tag == "noiseless")
-    extra = NOISELESS if tag == "noiseless" else dict(n_null=0, n_null_phase=0)
-    plain[tag] = measure_line(stats, lst, line, WeightingConfig(redshift_rescaling=False, primary_beam=False),
-                              LineFitConfig(mode="detect", v0_kms=0.0, fwhm_kms=SIM["fwhm_kms"], **extra),
-                              BootstrapConfig(n_realisations=0 if tag == "noiseless" else 100),
-                              verbose=False).summary["line"]
+    extra = NOISELESS if tag == "noiseless" else dict(n_null=0, n_null_phase=0, n_bootstrap=100)
+    v.extract(annuli=ANNULI, z_norm=False, pb_corr=False, **KNOWN, **extra)
+    plain[tag] = v.run(only="measure", tag="plain").line.summary["line"]
 
 fig = plt.figure(figsize=(12.5, 8))
 vmax = np.nanmax(stack_img["noiseless"]["mom0"])
@@ -66,6 +64,14 @@ flux_table([
 ], "the stack, no rescaling (without noise = the true stack)")
 ```
 
+```text
+[ViSta       1.6s] no redshift rescaling, no flux normalisation
+```
+
+```text
+[ViSta       0.3s] no redshift rescaling, no flux normalisation
+```
+
 ```{image} figures/09_01.png
 :width: 100%
 ```
@@ -73,10 +79,10 @@ flux_table([
 ```text
 the stack, no rescaling (without noise = the true stack)
    line flux [Jy km/s]             without noise        with noise
-   uv: mean over the baselines             0.267     0.306 ± 0.046
+   uv: mean over the baselines             0.267     0.312 ± 0.042
    uv: ViSta, extrapolated to b=0          0.438     0.394 ± 0.043
-   image: peak pixel (Jy/beam)             0.266     0.302 ± 0.046
-   image: aperture 2"                      0.435     0.391 ± 0.163
+   image: peak pixel (Jy/beam)             0.266     0.309 ± 0.042
+   image: aperture 2"                      0.435     0.412 ± 0.143
 ```
 
 As for one galaxy: the mean over the baselines and the peak pixel are the

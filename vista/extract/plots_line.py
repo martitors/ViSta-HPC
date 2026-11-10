@@ -5,9 +5,10 @@ Figures of :func:`vista.extract.measure_line`:
 
 ``<prefix>_profile.png``
     The line profile: flux density at zero spacing against velocity, the
-    fitted model, the noise (+-1 sigma band), the imaginary part, the line
-    window and the channels used for the continuum, and the residuals in
-    units of sigma.
+    fitted lines, the two fluxes of every line (area of the Gaussian, and the
+    window over which the spectrum is summed), the noise (+-1 sigma band), the
+    imaginary part, the residual continuum outside the windows, and the
+    residuals in units of sigma.
 ``<prefix>_uv.png``
     Line flux of every annulus against baseline length, with the point and
     Gaussian models.
@@ -24,7 +25,7 @@ from typing import List, Optional
 import numpy as np
 
 from .. import _say
-from .config import LineConfig
+from .config import Lines
 from .linefit import uv_gaussian
 
 
@@ -78,8 +79,11 @@ def _typical(result):
     return float(np.nanmedian(e)) if np.isfinite(e).any() else None
 
 
-def plot_profile(result, line: LineConfig, path: str, unit: Optional[str] = None,
+def plot_profile(result, line: Lines, path: str, unit: Optional[str] = None,
                  v_limits=None, rebin: int = 1):
+    """The profile at zero spacing with the fitted lines, the two fluxes of
+    every line (the area of the Gaussian, hatched, and the window over which
+    the spectrum is summed) and the check of the residual continuum."""
     plt = _pyplot()
     s = result.summary
     f, ulabel = _scale(unit, _typical(result))
@@ -93,43 +97,71 @@ def plot_profile(result, line: LineConfig, path: str, unit: Optional[str] = None
     vb, yb, eb = _rebin(v, np.where(used, y, np.nan), e, rho, rebin)
     _, yib, _ = _rebin(v, np.where(used, yi, np.nan), e, rho, rebin)
     dvb = abs(vb[1] - vb[0]) if len(vb) > 1 else 1.0
+    blocks = s.get("lines") or [s["line"]]
 
-    fig, (ax, axr) = plt.subplots(2, 1, figsize=(8, 6.2), sharex=True,
+    fig, (ax, axr) = plt.subplots(2, 1, figsize=(8.6, 6.6), sharex=True,
                                   gridspec_kw={"height_ratios": [3.2, 1], "hspace": 0.05})
-    # windows
-    lo, hi = line.v_window_kms
-    ax.axvspan(lo, hi, color="C1", alpha=0.08, lw=0, label="line window")
-    for a, b in line.exclude_v_kms:
-        ax.axvspan(a, b, color="C1", alpha=0.08, lw=0)
+    # the windows of the area fluxes, one per line
+    for k, b in enumerate(blocks):
+        lo, hi = b.get("window_kms_line1_velocity") or s["window"]["user_kms"]
+        ax.axvspan(lo, hi, color="C1", alpha=0.08, lw=0,
+                   label="window of the area flux" if k == 0 else None)
     ax.fill_between(vb, -eb, eb, step="mid", color="0.6", alpha=0.35, lw=0,
                     label=r"$\pm1\sigma$ noise")
     ax.step(vb, yib, where="mid", color="0.45", lw=0.8, ls=":", label="imaginary (null)")
     ax.step(vb, yb, where="mid", color="k", lw=1.2, label="stacked flux density")
     # the model averaged over the channels, as it was fitted
-    p = s["line"]
     _, mb, _ = _rebin(v, np.where(used, result.profile_model[order] * f, np.nan), e, rho, rebin)
-    ax.step(vb, mb, where="mid", color="C3", lw=1.5, label="fit")
+    ax.step(vb, mb, where="mid", color="C3", lw=1.5, label="Gaussian fit")
+    # the area of the Gaussian: above the continuum when it was fitted with the line
+    cf = s.get("continuum_fit")
+    base = cf["flux_density"] * f if cf else 0.0
+    ax.fill_between(vb, base, np.where(np.isfinite(mb), mb, base), step="mid",
+                    facecolor="none", edgecolor="C3", hatch="////", lw=0, alpha=0.5,
+                    label="area of the Gaussian")
+    if cf:
+        ax.axhline(base, color="C0", lw=1.0, ls="-.",
+                   label=f"continuum fitted with the line: {_pm(base, cf['flux_density_error'] * f)} {ulabel}")
+    # residual continuum: offset and slope outside the windows
+    rc = s.get("continuum_residual")
+    if rc:
+        vv = np.linspace(*rc["velocity_range_kms"], 50)
+        c0 = (s.get("continuum_fit") or {}).get("flux_density", 0.0)   # on the fitted one
+        ax.plot(vv, (c0 + rc["offset"] + rc["slope_per_1000kms"] * vv / 1000) * f,
+                color="C2" if not rc["detected"] else "C1", lw=1.4, ls="--",
+                label=("continuum outside the windows: "
+                       + ("FLAGGED" if rc["detected"] else "none") + f" ({rc['offset_nsigma']:+.1f}"
+                       r"$\sigma$)"))
     ax.axhline(0, color="0.3", lw=0.6)
-    d = s["detection"]
-    w = s["window"]
-    sn = p["flux"] / p["flux_error"] if p.get("flux_error") else np.nan
-    if d["mode"] == "detect":
-        sig_text = f"detection: S/N {d['snr']:.1f} (matched filter, fixed shape)"
-    else:
-        sig_text = (f"detection: {d['significance_sigma']:.1f}$\\sigma$ (search S/N "
-                    f"{d['snr']:.1f}, p = {d['p_value']:.1g})")
-    text = (f"F = {_pm(p['flux'] * f, p['flux_error'] * f)} {ulabel} km/s "
-            f"(F/$\\sigma_F$ = {sn:.1f})\n"
-            f"peak {_pm(p['peak'] * f, p.get('peak_error', np.nan) * f)} {ulabel},  v$_0$ = {p['v0_kms']:+.0f} km/s,  "
-            f"FWHM = {p['fwhm_kms']:.0f} km/s\n"
-            f"window [{w['user_kms'][0]:.0f}, {w['user_kms'][1]:.0f}] km/s: "
-            f"{_pm(w['flux'] * f, w['flux_error'] * f)}\n{sig_text}")
-    ax.text(0.02, 0.97, text, transform=ax.transAxes, va="top", fontsize=8.5,
+    rows = []
+    separate = len(s.get("line_groups") or [[1]]) > 1
+    for k, b in enumerate(blocks):
+        d = b["detection"]
+        sc = b.get("shape_check", {})
+        name = "" if len(blocks) == 1 else f"line {k + 1}: "
+        quoted = "area" if b.get("flux_method") == "area" else "Gaussian"
+        sig = (f"S/N {d['snr']:.1f} (fixed shape)" if d.get("fixed_shape")
+               else f"{d['significance_sigma']:.1f}$\\sigma$")
+        rows.append(
+            f"{name}F = {_pm(b['flux'] * f, b['flux_error'] * f)} {ulabel} km/s ({quoted}), {sig}\n"
+            f"   Gaussian {_pm(b['flux_gauss'] * f, b['flux_gauss_error'] * f)}, "
+            f"area {_pm(b['flux_area'] * f, b['flux_area_error'] * f)}"
+            + (f" ($\\Delta$ {sc['nsigma']:+.1f}$\\sigma$)" if np.isfinite(sc.get("nsigma", np.nan)) else "")
+            + f"\n   v$_0$ = {b['v0_kms']:+.0f}, FWHM = {b['fwhm_kms']:.0f} km/s, "
+            f"peak {_pm(b['peak'] * f, b.get('peak_error', np.nan) * f)} {ulabel}"
+            # lines fitted apart: each has its own size
+            + (f", size {b['size_model']}" + (f" {b['theta_fwhm_arcsec']:.2f}\""
+                                              if b.get("theta_fwhm_arcsec") else "")
+               if separate and "size_model" in b else ""))
+    ax.text(0.02, 0.97, "\n".join(rows), transform=ax.transAxes, va="top", fontsize=8,
             bbox=dict(boxstyle="round", fc="white", ec="0.8", alpha=0.9))
     ax.set_ylabel(f"flux density [{ulabel}]")
-    ax.legend(loc="upper right", fontsize=7.5, frameon=False)
-    ax.set_title(f"stacked line, zero spacing ({s['n_sources']} sources, "
-                 f"{s['weighting_scheme']}, size {p['size_model']}"
+    lo_y, hi_y = ax.get_ylim()
+    ax.set_ylim(lo_y, hi_y + (0.35 + 0.12 * len(blocks)) * (hi_y - lo_y))
+    ax.legend(loc="upper right", fontsize=7, frameon=False)
+    p = s["line"]
+    ax.set_title(f"stacked line{'s' if len(blocks) > 1 else ''}, zero spacing "
+                 f"({s['n_sources']} sources, {s['weighting_scheme']}, size {p['size_model']}"
                  + (f" {p['theta_fwhm_arcsec']:.2f}\"" if p['theta_fwhm_arcsec'] else "")
                  + (f", {rebin} channels per bin" if rebin > 1 else "") + ")", fontsize=9)
     # residuals
@@ -178,6 +210,8 @@ def plot_uv(result, path: str, unit: Optional[str] = None):
     else:
         ax.plot(bb, np.full_like(bb, p["flux"] * f), color="C3", label="point source")
     ax.set_xscale("log")
+    if len(s.get("lines") or []) > 1:
+        ax.set_title(f"line 1 ({s['rest_freq_ghz']:.6g} GHz)", fontsize=9)
     ax.set_xlabel(r"baseline [k$\lambda$]")
     ax.set_ylabel(f"line flux [{ulabel} km/s]")
     ax.legend(fontsize=8, frameon=False)
@@ -233,7 +267,7 @@ def plot_noise(result, path: str, unit: Optional[str] = None):
         ax.hist(result.null_snr_phase, bins=30, density=True, histtype="step", color="C0",
                 label="search on random-phase stacks")
     if not result.null_snr.size and not result.null_snr_phase.size:
-        x = np.linspace(-4, max(5, d["snr"] + 1), 200)
+        x = np.linspace(-4, max(5, min(d["snr"], 60) + 1), 200)
         ax.plot(x, np.exp(-0.5 * x ** 2) / np.sqrt(2 * np.pi), color="0.3",
                 label="N(0, 1) (fixed shape)")
     ax.axvline(d["snr"], color="C3", lw=1.5, label=f"measured S/N {d['snr']:.1f}")
@@ -246,7 +280,7 @@ def plot_noise(result, path: str, unit: Optional[str] = None):
     return path
 
 
-def plot_line_result(result, line: LineConfig, prefix: str, unit: Optional[str] = None,
+def plot_line_result(result, line: Lines, prefix: str, unit: Optional[str] = None,
                      v_limits=None, rebin: int = 1, verbose=True) -> List[str]:
     """All three figures; returns their paths."""
     out = [plot_profile(result, line, f"{prefix}_profile.png", unit, v_limits, rebin),

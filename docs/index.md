@@ -82,22 +82,19 @@ Fourier domain*, Proc. SPIE 14153, 141531X
 git clone https://github.com/martitors/ViSta-HPC.git && cd ViSta-HPC
 pip install -r requirements.txt pybind11
 cmake -S . -B build && cmake --build build -j && cmake --install build
-./run_vista.sh --input input_list.txt --rest-freq 345.79599
+./run_vista.sh --input input_list.txt --line-freq 345.79599 --line-window 500 --extract
 ```
 
 or from Python:
 
 ```python
 from vista import ViSta
-from vista.extract import LineConfig, ContinuumConfig, measure_line
 
-line = LineConfig(rest_freq_ghz=345.79599, v_window_kms=(-500, 500))
-ViSta("input_list.txt").run("stack.zarr", central_freq=line.rest_freq_hz,
-                            velocity_range_kms=900,
-                            line=line, continuum=ContinuumConfig(order=0),
-                            stats_line="line_stats.npy", stats_continuum="cont_stats.npy")
-result = measure_line("line_stats.npy", "input_list.txt", line, output_prefix="stack")
-print(result.summary["line"]["flux"], result.summary["detection"]["significance_sigma"])
+v = ViSta("input_list.txt")                        # input, output, how it runs
+v.stack(line_freq=345.79599, line_window=500)                # the line, the band, the continuum
+v.extract()                                        # measure it
+result = v.run()                  # stack, subtract the continuum, compress, measure
+print(result)                     # the line (both fluxes), the continuum; files: stacked_*
 ```
 
 New here? Start from the [Quickstart](getting_started/quickstart), then follow

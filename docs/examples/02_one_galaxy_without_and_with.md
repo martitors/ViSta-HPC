@@ -5,7 +5,7 @@ an interferometer allows, on its noiseless and its noisy dataset.
 
 ViSta works on a single dataset as well: a "stack" of one galaxy shifts its
 phase centre to the galaxy, brings it to the rest frame and subtracts the
-continuum (`CORRECTED_DATA`); `measure_line` then measures the line flux in
+continuum (`CORRECTED_DATA`); the measurement then gives the line flux in
 every annulus of baseline length and extrapolates it to zero length. The same
 continuum-subtracted visibilities are exported (`export_ms`) and imaged with
 CASA's `tclean`: a CLEANed cube, natural weighting.
@@ -16,12 +16,20 @@ Jy), its moment 0, its beam and the errors of the line flux, measured on the
 image itself away from the galaxy.
 
 ```python
-line = LineConfig(rest_freq_ghz=REST_GHZ,
-                  v_window_kms=(-500, 500))       # the line: excluded from the continuum fit
-contsub = ContinuumConfig(order=0,               # a constant per row (1: slope, -1: BIC)
-                          exclude_kms=500)        # |v| < 500 km/s left out of the fit
-binning = BinningConfig(b_min_klambda=3, b_max_klambda=3000, n_bins=18)
-WINDOW = 500                                      # km/s: line flux integrated over |v| < WINDOW
+REST_HZ = REST_GHZ * 1e9
+WINDOW = 500           # km/s: the line is within |v| < WINDOW (out of the continuum fit; area flux)
+
+
+ANNULI = (3, 3000, 18)  # annuli of baseline length: from 3 to 3000 kλ, 18 (logarithmic)
+
+
+def vista_for(input_list, name, verbose=False):
+    # the ViSta object of this notebook: input and output (the name of the files);
+    # the stacking: the line and its window, the band (-900..+900 km/s); the rest
+    # has defaults (continuum subtracted with a constant, ...)
+    v = ViSta(input_list, output_name=name, verbose=verbose)
+    v.stack(line_freq=REST_GHZ, line_window=WINDOW, velocity_range=900)
+    return v
 
 
 def baseline_average(store, columns=("CORRECTED_DATA",)):
@@ -39,7 +47,7 @@ def baseline_average(store, columns=("CORRECTED_DATA",)):
                 n0, d0 = acc.setdefault(col, {}).get(f, (0.0, 0.0))
                 acc[col][f] = (n0 + a, d0 + b)
     freq = np.array(sorted(acc[columns[0]]))
-    vel = C_KMS * (line.rest_freq_hz - freq) / line.rest_freq_hz
+    vel = C_KMS * (REST_HZ - freq) / REST_HZ
     return vel, {col: np.array([acc[col][f][0] / acc[col][f][1] for f in freq]) for col in columns}
 
 
@@ -80,7 +88,7 @@ def image_line(vis, name, noiseless=False):
     ix, iy = np.mgrid[:NPIX, :NPIX]
     dx, dy = (ix - NPIX // 2) * CELL, (iy - NPIX // 2) * CELL     # arcsec from the galaxy
     r = np.hypot(dx, dy)
-    vel = C_KMS * (line.rest_freq_hz - freq) / line.rest_freq_hz
+    vel = C_KMS * (REST_HZ - freq) / REST_HZ
     dv = abs(np.median(np.diff(vel)))
     flux_map = cube[:, :, np.abs(vel) <= WINDOW].sum(axis=2) * dv    # Jy/beam km/s
     # the errors, from the image itself away from the galaxy (r > 5"): the rms of the
@@ -103,28 +111,33 @@ def integrate(v, spectrum):
 ```python
 K = SIM["n_sources"] // 2                          # the galaxy at the median redshift
 gal, gal0 = truth["sources"][K], truth0["sources"][K]
+KNOWN = dict(v0_range=(0, 0), fwhm_range=(SIM["fwhm_kms"], SIM["fwhm_kms"]))   # centre and width known
 one = {}
 for tag, lst in (("noisy", LIST), ("noiseless", LIST0)):
     entry = [l for l in open(lst) if not l.startswith("#")][K]
     open(f"one_{tag}.txt", "w").write(entry)
-    ViSta(f"one_{tag}.txt", verbose=False).run(
-        output=f"one_{tag}.zarr", central_freq=line.rest_freq_hz, velocity_range_kms=900,
-        line=line, continuum=contsub, stats_line=f"one_{tag}_stats.npy", binning=binning)
+    v = vista_for(f"one_{tag}.txt", f"one_{tag}")
     # one galaxy: no redshift rescaling, no primary-beam correction (compared with the image)
     noise = dict(noise="weights", channel_correlation=False) if tag == "noiseless" else {}
-    r = measure_line(f"one_{tag}_stats.npy", f"one_{tag}.txt", line,
-                     WeightingConfig(redshift_rescaling=False, primary_beam=False),
-                     LineFitConfig(mode="detect", v0_kms=0.0, fwhm_kms=SIM["fwhm_kms"],
-                                   size="gauss", n_null=0, n_null_phase=0, **noise),
-                     BootstrapConfig(n_realisations=0), output_prefix=f"one_{tag}", verbose=False)
-    v, avg = baseline_average(f"one_{tag}.zarr")
+    v.extract(annuli=ANNULI, z_norm=False, pb_corr=False, model="gauss", n_null=0,
+              n_null_phase=0, n_bootstrap=0, figures_draw=False, **KNOWN, **noise)
+    r = v.run()
+    vel, avg = baseline_average(f"one_{tag}.zarr")
     export_ms(f"one_{tag}.zarr", f"one_{tag}.ms", verbose=False)
-    one[tag] = {"fit": r, "uv": pl.load(f"one_{tag}")["uv"], "v": v,
+    one[tag] = {"fit": r.line, "uv": pl.load(f"one_{tag}")["uv"], "v": vel,
                 "average": avg["CORRECTED_DATA"],
                 "image": image_line(f"one_{tag}.ms", f"img_one_{tag}", noiseless=tag == "noiseless")}
 print(f"{os.path.basename(gal['path'])}: z = {gal['z']:.3f}, true line flux "
       f"{gal['line_flux'] * gal['primary_beam']:.3f} Jy km/s, size {gal['size_arcsec']}\", "
       f"beam {one['noisy']['image']['beam'][0]:.2f}\" x {one['noisy']['image']['beam'][1]:.2f}\"")
+```
+
+```text
+[ViSta       0.0s] no redshift rescaling, no flux normalisation
+```
+
+```text
+[ViSta       0.0s] no redshift rescaling, no flux normalisation
 ```
 
 ```text

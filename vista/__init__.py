@@ -1,88 +1,30 @@
 """
 ViSta: Visibility Stacking tool for broadband interferometric data.
 
-Main class:
-    ViSta  -- HPC-optimised visibility-domain stacking pipeline
-              (C++/OpenMP kernel, optional CUDA GPU)
-
-Subpackage:
-    vista.extract -- post-processing (continuum subtraction) and
-                     visibility-domain signal extraction of the stack
-
-Example usage::
+::
 
     from vista import ViSta
-    p = ViSta("input_list.txt")
-    p.run("stack.zarr", central_freq=153.253e9, nchan_out=1000)
 
-Log: every step of the package writes timestamped lines to stdout through the
-logger ``"vista"``; ``vista.set_verbosity()`` chooses how much (and an
-optional log file).
+    v = ViSta("input_list.txt", output_name="co32")   # input, output, how it runs
+    v.stack(line_freq=345.796, line_window=500)                  # what makes the stack
+    v.extract()                                        # what is measured (skip: stack only)
+    result = v.run()            # stack, subtract the continuum, compress, measure
+    print(result)
 
-Output: the stacking writes a Zarr store (``stack.zarr``), written in
-parallel, or a Measurement Set when the path ends in ``.ms``;
-``vista.export_ms(store, ms)`` turns a store into a Measurement Set.
+``ViSta(...)`` takes the input list, the outputs and how the run uses the
+machine; ``v.stack(...)`` the lines, the band and the continuum;
+``v.extract(...)`` the measurement (without it, ``run()`` only writes the
+stack); ``v.help()`` lists every option with its value; ``v.run()`` runs
+them (``v.run(only="measure")`` repeats the measurement).
 
-New in v2.1:
-    - Transparent GPU/CUDA acceleration (batch kernel dispatch)
-    - Thread-safe Casacore access (global + per-MS locking)
-    - Lazy chunk-at-a-time materialisation with adaptive chunk sizing
-    - velocity_range_kms parameter for velocity-based output bandwidth
-    - Automatic OBSERVE_TARGET state filtering
-    - CORRECTED_DATA preference with DATA fallback
-    - Full output subtable set (FIELD, DD, ANTENNA, POL, OBS, FEED, SOURCE)
+Log: nothing but warnings by default; ``ViSta(..., verbose=True)`` shows the
+progress and the results, ``verbose="debug"`` also the details and the time
+of every stage, and ``log_file`` writes the same to a file.
 
-New in v2.2:
-    - vista.extract: continuum subtraction, compression into sufficient
-      statistics, and uv-domain flux extraction with bootstrap errors
-    - Optional normalisation factor as the last column of the input list
+Output: the stack is a Zarr store (written in parallel) or a Measurement
+Set; ``vista.export_ms(store, ms)`` turns a store into a Measurement Set.
 
-New in v2.3:
-    - Optimised stacking loop: parallel reader processes (shared memory),
-      GIL-free compute kernel, a single direct casacore writer; the output is
-      the same as v2.2 (bit-identical on the CPU), only the row order changes
-    - New GPU engine: many chunks per launch, persistent device buffers,
-      page-locked output buffers, automatic split into passes; chosen with
-      ``run(device="gpu")``
-    - Clear log for the whole package (stacking and extraction): elapsed
-      time on every line, what each input contributes, warnings for
-      suspicious inputs; ``verbose="debug"`` and ``run(timing=True)`` for
-      the details
-
-New in v2.4:
-    - The stacking writes a Zarr store (layout of dask-ms) for any output
-      path not ending in .ms: parallel writers (n_writers), compressed
-      columns, rows of each dataset in input order; a path ending in .ms
-      (or output_format="ms") still gives a Measurement Set, and
-      vista.export_ms() converts a store into one
-    - Continuum subtraction and compression read Zarr stores and MSs alike,
-      overlap reading, computing and writing, and run their per-row work in
-      new OpenMP kernels of ms_ops (continuum_subtract, annuli_accumulate);
-      casatools is no longer needed.  The continuum is fitted on the
-      unflagged samples only, wherever the rows of a dataset are
-    - run(frame="LSRK") brings TOPO inputs to the frame of the redshifts,
-      row by row (vista.frames)
-
-New in v2.5:
-    - run(..., line=, continuum=, stats_line=, stats_continuum=): continuum
-      subtraction and compression while the stack is written, one pass over
-      the data (vista.extract.inline); same stack and statistics as the
-      separate steps.  The parameters of every subtraction are recorded in
-      the stack
-    - the statistics store sum w Re^2 and sum w Im^2 (format 4): the noise of
-      every cell is measured from the scatter of its visibilities
-      (vista.extract.noise), and checked against the weights, the imaginary
-      part and the line-free channels
-    - vista.extract.measure_line: the line fitted on all channels and annuli
-      at once (profile at zero spacing, flux, peak, centre, width, size), with
-      the measured noise and the channel correlation; matched filter
-      (mode='detect') or search with its significance from null realisations
-    - examples/plot_line.py: the figures of measure_line from its output
-      files (numpy + matplotlib only), to restyle them
-
-New in v2.5.1:
-    - frame='LSRK' by default: the inputs are always brought to the frame of
-      the redshifts (TOPO data corrected row by row); frame=None is refused
+The history of the versions is in the documentation (Changelog).
 """
 
 import logging as _logging
@@ -90,7 +32,7 @@ import sys as _sys
 import time as _time
 
 __all__ = ["ViSta", "set_verbosity", "export_ms", "open_stack"]
-__version__ = "2.5.1"
+__version__ = "3.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +51,7 @@ class _Formatter(_logging.Formatter):
     def format(self, record):
         elapsed = _time.perf_counter() - _clock[0]
         msg = record.getMessage()
-        if record.levelno >= _logging.WARNING:
+        if record.levelno >= _logging.WARNING and not getattr(record, "vista_notice", False):
             msg = f"{record.levelname}: {msg}"
         return f"[ViSta {elapsed:9.1f}s] {msg}"
 
@@ -119,20 +61,22 @@ if not any(getattr(h, "_vista", None) == "stdout" for h in _logger.handlers):
     _handler.setFormatter(_Formatter())
     _handler._vista = "stdout"
     _logger.addHandler(_handler)
-    _logger.setLevel(_logging.INFO)
+    _logger.setLevel(_logging.WARNING)
     _logger.propagate = False
 
 
-def set_verbosity(verbose=True, log_file=None):
-    """Choose how much the package writes, and optionally where else.
+def set_verbosity(verbose=False, log_file=None):
+    """Choose how much the package writes, and optionally where else
+    (:class:`ViSta` calls it with its own ``verbose`` and ``log_file``).
 
     Parameters
     ----------
     verbose : bool or "debug"
-        ``True`` (default) — progress, results and warnings;
-        ``False`` — warnings and errors only;
+        ``False`` (default) — warnings and errors only;
+        ``True`` — progress, results and warnings;
         ``"debug"`` — also the details (per-MS metadata, queues, buffers,
-        every subtable written), meant for diagnosing problems.
+        every subtable written) and the time of every stage of the
+        stacking, meant for diagnosing problems.
     log_file : str or None
         Also append the log to this file.  ``None`` stops writing to a file
         set by an earlier call.
@@ -176,17 +120,22 @@ def _warn(msg):
     _logger.warning(msg)
 
 
+def _notice(msg):
+    """A result always shown, also with ``verbose=False`` (not a warning)."""
+    _logger.warning(msg, extra={"vista_notice": True})
+
+
 def __getattr__(name):
     """Import the stacking pipeline lazily (PEP 562).
 
     ``vista.pipeline`` needs the compiled kernel ``ms_ops`` and the dask-ms
     stack, which the extraction subpackage does not: importing it eagerly
     here would make ``import vista.extract`` fail on a machine where the
-    kernel was never built.  ``from vista import ViSta`` still works.
+    kernel was never built.  :class:`ViSta` imports it only to stack.
     """
-    if name == "ViSta":
-        from .pipeline import ViSta
-        return ViSta
+    if name in ("ViSta", "RunResult"):
+        from . import api
+        return getattr(api, name)
     if name in ("export_ms", "open_stack"):
         from . import stackio
         return getattr(stackio, name)

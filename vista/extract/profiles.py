@@ -27,7 +27,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from .config import C_KMS, LineConfig, ProfileConfig
+from .config import C_KMS, Lines, ProfileConfig
 
 SQRT_2PI = float(np.sqrt(2.0 * np.pi))
 FWHM_PER_SIGMA = 2.3548200450309493
@@ -42,32 +42,21 @@ def velocity_window_mask(freq_hz, rest_freq_hz, window_kms) -> np.ndarray:
     return (v >= window_kms[0]) & (v <= window_kms[1])
 
 
-def line_free_mask(freq_hz, line: LineConfig,
+def line_free_mask(freq_hz, line: Lines,
                    half_width_kms: Optional[float] = None,
                    window_kms: Optional[Tuple[float, float]] = None,
                    redshift: Optional[float] = None,
                    source_redshift: Optional[float] = None) -> np.ndarray:
-    """Channels free of line emission, for a continuum fit.
-
-    The target window is excluded, widened by the window of the second line
-    and by every interval in ``line.exclude_v_kms``.  ``half_width_kms`` or
-    ``window_kms`` override the width taken from ``line.v_window_kms``.
-    """
-    freq_hz = np.asarray(freq_hz, float)
+    """Channels free of line emission, for a continuum fit: outside the
+    windows of every line (and between them with ``exclude_between``).
+    ``half_width_kms`` or ``window_kms`` replace the window of the first
+    line."""
+    first = None
     if window_kms is not None:
-        target = window_kms
+        first = tuple(window_kms)
     elif half_width_kms is not None:
-        target = (-abs(half_width_kms), abs(half_width_kms))
-    else:
-        target = line.v_window_kms
-
-    mask = ~velocity_window_mask(freq_hz, line.rest_freq_hz, target)
-    if line.second_rest_freq_hz is not None:
-        mask &= ~velocity_window_mask(freq_hz, line.second_rest_freq_hz,
-                                      line.second_v_window_kms)
-    for lo, hi in line.exclude_v_kms:
-        mask &= ~velocity_window_mask(freq_hz, line.rest_freq_hz, (lo, hi))
-    return mask
+        first = (-abs(half_width_kms), abs(half_width_kms))
+    return line.free_mask(freq_hz, first_window=first)
 
 
 def shifted_line_mask(freq_hz, rest_freq_hz, z_grid, z_source, window_kms):
@@ -120,7 +109,7 @@ def _gaussian(v, centroid, sigma):
     return np.exp(-0.5 * ((v - centroid) / sigma) ** 2)
 
 
-def fit_line_shape(spectrum, weights, freq_hz, line: LineConfig,
+def fit_line_shape(spectrum, weights, freq_hz, line: Lines,
                    config: ProfileConfig = ProfileConfig(),
                    start: Optional[list] = None) -> Optional[LineShape]:
     """Fit one or two Gaussians to the spatially integrated spectrum.
@@ -279,7 +268,7 @@ def fit_line_shape(spectrum, weights, freq_hz, line: LineConfig,
 # ---------------------------------------------------------------------------
 # flux per annulus
 # ---------------------------------------------------------------------------
-def flux_per_annulus_template(real, weight, freq_hz, line: LineConfig,
+def flux_per_annulus_template(real, weight, freq_hz, line: Lines,
                               shape: LineShape,
                               config: ProfileConfig = ProfileConfig()):
     """Amplitude per annulus at fixed shape, by weighted linear least squares.

@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Sequence, Union
 import numpy as np
 
 from .. import _reset_clock, _say, _warn
-from .config import (BootstrapConfig, LineConfig, ProfileConfig, UVFitConfig,
+from .config import (BootstrapConfig, Lines, ProfileConfig, UVFitConfig,
                      WeightingConfig)
 from .profiles import (LineShape, fit_line_shape, flux_per_annulus_continuum,
                        flux_per_annulus_template, flux_per_annulus_window,
@@ -367,7 +367,7 @@ class ExtractionResult:
 # ---------------------------------------------------------------------------
 def extract_flux(statistics: Union[str, SufficientStatistics],
                  input_list: Union[str, Sequence],
-                 line: LineConfig,
+                 line: Lines,
                  weighting: WeightingConfig = WeightingConfig(),
                  profile: ProfileConfig = ProfileConfig(),
                  uvfit: UVFitConfig = UVFitConfig(),
@@ -682,8 +682,10 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
         "redshift_rescaling": (weighting.redshift_rescaling
                                and not weighting.already_applied),
         "z_ref": data.z_ref,
+        "z_ref_given": weighting.z_ref is not None,
         "flux_normalised": data.norm_ref is not None,
-        "norm_ref": data.norm_ref,
+        "flux_ref": data.norm_ref,
+        "flux_ref_given": weighting.norm_ref is not None,
         "rest_freq_ghz": line.rest_freq_ghz,
         "v_window_kms": list(line.v_window_kms),
         "flux_method": profile.method,
@@ -719,7 +721,7 @@ def extract_flux(statistics: Union[str, SufficientStatistics],
             if null_test.any() else float("nan")),
         "units": ("flux in [data units] * km/s for a line, [data units] for "
                   "the continuum; the flux normalisation rescales them by "
-                  "norm_ref / norm"),
+                  "flux_ref / NORM"),
     }
     if shape is not None:
         summary["line_shape"] = shape.as_dict()

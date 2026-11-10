@@ -10,15 +10,15 @@ A channel of observed width `Δν_obs` is `Δν_obs (1 + z)` wide in the rest
 frame. The common width is the **largest** of these over the sample: the
 finest grid every dataset can fill, since resampling a coarse spectrum onto
 finer channels would only correlate the noise between them.
-`channel_width_hz` (`--width`) sets it; a value finer than that floor is
+`channel_width` (`--channel-width`) sets it; a value finer than that floor is
 refused, with an error naming the dataset that sets it.
 
 ## The number of channels
 
-`velocity_range_kms` (`--velocity-range`) gives the bandwidth as a velocity
+`velocity_range` (`--velocity-range`) gives the bandwidth as a velocity
 range around the line — a scalar `v` means `±v`, a pair `(lo, hi)` an
 asymmetric range — and the number of channels follows from the width.
-`nchan_out` (`--nchan`) sets it directly. Without either, ViSta takes the
+`nchan` (`--nchan`) sets it directly. Without either, ViSta takes the
 widest coverage any single dataset can provide. The count is rounded down to
 an even number.
 

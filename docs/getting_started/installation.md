@@ -63,7 +63,8 @@ Set `CMAKE_CUDA_ARCHITECTURES` to the compute capability of the GPU: 70 V100,
 80 A100 (the default), 86 RTX 30xx, 89 L40, 90 H100. The CUDA runtime is
 linked statically, so the module runs on compute nodes without
 `LD_LIBRARY_PATH` settings, and a CUDA build also runs on machines without a
-GPU (`device="cpu"`).
+GPU (`device="cpu"`). Build on the kind of machine that will run the stacking
+(same CPU and GPU).
 
 ## 4. Check
 
@@ -78,17 +79,6 @@ Use the package from the repository directory, or put it on the path:
 Without the kernel, the stacking does not run; the continuum subtraction and
 the compression fall back to NumPy (much slower), and the measurement needs
 only NumPy and SciPy.
-
-## On an HPC cluster
-
-- Build on the node type that will run the jobs (same CPU and GPU).
-- Threads: the kernel uses `OMP_NUM_THREADS`, else `SLURM_CPUS_PER_TASK`,
-  else all cores; `run(n_threads=...)` overrides them.
-- Put the stack on fast local disk while it is written,
-  `run(scratch_dir=os.environ["TMPDIR"])` (`--scratch` on the command line):
-  it is moved to its destination at the end.
-- In containers with a small `/dev/shm`, `run(reader_mode="thread")` avoids
-  the shared memory of the reader processes.
 
 ## On Google Colab
 

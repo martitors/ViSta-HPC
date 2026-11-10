@@ -1,17 +1,13 @@
 # 7. The continuum
 
 The continuum removed during the stacking (`MODEL_DATA`) was compressed into
-`cont_stats.npy`. `extract_flux` with `method="continuum"` averages it over
-the line-free channels and fits its uv profile: flux at zero spacing and
-size.
+`stack_cont_stats.npy`, and every `run(only="measure")` measured it too
+(`stack_detect_continuum_results.json`): its average over the channels
+outside the line window and the fit of its uv profile, flux at zero spacing
+and size.
 
 ```python
-conts = {}
-for tag, stats, lst in (("noisy", "cont_stats.npy", LIST),
-                        ("noiseless", "cont_stats_noiseless.npy", LIST0)):
-    conts[tag] = extract_flux(stats, lst, line, weighting, profile=ProfileConfig(method="continuum"),
-                              uvfit=UVFitConfig(model="gauss"), bootstrap=boot,
-                              output_prefix=f"continuum_{tag}", verbose=False)
+conts = {"noisy": det.continuum, "noiseless": det0.continuum}
 cs, cs0 = conts["noisy"].summary, conts["noiseless"].summary
 print(f"continuum flux [mJy]   true {T['cont'] * 1e3:.3f}   without noise {cs0['flux_total'] * 1e3:.3f}"
       f"   with noise {cs['flux_total'] * 1e3:.3f} ± {cs['flux_total_error'] * 1e3:.3f}")

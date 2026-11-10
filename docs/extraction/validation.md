@@ -18,9 +18,9 @@ realisations per case. *Scatter* is the rms of the flux over the true flux,
 | window ±600 (Sec. 5.3) | 0.07 | −6%, 0.62, 0.59 | 0.32, 0.55 | −61% |
 | template, point | 0.09 | −4%, 0.48, 0.65 | 0.24, 0.58 | −69% |
 | template, gauss | 0.03 | +128%, 9.0, 0.90 | 0.27, 0.92 | −4% |
-| joint, search | p < 0.05 in 2% | −11%, 0.53, 0.56 | 0.23, 0.73 | +4% |
-| **joint, detect** (width known) | 0.00 | −6%, **0.31**, 0.70 | **0.15**, 0.72 | +2% |
-| joint, window ±600 | 0.02 | −8%, 0.55, 0.65 | 0.29, 0.62 | +6% |
+| joint, centre and width free | p < 0.05 in 2% | −11%, 0.53, 0.56 | 0.23, 0.73 | +4% |
+| **joint, centre and width fixed** (known) | 0.00 | −6%, **0.31**, 0.70 | **0.15**, 0.72 | +2% |
+| joint, area flux ±600 | 0.02 | −8%, 0.55, 0.65 | 0.29, 0.62 | +6% |
 
 The errors of the per-annulus chain (bootstrap only) are too small for a
 point model (noise gives F/σ > 2 three to four times too often) and too large
@@ -29,7 +29,7 @@ a known width halves the scatter of the template method; a free search is
 reliable from about 4σ. On whole Measurement Sets (8 simulated ALMA datasets,
 Hanning-smoothed noise, weights wrong by a factor 52, continuum subtracted on
 18 line-free channels, 16 noise realisations), the measured scatter of the
-flux is 71 against 69 quoted (detect) and 108 against 113 quoted (window);
+flux is 71 against 69 quoted (fixed shape) and 108 against 113 quoted (area);
 with only the first lags of the channel correlation, the quoted errors were
 50 and 70.
 
@@ -39,7 +39,7 @@ Same simulations, the signal of every cell averaged over the baselines of its
 annulus; bias of the total flux and, in brackets, the coverage of the quoted
 ±1σ.
 
-| Case (S/N) | template, point | template, gauss | joint, detect | joint, search |
+| Case (S/N) | template, point | template, gauss | joint, fixed shape | joint, free |
 |---|---|---|---|---|
 | Gaussian 1″, 40 sources (8) | −69% | −4% (0.66) | +3% (0.68) | +5% (0.68) |
 | the same, weak (4) | −64% | +18%, scatter 1.25 (0.77) | +8%, scatter 0.62 (0.83) | +10% (0.65) |
@@ -57,9 +57,9 @@ stack. The joint fit recovers the total flux within a few per cent when the
 source is resolved at S/N ≳ 8, also for an exponential or a rotating disk,
 which the Gaussian model does not describe exactly. For a weak resolved stack
 the total flux is uncertain because the size is: the averaged model gives an
-honest, large error, and a size prior halves it. With a fixed Gaussian shape
-(`detect`) a double-horn profile comes out 9% high: there the window flux is
-the one to quote. On whole Measurement Sets with a 1″ source (8 datasets, 12
+honest, large error, and a size prior halves it. With the Gaussian shape fixed,
+a double-horn profile comes out 9% high: there the area flux is the one to
+quote, and `flux_measure="auto"` quotes it when the difference is significant. On whole Measurement Sets with a 1″ source (8 datasets, 12
 noise realisations): F = 211 ± 18 against 213 true, size 0.95″ ± 0.24″, while
 the point-source flux is 78.
 
@@ -84,8 +84,8 @@ about ±30%):
 
 | Method | point source, S/N ≈ 6 | 1″ source, S/N ≈ 8 | 1″ source, S/N ≈ 5 |
 |---|---|---|---|
-| uv, joint fit, detect | 1.09 ± 0.16 | **1.05 ± 0.12** | 1.16 ± 0.29 |
-| uv, joint fit, search | 1.20 ± 0.28 | 1.04 ± 0.14 | 1.12 ± 0.35 |
+| uv, joint fit, fixed shape | 1.09 ± 0.16 | **1.05 ± 0.12** | 1.16 ± 0.29 |
+| uv, joint fit, free | 1.20 ± 0.28 | 1.04 ± 0.14 | 1.12 ± 0.35 |
 | uv, window ±300 km/s | 1.20 ± 0.26 | 0.99 ± 0.17 | 1.09 ± 0.41 |
 | uv, point-source fit only | **1.00 ± 0.12** | 0.44 ± 0.05 | 0.48 ± 0.11 |
 | image, dirty peak | 1.11 ± 0.17 | 0.42 ± 0.07 | 0.52 ± 0.14 |
@@ -97,10 +97,10 @@ about ±30%):
 - **Point source**: the two planes measure the same thing. With natural
   weighting the dirty image at the source position is the weighted mean of
   the real part of the visibilities, i.e. the uv point-source flux. With
-  `size="auto"` the joint fit does not know that the source is unresolved
+  `model="auto"` the joint fit does not know that the source is unresolved
   and averages in a Gaussian fitted to the noise, which costs some scatter
   (on 50 simulated point sources the bias is 0.0% ± 3%); if the source is
-  known to be unresolved, `size="point"`.
+  known to be unresolved, `model="point"`.
 - **Resolved source**: the peak and the point-source flux lose 55–60%; in
   the image the total flux needs an aperture, and the result depends on it
   (1″ loses a quarter, 3″ is dominated by noise; the dirty-beam wings make the

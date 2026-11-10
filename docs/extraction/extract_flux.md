@@ -1,75 +1,45 @@
-# The per-annulus chain
+# The continuum measurement
 
-`extract_flux` (`run_vista.sh --method template|window`) is the method of
-Sec. 5.3 of the thesis, kept for comparison and for the continuum: the line
-shape is fitted once on the spatially integrated spectrum and held fixed, the
-amplitude is fitted annulus by annulus, and a circular Gaussian (or a point
-source) fitted to the amplitude against the baseline gives the total flux
-and the size. The errors come from the bootstrap over the sources.
+The continuum subtracted during the stacking (`MODEL_DATA`) is compressed
+into `<name>_cont_stats.npy` and measured by every `run()` with the
+per-annulus chain of Sec. 5.3 of the thesis (`vista.extract.extract_flux`):
+the mean of the channels outside the line windows in every annulus, and a
+circular Gaussian fitted to it against the baseline, which gives the flux
+density at zero spacing and the size. The errors come from the bootstrap over
+the sources, so the continuum is measured only with at least two sources and
+`n_bootstrap >= 2`. It writes `<name>_continuum_results.json`, `_spectrum.txt`,
+`_uvamp.txt` and the figure `_continuum_uvamp.png`; `result.continuum` holds
+the same.
 
-```python
-from vista.extract import (extract_flux, ProfileConfig, UVFitConfig,
-                           WeightingConfig, BootstrapConfig)
+Earlier versions also offered this chain for the line (`--method template`
+and `window`). The joint fit ([Measuring the line](measure_line.md)) replaces
+it: in the simulations, with a known width, it halves the scatter of the
+template method, and its errors are right where those of the chain were too
+small for a point model and too large for a free Gaussian
+([Validation](validation)). The window flux of the old chain is the area flux
+of the joint fit.
 
-result = extract_flux("line_stats.npy", "input_list.txt", line,
-                      WeightingConfig(scheme="democratic"),
-                      ProfileConfig(method="template"),
-                      UVFitConfig(model="gauss"),
-                      BootstrapConfig(n_realisations=500),
-                      output_prefix="co32_democratic")
-print(result.summary["flux_total"], result.summary["theta_fwhm_arcsec"])
-```
+## How it is measured
 
-For a line, [`measure_line`](measure_line.md) is the better measurement: in the
-simulations the joint fit with a known width halves the scatter of the
-template method, the errors of the chain are too small for a point model and
-too large for a free Gaussian, and a free Gaussian runs away at low S/N
-([Validation](validation)).
-
-## The flux per annulus
-
-| `ProfileConfig.method` | |
-|---|---|
-| `template` (default) | the shape (centroid, width) is fitted on the integrated spectrum and frozen; only the amplitude is fitted per annulus, and the flux follows analytically, with no truncation and no cross-contamination between blended lines |
-| `window` | the plain sum over the line window |
-| `continuum` | the mean of the line-free channels: the continuum, from `cont_stats.npy` |
-
-`joint_continuum=True` fits the line on a constant continuum and measures
-both (a stack not continuum-subtracted, `--contsub after`). `fit_span_kms`
-is the half-width of the shape fit; `shape_tie` ties a second line
-(`free`, `centroid`, `centroid+width`); `fixed_shape_kms=(centroid, sigma)`
-imposes the shape.
-
-## The source model
-
-| `UVFitConfig` | |
-|---|---|
-| `model="gauss"` (default) | circular Gaussian: `F_tot = V(b = 0)` and `θ_FWHM` |
-| `model="point"` | an unresolved stack: a free Gaussian cannot then overfit a size the data do not constrain |
-| `model="gauss2"` | compact plus extended, only with many well-populated annuli |
-| `theta_fixed_arcsec`, `theta_prior`, `theta_max_arcsec` | fix the size, tie it softly (`(θ_ref, σ_dex)`), bound it (check `theta_at_bound`) |
-| `b_max_klambda`, `min_sources_per_bin` | leave out the longest baselines, or annuli with few sources (raise it to 3–5 on heterogeneous samples) |
-| `error_floor_frac` | floor on the bootstrap errors (0.1 of their median); 0 for noiseless simulations |
-
-## The continuum
-
-With `--contsub before`, the continuum is measured from `cont_stats.npy` (the
-fitted continuum, `MODEL_DATA`) with `method="continuum"`, in its own fit and
-with its own figures: `<tag>_continuum_results.json`, with its flux density
-and size. The continuum size can be fed back as a prior on the line size
-(`--theta-prior-from <tag>_continuum_results.json`).
+- **Flux per annulus**: the mean of the continuum over the channels covered by
+  every source, outside the windows of the lines, annulus by annulus, with
+  the same weighting, redshift rescaling and primary-beam correction as the
+  line (the weighting options of `v.extract(...)`).
+- **Source model**: a circular Gaussian fitted to the flux against the
+  baseline, `F_tot = V(b = 0)` and `θ_FWHM`, up to 15″; annuli with fewer
+  than two sources are left out.
+- **Errors**: from the bootstrap over the sources, with a floor of 0.1 of
+  their median, so that no annulus dominates with few sources.
 
 ## Outputs
 
-`extract_flux` returns an `ExtractionResult`; with `output_prefix` it
-writes `<prefix>_results.json` (every fitted quantity and the configuration),
-`<prefix>_spectrum.txt` (the stacked visibility average, not a flux),
-`<prefix>_spectrum_zerob.txt` (the same line in flux units, extrapolated to
-zero baseline), `<prefix>_uvamp.txt` (flux per annulus, with the imaginary
-part), and the files of a second line or of the continuum when fitted.
-`plot_all(result, line, prefix)` (`--plot`) draws the figures: line flux per
-annulus, spectrum and line profile; with `--contsub after` one figure with
-three panels.
+`result.continuum` is an `ExtractionResult`; the run writes
+`<name>_continuum_results.json` (every fitted quantity: `flux_total`,
+`theta_fwhm_arcsec` and their errors), `<name>_continuum_spectrum.txt` (the
+continuum per channel) and `<name>_continuum_uvamp.txt` (flux per annulus,
+with the imaginary part), and draws `<name>_continuum_uvamp.png`. The
+continuum size can be used as a prior on the line size:
+`v.extract(model_prior=(theta, 0.15))`.
 
 Things to check: `null_test_max_imaginary_over_sigma` (centring),
 `theta_at_bound` and `bootstrap_fraction_at_bound` (unconstrained size),

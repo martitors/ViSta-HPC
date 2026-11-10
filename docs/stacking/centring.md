@@ -43,7 +43,7 @@ selection, and the distance of the source from the phase centre (`offset`).
 
 A source away from the pointing centre is attenuated by the primary beam.
 The re-centring does not change that; the correction is a factor on the
-amplitudes, applied when the stack is measured (`WeightingConfig(primary_beam=True)`,
+amplitudes, applied when the stack is measured (`v.extract(pb_corr=True)`,
 the default): amplitudes divided by the gain `A` and weights multiplied by
 `A²`, so an attenuated source is corrected and also counts less. `A` comes
 from a Gaussian beam of FWHM `1.2 c / (ν D)`, at the observed frequency of the

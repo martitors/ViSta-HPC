@@ -1,180 +1,129 @@
 # Parameters
 
-Every option of the stacking and of the measurement, with its default. The
-pages of the [stacking](../stacking/index) and of the
-[measurement](../extraction/index) explain when to change what; the
-[command line](../command_line) has a flag for most of them.
-
-## The stacking: ViSta and run
+Every option of {class}`vista.ViSta`, with its default. A run is described
+by three calls:
 
 ```python
-ViSta(input_file, chunk_rows=5000, verbose=True).run(output, central_freq, ...)
+from vista import ViSta
+
+v = ViSta(input_list, ...)        # input, output, how it runs
+v.stack(line_freq=..., ...)           # what makes the stack
+v.extract(...)                    # what is measured on it (skip it: run() only stacks)
+result = v.run(only=None, tag=None)
 ```
 
-### ViSta(): the constructor
+Only the input list and the rest frequency are needed; the options of
+`stack()` and `extract()` are given by name (`v.stack(line_freq=345.796)`);
+every other option has a default, and a value that does not make sense is refused when it is
+set, before any data is read. `v.help()` prints every option with its value
+now, what it can be and what it does (`v.help("stack")` for one step;
+`help(v.extract)` for the full description). Each call of `stack()` or
+`extract()` replaces all the options of that step: the ones not given go back
+to their defaults. The pages of the [stacking](../stacking/index) and of the
+[measurement](../extraction/index) explain when to change what; the
+[command line](../command_line) has one flag for each.
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `input_file` | `str` | required | Path to the input list |
-| `chunk_rows` | `int` | `5000` | Rows read and processed per chunk. Bounds the memory footprint; the code lowers it automatically when the input has many channels. Raise it on a machine with plenty of RAM, lower it if the run is killed |
-| `verbose` | `bool` or `"debug"` | `True` | `True`: one line per step and per dataset, with the elapsed time, and the warnings. `False`: warnings and errors only. `"debug"`: also metadata, grids per dataset, queues, GPU buffers (see [The log](../stacking/index.md#the-log)) |
-
-### ViSta.run(): the stacking
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `output` | `str` | required | Output path: a Zarr store (e.g. `stack.zarr`) or a Measurement Set (a path ending in `.ms`, or `output_format="ms"`). Anything already at that path is deleted first. `ms_out` is accepted as an alias |
-| `central_freq` | `float` | required | Rest-frame frequency, in **Hz**, on which the output grid is centred. This is the rest frequency of the line being stacked |
-| `velocity_range_kms` | `float`, `(lo, hi)`, or `None` | `None` | Output bandwidth as a velocity range. A scalar means ±v. Overrides `nchan_out`. Asking for more than the narrowest dataset covers makes the window slide to that dataset's band edge, so the stack is no longer centred on the line for it |
-| `nchan_out` | `int` or `None` | `None` | Number of output channels, set directly. `None` takes the widest coverage any single dataset can provide |
-| `channel_width_hz` | `float` or `None` | `None` | Common rest-frame channel width, in Hz. `None` uses the widest rest-framed channel of the sample, which is the finest grid every dataset supports; a finer value is refused with an error naming the dataset that sets the floor |
-| `data_column` | `str` | `"auto"` | Column read from each input MS. `"auto"` prefers `CORRECTED_DATA` and falls back to `DATA`. Name the column explicitly when `CORRECTED_DATA` holds something you do not want, as in a simulation whose corrupted copy lives there |
-| `scratch_dir` | `str` or `None` | `None` | Build the stack here and move it to `output` at the end. Use a local NVMe or `$TMPDIR` when the destination is on a network filesystem |
-| `frame` | `str` | `"LSRK"` | The frame of your redshifts: `"LSRK"` or `"BARY"` (barycentric or heliocentric redshifts, as optical ones usually are). The input frequencies are always brought to it, row by row, before the rest-framing, which removes the motion of the Earth from TOPO data (ALMA, VLA). Inputs already in that frame are left as they are. See [Rest frame](../stacking/restframing) |
-| `output_format` | `"zarr"`, `"ms"` or `None` | `None` | `"zarr"`: compressed Zarr store written by `n_writers` threads in parallel. `"ms"`: Measurement Set, written by one thread. `None`: `"ms"` when `output` ends in `.ms`, otherwise `"zarr"` |
-| `n_writers` | `int` | `4` | Zarr only: threads writing the stack at the same time |
-| `compress` | `bool` | `True` | Zarr only: compress the columns (Blosc lz4) |
-| `device` | `"cpu"` or `"gpu"` | `"cpu"` | Where the kernel runs. `"gpu"` needs a CUDA build and a visible GPU; if the GPU fails during the run, the run continues on the CPU with a warning |
-| `n_readers` | `int` | `2` | Reader processes, each reading a different MS at the same time. More readers help only on fast filesystems |
-| `n_threads` | `int` or `None` | `None` | OpenMP threads of the CPU kernel. `None` keeps `OMP_NUM_THREADS`, else `SLURM_CPUS_PER_TASK`, else all cores |
-| `gpu_batch` | `int` | `8` | GPU only: maximum chunks per GPU launch. The compute takes the chunks already read, without waiting for more; larger values use more host memory |
-| `timing` | `bool` | `False` | At the end, also log how long setup, reading, computing and writing took, and which stage limited the run |
-| `log_file` | `str` or `None` | `None` | Also append the log to this file |
-| `reader_mode` | `"process"` or `"thread"` | `"process"` | `"thread"` avoids shared memory (`/dev/shm`), e.g. in containers where it is small, at the cost of reads taking turns |
-| `chunk_queue`, `out_queue` | `int` | `n_readers+1`, `max(3, n_writers+1)` | Advanced: chunks waiting for the compute and for the writers. They bound the memory in use |
-| `line` | `LineConfig` or `None` | `None` | The line (`vista.extract.LineConfig`), needed by the next two options: its window, with the second line and `exclude_v_kms`, sets the channels left out of the continuum fit |
-| `continuum` | `ContinuumConfig` or `None` | `None` | Subtract the continuum **while the stack is written**: the stack gets `MODEL_DATA` and `CORRECTED_DATA` next to `DATA`, bit for bit those of `subtract_continuum` on the finished stack, without reading it back. `DATA` is kept, so the subtraction can be redone later with another window. See [Continuum](../stacking/continuum) |
-| `stats_line`, `stats_continuum` | `str` or `None` | `None` | Also **compress** while the stack is written, into these files, as `compress_visibilities` would: the line from `CORRECTED_DATA` (`DATA` without `continuum`), the continuum from `MODEL_DATA` |
-| `binning`, `max_amplitude` | | `BinningConfig()`, `None` | Options of that compression |
-
-`run()` returns a dictionary with `output`, `format`, `n_rows`, `n_spw`,
-`nchan`, `df_hz`, `flagged_fraction`, `skipped` (indices of the input lines
-that gave no data), `bytes_on_disk` and `seconds`; with `continuum`, also
-`contsub_orders`, and with `stats_line`, `statistics` (the files written).
-
-## The measurement
-
-Everything the measurement does is set by the configuration objects of
-`vista.extract.config`.
-
-### LineConfig: the spectral setup
+## ViSta(): input, output, how it runs
 
 | Parameter | Default | Description |
 |---|---|---|
-| `rest_freq_ghz` | required | Rest frequency of the line, in GHz. The only parameter with no default |
-| `v_window_kms` | `(-600, 600)` | Velocity window containing the line. Defines the line-free channels for the continuum fit, and the integration window in `window` mode |
-| `second_rest_freq_ghz` | `None` | Rest frequency of a second line in the same band; when set, the two are de-blended analytically |
-| `second_v_window_kms` | `(-500, 500)` | Velocity window of the second line, in its own frame |
-| `exclude_v_kms` | `()` | Extra velocity intervals kept out of the line-free channels |
+| `input_list` | required | Path to the [input list](../getting_started/input_list). The datasets must exist |
+| `output_name` | `"stacked"` | Name and path of everything written: the stack `<output_name>.zarr` (or `.ms`), the statistics, the results, the figures ([Output files](../extraction/outputs)). For `run(only="measure")`, where the stack and its statistics are |
+| `output_format` | `None` | `"zarr"`: a compressed Zarr store written in parallel ({func}`vista.export_ms` converts it). `"ms"`: a Measurement Set, written by one thread. `None`: `"zarr"`, or `"ms"` when `output_name` ends in `.ms` |
+| `device` | `"cpu"` | Where the kernel runs. `"gpu"` needs a CUDA build and a visible GPU; if the GPU fails during the run, the run continues on the CPU with a warning |
+| `n_readers`, `n_writers`, `n_threads` | `None` | Reader processes, writer threads (Zarr only; a Measurement Set has one) and kernel threads. `None`: from the cores this process may use (its CPU affinity, a SLURM allocation, a container quota): readers and writers about a quarter each, the kernel the rest. The ones you fix are taken out first and the others share what is left; more than the cores is refused ([Performance](performance)) |
+| `gpu_batch` | `None` | GPU: chunks per launch. `None`: as many as fit in the free memory of the GPU and in a quarter of the free host memory (at most 32); a larger value is refused |
+| `scratch_dir` | `None` | Write the stack on this (fast, local) disk and move it to its place at the end |
+| `verbose` | `False` | `False`: warnings and errors only. `True`: the progress and the results. `"debug"`: also the details (metadata, grids, queues, buffers) and the time of every stage of the stacking ([The log](../stacking/index.md#the-log)) |
+| `log_file` | `None` | Also write the log to this file (with the same detail as `verbose`) |
 
-### LineFitConfig: the joint fit
+How the readers pass the data (processes through shared memory, or threads
+when `/dev/shm` is too small), the size of the chunks and of the queues
+between readers, kernel and writers are chosen by the code; `verbose="debug"`
+shows them.
 
-The options of `measure_line` (`--method joint`).
+## stack(): what makes the stack
 
 | Parameter | Default | Description |
 |---|---|---|
-| `mode` | `"search"` | `search`: centre and width free, significance from the same search on noise. `detect`: centre and width fixed (`v0_kms`, `fwhm_kms`), matched filter |
-| `v0_kms`, `fwhm_kms` | `0`, `None` | Fixed in `detect` (`fwhm_kms` required), starting values in `search` |
-| `v0_range_kms`, `fwhm_range_kms` | `None` | Allowed centres and widths in `search`; default the line window, and 2 channels to the window width |
-| `size` | `"auto"` | `auto`, `point` or `gauss` (see [Measuring the line](../extraction/measure_line.md#the-size)) |
-| `theta_fixed_arcsec`, `theta_max_arcsec` | `None`, `15` | Freeze the size; upper bound of the size |
-| `theta_prior_arcsec` | `None` | `(θ_ref, σ_dex)`: soft tie of the size, e.g. to the continuum size; the source is then a Gaussian |
-| `resolved_delta_chi2` | `9.0` | χ² improvement needed to call the stack resolved (3σ), after the correction for the channel correlation |
-| `continuum` | `False` | Fit a continuum term together with the line (stack not subtracted) |
-| `shape_tie` | `"free"` | With a second line: `free`, `centroid`, `centroid+width` |
-| `fit_span_kms` | `1500` | Channels farther from the line are not fitted |
-| `min_sources_per_bin` | `2` | Annuli with fewer sources are left out |
-| `noise` | `"scatter"` | `scatter` (from the visibilities, statistics of format 4) or `weights` |
+| `line_freq` | required | Rest frequency of the line: a number in **GHz**, or a string with its unit (`"345.796GHz"`, `"345796 MHz"`; Hz, kHz, MHz, GHz, THz). A list for several lines: the first is the line of the stack (the output grid is centred on it, the velocities refer to it) |
+| `line_window` | `600` | Window of every line in its own velocity, km/s: `500` means −500..+500, `(-400, 600)` an asymmetric one. With several lines one entry per line (a number or a pair), or one for all. The channels inside the windows are left out of the continuum fit, and the area flux of every line is the sum over its window. Keep it wide enough for the whole line. Lines whose windows overlap are fitted together, the others each on its own |
+| `velocity_range` | `None` | Band of the stack around the first line, km/s: `2000` means −2000..+2000, or a pair. `None`: the widest band a single dataset covers. Every line window must be inside it; a dataset that does not cover it has its window slid to the edge of its band (its line off-centre) and the channels it misses flagged ([Spectral grid](../stacking/spectral_grid)) |
+| `nchan` | `None` | A number of output channels instead of `velocity_range` |
+| `channel_width` | `None` | Common rest-frame channel width, Hz. `None`: the widest rest-framed channel of the sample, the finest grid every dataset supports; a finer value is refused |
+| `frame` | `"LSRK"` | The frame of your redshifts: `"LSRK"` or `"BARY"` (barycentric or heliocentric, as optical redshifts usually are). The input frequencies are always brought to it, row by row ([Rest frame](../stacking/restframing)) |
+| `data_column` | `"auto"` | Column read from each input: `"auto"` prefers `CORRECTED_DATA` and falls back to `DATA` |
+| `continuum` | `"subtract"` | `"subtract"`: fitted row by row on the channels outside the line windows and subtracted while the stack is written (`MODEL_DATA` the fit, `CORRECTED_DATA` the line, `DATA` kept), then measured on its own. `"fit"`: left in the data and fitted together with the lines (a constant at zero spacing with their size; its flux density in `continuum_fit`, the area fluxes are the sums minus it). `"none"`: left as it is (data already subtracted, or no continuum); a continuum still present is flagged by the measurement ([Continuum](../stacking/continuum)) |
+| `continuum_order` | `0` | With `"subtract"`: `0` a constant, `1` a straight line, `"bic"` the one of the two the BIC prefers in every spectral window |
+| `exclude_between` | `False` | With several lines, also keep the channels between them out of the continuum fit |
+
+## extract(): what is measured
+
+Without this call `run()` only writes the stack. With it, the stack is also
+compressed into the statistics while it is written, and measured: every
+line on every channel and annulus at once. Lines whose windows (`line_window`)
+overlap are fitted together, sharing the size; every other line on its own
+([Several lines](../extraction/measure_line.md#several-lines)). All the
+options are given by name.
+
+**The statistics and the weighting**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `annuli` | `(3, 3000, 18)` | Annuli of rest-frame baseline length: from `b_min` to `b_max` kλ, how many (logarithmic); they should bracket the baselines present ([Compression](../stacking/compression)). Changing them compresses the stack again at the next measurement |
+| `weighting_scheme` | `"natural"` | `natural` uses the native visibility weights: the deepest observations dominate and the formal S/N is highest. `democratic` gives every source the same total weight: the mean of the population ([Weighting](../extraction/weighting)) |
+| `z_norm` | `True` | Transport every source to `z_ref` |
+| `z_ref` | `None` | Reference redshift. `None`: the median of the sample. The value used is always reported: printed after every measurement (also with `verbose=False`), in the results (`z_ref`, `z_ref_given`) and in the result of `run()`. It moves with the selection: fix it when comparing stacks |
+| `pb_corr` | `True` | Correct every source for the primary beam at its position (amplitudes / A, weights × A²) |
+| `flux_norm` | `False` | Rescale the amplitudes by `flux_ref / NORM`, with `NORM` the last column of the input list; every line of the list must have it (otherwise `extract()` refuses) |
+| `flux_ref` | `None` | Reference of that normalisation. `None`: the median, reported like `z_ref` (`flux_ref`, `flux_ref_given`) |
+
+**The lines**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `v0_range` | `None` | Allowed centres, km/s, in the velocity of each line: a pair `(lo, hi)` for all the lines, or one per line. `lo = hi` fixes the centre. `None`: anywhere in the window (shrunk by half the smallest width) |
+| `fwhm_range` | `None` | Allowed FWHM, as above. `lo = hi` fixes the width; with the centre and the size fixed too, the flux is a matched filter and its S/N is the significance. `None`: two channels to the width of the window. The fit stays exactly inside both ranges |
+| `model` | `"auto"` | The source. `"auto"`: a Gaussian only if it improves the χ² by 9 over a point source, the flux averaged over the two with their Akaike weights. `"point"`, `"gauss"`, or a number: a Gaussian of that FWHM, arcsec |
+| `model_prior` | `None` | `(θ, σ_dex)`: soft tie of the size of the Gaussian, e.g. to the continuum size |
+| `flux_measure` | `"auto"` | The flux quoted for every line; both are always given and drawn. `"gauss"`: the integral of the fitted Gaussian. `"area"`: the sum of the spectrum over the window. `"auto"`: the Gaussian, unless the two differ by more than 2σ of their difference (a non-Gaussian line), the window holds the fitted line and no other line overlaps it |
+| `window` | `None` | Window of the area flux of every line (same forms as `line_window`); `None`: the line windows. It can be changed and the measurement repeated (`run(only="measure")`) without stacking again |
+| `n_bootstrap` | `500` | Resamplings of the sources, for the population errors (0: none) |
+| `n_null` | `1000` | Searches on noise, for the significance (0: a Bonferroni bound) |
+| `seed` | `42` | Seed of the random numbers of the bootstrap and of the null searches: the same seed gives the same numbers, another seed numbers that differ within their errors |
+
+**The figures**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `figures_draw` | `True` | Draw the figures of the run: profile, uv, noise, continuum ([Output files](../extraction/outputs)) |
+| `figures_unit` | `"Jy"` | Unit of the data, for the labels (scaled to mJy, μJy as needed) |
+
+Advanced keywords, for diagnostics:
+
+| Keyword | Default | Description |
+|---|---|---|
+| `noise` | `"scatter"` | `scatter`: the noise of every cell from the scatter of its visibilities. `weights`: from the weights alone |
 | `channel_correlation` | `True` | Measure and use the correlation between adjacent channels |
-| `n_null` | `1000` | Realisations of the search on noise |
-| `n_null_phase` | `200` | Data-driven null: stacks with a random phase per source (same noise, the signal averages out); needs a few tens of sources |
-| `window_kms` | `None` | Window of the summed flux; default the line window. The flux in 1.19 FWHM around the fitted centre (best S/N for a Gaussian) is given too |
+| `n_null_phase` | `200` | Data-driven null: stacks with a random phase per source; 0 to skip |
+| `resolved_delta_chi2` | `9` | χ² improvement needed to call the stack resolved |
+| `theta_max_arcsec` | `15` | Upper bound of the size |
+| `fit_span_kms` | `1500` | Channels farther than this from every line are not fitted |
+| `min_sources_per_bin` | `2` | Annuli with fewer sources are left out |
+| `shape_nsigma` | `2` | Threshold of the shape test of `flux_measure="auto"` |
+| `residual_nsigma` | `3` | Threshold of the residual-continuum check |
+| `H0`, `Om0` | 67.4, 0.315 | Cosmology of the redshift rescaling |
+| `already_applied` | `False` | The amplitudes on disk already carry the redshift factor |
 
-### BinningConfig: the radial binning
-
-| Parameter | Default | Description |
-|---|---|---|
-| `b_min_klambda` | `3` | Inner edge of the annuli, in kλ |
-| `b_max_klambda` | `3000` | Outer edge. Should bracket the baselines actually present; the default is meant for heterogeneous ALMA samples |
-| `n_bins` | `18` | Number of logarithmic annuli. Fixed at compression time: changing it means recompressing |
-
-### WeightingConfig: how the sources are combined
+## run(): what runs
 
 | Parameter | Default | Description |
 |---|---|---|
-| `scheme` | `"natural"` | `natural` uses the native visibility weights, so the deepest observations dominate and the formal S/N is highest. `democratic` renormalises each source to total weight 1, giving the population average |
-| `redshift_rescaling` | `True` | Apply the factor that transports every source to `z_ref` |
-| `z_ref` | `None` | Reference redshift. `None` uses the sample median, which moves with the selection: fix it when comparing stacks |
-| `flux_normalisation` | `False` | Rescale amplitudes by `norm_ref / NORM`, with `NORM` the last column of the input list |
-| `norm_ref` | `None` | Reference value of that normalisation. `None` uses the sample median |
-| `already_applied` | `False` | The amplitudes on disk already carry the redshift factor; do not apply it twice |
-| `primary_beam` | `True` | Correct every source for the primary beam at its position: amplitudes / A, weights × A² (A from a Gaussian beam of FWHM 1.2 c / ν D, computed during the compression) |
-| `H0`, `Om0` | `67.4`, `0.315` | Cosmology for the luminosity distances |
+| `only` | `None` | `None`: everything (the stack; with `extract()`, its statistics and the measurement). `"stack"`: the stack (and its statistics). `"continuum"`: the subtraction again on the existing stack (with the current windows and order; `DATA` is kept) and its statistics. `"measure"`: the measurement again, from the statistics, in seconds; the stack is compressed again first when the annuli changed, or when the continuum is no longer subtracted. A list for several |
+| `tag` | `None` | Name of this measurement: its results and figures are `<output_name>_<tag>_*`, so variants on the same statistics do not overwrite each other |
 
-### ProfileConfig: the flux per annulus
-
-| Parameter | Default | Description |
-|---|---|---|
-| `method` | `"template"` | `template` fits the shape once and the amplitude per annulus, so the flux follows analytically with no truncation. `window` integrates over a fixed velocity window. `continuum` averages the line-free channels |
-| `joint_continuum` | `False` | Fit the line on top of a constant continuum and measure both. Use it when the stack was not continuum subtracted |
-| `fit_span_kms` | `1500` | Half-width used by the shape fit and the per-annulus least squares. Cannot usefully exceed the band |
-| `shape_tie` | `"free"` | For a blend: `free`, `centroid`, or `centroid+width` |
-| `fixed_shape_kms` | `None` | Impose `(centroid, sigma)` and skip the shape fit |
-| `continuum_overlap_frac` | `1.0` | In continuum mode, use only channels covered by at least this fraction of the sources |
-
-### UVFitConfig: the source model
-
-| Parameter | Default | Description |
-|---|---|---|
-| `model` | `"gauss"` | Circular Gaussian. `point` for an unresolved stack, `gauss2` for a compact plus extended decomposition |
-| `theta_fixed_arcsec` | `None` | Freeze the size and fit the flux alone |
-| `theta_max_arcsec` | `15` | Upper bound on the fitted size. Check `theta_at_bound` in the results |
-| `theta_prior` | `None` | `(theta_ref, sigma_dex)` soft tie, typically the continuum size of the same band |
-| `b_max_klambda` | `None` | Ignore annuli beyond this baseline |
-| `min_sources_per_bin` | `2` | Drop annuli with fewer contributing sources |
-| `error_floor_frac` | `0.1` | Floor on the bootstrap errors, as a fraction of their median. Set it to 0 on noiseless simulated data |
-| `second_line_theta_tie_dex` | `0.2` | Soft tie of the second line size to the target size on the same bootstrap realisation |
-| `continuum_theta_tie_dex` | `None` | The same for the continuum in joint mode; free by default |
-
-### BootstrapConfig: the uncertainties
-
-| Parameter | Default | Description |
-|---|---|---|
-| `n_realisations` | `500` | Resamplings of the source sample |
-| `seed` | `42` | Random seed, for reproducibility |
-
-### ContinuumConfig: the subtraction on the stack
-
-| Parameter | Default | Description |
-|---|---|---|
-| `order` | `0` | Constant. `1` for a line, `-1` to choose per spectral window by BIC |
-| `delta_bic` | `2.0` | Margin required to prefer order 1 |
-| `require_positive_slope` | `True` | With `order=-1`, accept order 1 only for a rising continuum |
-| `exclude_kms` | `600` | Half-width of the excluded window; overridden by the explicit pair below |
-| `exclude_kms_lo`, `exclude_kms_hi` | `None` | Asymmetric exclusion window |
-| `data_column` | `"DATA"` | Column read |
-| `model_column` | `"MODEL_DATA"` | Where the fitted continuum is written |
-| `line_column` | `"CORRECTED_DATA"` | Where the subtracted visibilities are written |
-| `chunk_rows` | `50000` | Rows read at a time from an MS, at most: fewer for wide spectra, so that a chunk stays within about 256 MB. A Zarr store is read by its own chunks |
-| `bic_rows` | `5000` | With `order=-1`, the order of each entry is chosen on the mean spectrum of its first `bic_rows` rows (same choice in the separate step and during the stacking) |
-
-`subtract_continuum(...)` also takes `n_io` (default 4): threads reading and
-writing a Zarr store at the same time.
-
-### compress_visibilities(): further arguments
-
-| Parameter | Default | Description |
-|---|---|---|
-| `line_column` | `None` | `None` picks `CORRECTED_DATA` when present, otherwise `DATA` |
-| `continuum_column` | `"MODEL_DATA"` | Column holding the continuum |
-| `max_amplitude` | `None` | Discard visibilities above this amplitude; NaN and infinities are always discarded |
-| `chunk_mb` | `512` | Target size of one read chunk, in MB |
-| `resume` | `True` | Reuse the data descriptors already present in the output file |
-| `n_io` | `4` | Threads reading a Zarr store at the same time (an MS is read by one) |
-
-### extract_flux(): further arguments
-
-| Parameter | Default | Description |
-|---|---|---|
-| `match_tol_arcsec` | `2.0` | Angular tolerance for deciding that two entries are the same physical source. Set it to 0 for simulations that share one field |
-| `output_prefix` | `None` | Write the results and the text products with this prefix |
+`run()` returns a `RunResult`: `.line` (the lines, `.line.summary` holds every
+number), `.continuum` (the continuum, when it was subtracted), `.stack` (the
+summary of the stacking: rows, channels, flagged fraction, size on disk,
+time, resources used) and `.files`. Printed, it shows the lines, `z_ref` and
+`flux_ref` (and whether they are the median), and the continuum.

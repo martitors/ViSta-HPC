@@ -146,23 +146,22 @@ def main():
     print(f"  channels across the band : ~{int(2 * half / dv_max)}")
     print(f"  baselines                : {b_min:.1f} to {b_max:.1f} klambda")
 
+    annuli = (max(1, math.floor(b_min)), math.ceil(b_max / 10) * 10,
+              12 if len(results) < 30 else 16)
     print(f"\nsuggested settings")
-    print(f"  --velocity-range {half}")
+    print(f"  {f'v.stack(..., velocity_range={half})':42s} (--velocity-range {half})")
     print(f"      the widest window every dataset covers, rounded down.  More "
           f"than\n      this and ViSta slides the window to the band edge for "
           f"the datasets\n      that fall short, so for them the stack is no "
           f"longer centred on the line.")
-    print(f"  --v-window \"-{window} {window}\"")
-    print(f"      a starting guess: {window / dv_max:.0f} channels, and it "
+    print(f"  {f'v.stack(..., line_window={window})':42s} (--line-window {window})")
+    print(f"      a starting guess: {2 * window / dv_max:.0f} channels, and it "
           f"leaves\n      {half - window:.0f} km/s of line-free band on each "
           f"side.  Set it from the\n      line profile once you have seen it, "
           f"wide enough to contain the\n      wings and narrow enough to leave "
           f"line-free channels.")
-    print(f"  --fit-span-kms {half}")
-    print(f"      the shape fit cannot use more than the band, and the default "
-          f"of\n      1500 km/s is meant for far wider data than these.")
-    print(f"  --bins \"{max(1, math.floor(b_min)):g} "
-          f"{math.ceil(b_max / 10) * 10:g} {12 if len(results) < 30 else 16}\"")
+    call = f"v.extract(annuli=({annuli[0]:g}, {annuli[1]:g}, {annuli[2]}))"
+    print(f"  {call:42s} (--annuli {annuli[0]:g} {annuli[1]:g} {annuli[2]})")
     print(f"      brackets the baselines actually present.  The default 3-3000 "
           f"would\n      leave most annuli empty, and they would be dropped.")
     if len(results) > 1 and max(r["dv"] for r in results) / min(

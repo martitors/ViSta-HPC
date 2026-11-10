@@ -3,11 +3,11 @@
 plot_line.py -- the figures of a ViSta line measurement, from its output files
 ==============================================================================
 
-``measure_line`` (``python -m vista.extract flux ... --method joint``, or
-``run_vista.sh``) writes, for an output prefix ``P``:
+A run of ViSta (``ViSta(...).run()``, or ``run_vista.sh``) writes, for its
+``output_name`` ``P``:
 
 =====================  ==========================================================
-``P_results.json``     every number: line, detection, window, size test, noise
+``P_results.json``     every number: lines, detection, fluxes, size test, noise
 ``P_profile.txt``      one row per channel (see PROFILE_COLUMNS below)
 ``P_uvamp.txt``        one row per uv annulus (see UVAMP_COLUMNS below)
 ``P_noise.txt``        noise of the profile per channel, from the scatter of the
@@ -78,6 +78,10 @@ STYLE = {
     "zero": dict(color="0.3", lw=0.6),
     "points": dict(fmt="o", color="k", ms=4, capsize=2, elinewidth=1),
     "point_model": dict(color="#2471a3"),
+    "gauss_area": dict(facecolor="none", edgecolor="#c0392b", hatch="////", lw=0, alpha=0.45),
+    "residual_continuum": dict(color="#1e8449", ls="--", lw=1.2),
+    "fitted_continuum": dict(color="#2471a3", ls="-.", lw=1.0),
+    "residual_continuum_flagged": dict(color="#d35400", ls="--", lw=1.6),
     "gauss_model": dict(color="#c0392b"),
     "total_flux": dict(color="k", ls=":", lw=1),
     "reference": dict(color="#1e8449", ls="--", lw=1.6),   # e.g. the true signal of a simulation
@@ -211,21 +215,21 @@ def _has(dg, key):
 
 
 def _num(x):
-    """None (a quantity not fitted, e.g. v0 in detect mode) -> nan."""
+    """None (a quantity not given) -> nan."""
     return float("nan") if x is None else float(x)
 
 
 def significance_text(det):
-    """How significant the line is.  detect: S/N of the matched filter at the
-    given v0 and FWHM (one trial per source size scanned).  search: the
-    probability that noise alone gives a peak as high anywhere in the scanned
-    range of v0, FWHM and size, from null realisations of the noise."""
+    """How significant the line is: the probability that noise alone gives a
+    peak as high anywhere in the searched ranges of v0, FWHM and size, from
+    null realisations of the noise; with the shape fixed (one template), the
+    S/N of the matched filter."""
     s = _num(det.get("significance_sigma"))
+    if det.get("fixed_shape") or (det.get("mode") == "detect" and not det.get("n_null")):
+        return f"S/N {det['snr']:.1f} (fixed shape)"
     if np.isinf(s):
         n = det.get("n_null") or 0
         return (f"S/N {det['snr']:.1f}" + (f" (p < 1/{n} from {n} null runs)" if n else ""))
-    if det["mode"] == "detect" and not det.get("n_null"):
-        return f"S/N {det['snr']:.1f} ({s:.1f}$\\sigma$)"
     return f"S/N {det['snr']:.1f}: {s:.1f}$\\sigma$ (p = {det['p_value']:.1g})"
 
 
@@ -240,8 +244,16 @@ def summary_text(res, f, ulab):
     fw = f"{ln['fwhm_kms']:.0f}"
     if ln.get("fwhm_error_kms"):
         fw += f" $\\pm$ {ln['fwhm_error_kms']:.0f}"
-    rows = [f"F = {pm(ln['flux'] * f, ln['flux_error'] * f)} {ulab} km s$^{{-1}}$",
-            f"peak = {pm(ln['peak'] * f, _num(ln.get('peak_error')) * f)} {ulab}",
+    quoted = {"area": " (area)", "gauss": " (Gaussian)"}.get(ln.get("flux_method"), "")
+    rows = [f"F = {pm(ln['flux'] * f, ln['flux_error'] * f)} {ulab} km s$^{{-1}}${quoted}"]
+    if "flux_area" in ln:
+        # both fluxes: the integral of the Gaussian and the sum over the window
+        sc = ln.get("shape_check", {})
+        rows.append(f"  Gaussian {pm(ln['flux_gauss'] * f, ln['flux_gauss_error'] * f)}, "
+                    f"area {pm(ln['flux_area'] * f, ln['flux_area_error'] * f)}"
+                    + (f" ($\\Delta$ {sc['nsigma']:+.1f}$\\sigma$)"
+                       if np.isfinite(_num(sc.get("nsigma"))) else ""))
+    rows += [f"peak = {pm(ln['peak'] * f, _num(ln.get('peak_error')) * f)} {ulab}",
             f"v$_0$ = {v0} km s$^{{-1}}$",
             f"FWHM = {fw} km s$^{{-1}}$"]
     if ln.get("theta_fwhm_arcsec"):
@@ -249,6 +261,9 @@ def summary_text(res, f, ulab):
         te = res.get("theta_error_arcsec", ln.get("theta_error_arcsec"))
         rows.append(f"size = {pm(ln['theta_fwhm_arcsec'], _num(te))}\"")
     rows.append(significance_text(res["detection"]))
+    for k, other in enumerate((res.get("lines") or [])[1:], start=2):
+        rows.append(f"line {k}: F = {pm(other['flux'] * f, other['flux_error'] * f)}, "
+                    f"v$_0$ = {other['v0_kms']:+.0f}, FWHM = {other['fwhm_kms']:.0f}")
     return "\n".join(rows)
 
 
@@ -292,9 +307,12 @@ def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True, reference=Non
     fig, (ax, axr) = plt.subplots(2, 1, figsize=STYLE["figsize_profile"], sharex=True,
                                   gridspec_kw={"height_ratios": STYLE["height_ratios"],
                                                "hspace": 0.05})
-    # the line window: the channels left out of the continuum fit
-    w0, w1 = res["window"]["user_kms"]
-    ax.axvspan(w0, w1, label="line window", **STYLE["line_window"])
+    # the windows of the lines: left out of the continuum fit, and where the
+    # area flux of each line is summed
+    lines = res.get("lines") or [res["line"]]
+    for k, ln in enumerate(lines):
+        w0, w1 = ln.get("window_kms_line1_velocity") or res["window"]["user_kms"]
+        ax.axvspan(w0, w1, label="line window" if k == 0 else None, **STYLE["line_window"])
     # +-1 sigma of the noise of every (rebinned) channel, around zero
     ax.fill_between(vb, -eb, eb, step="mid", label=r"$\pm1\sigma$ noise", **STYLE["noise_band"])
     # the imaginary part through the same estimator: must be noise
@@ -302,6 +320,21 @@ def plot_profile(d, unit=None, rebin=1, vlim=None, rest_axis=True, reference=Non
     # the stacked profile and the fit (both averaged over the channels)
     ax.step(vb, yb, where="mid", label="stacked flux density", **STYLE["data"])
     ax.step(vb, ymb, where="mid", label="fit", **STYLE["model"])
+    # the area of the Gaussian (its flux), hatched
+    cf = res.get("continuum_fit")               # fitted with the line (no subtraction)
+    base = cf["flux_density"] * f if cf else 0.0
+    ax.fill_between(vb, base, np.where(np.isfinite(ymb), ymb, base), step="mid",
+                    label="area of the Gaussian", **STYLE["gauss_area"])
+    if cf:
+        ax.axhline(base, label="continuum (fitted with the line)", **STYLE["fitted_continuum"])
+    # the continuum left outside the windows: offset + slope (flagged if significant)
+    rc = res.get("continuum_residual")
+    if rc:
+        vv = np.linspace(*rc["velocity_range_kms"], 50)
+        c0 = (res.get("continuum_fit") or {}).get("flux_density", 0.0)  # on the fitted one
+        ax.plot(vv, (c0 + rc["offset"] + rc["slope_per_1000kms"] * vv / 1000) * f,
+                label="continuum outside the windows" + (" (FLAGGED)" if rc["detected"] else ""),
+                **STYLE["residual_continuum_flagged" if rc["detected"] else "residual_continuum"])
     if reference is not None:
         ax.plot(reference[0], np.asarray(reference[1]) * f, label=reference_label,
                 **STYLE["reference"])

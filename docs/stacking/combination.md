@@ -10,8 +10,8 @@ your choice.
 
 | | Zarr store (default) | Measurement Set |
 |---|---|---|
-| chosen by | any `output` not ending in `.ms` | `output="stack.ms"`, or `output_format="ms"` |
-| written by | `n_writers` threads at once (default 4) | one thread |
+| chosen by | `ViSta(output_name="stack")` (default `output_format`) | `output_format="ms"`, or an `output_name` ending in `.ms` |
+| written by | `n_writers` threads at once (default: from the cores) | one thread |
 | on disk | compressed (Blosc lz4): flags and empty channels take almost no space | uncompressed |
 | layout | that of [dask-ms](https://dask-ms.readthedocs.io): `MAIN/MAIN_<k>` per input line, subtables in their own groups | a standard MS |
 | read by | `vista.extract`, `daskms.experimental.zarr.xds_from_zarr` | any tool |
@@ -23,8 +23,8 @@ from vista import export_ms
 export_ms("stack.zarr", "stack.ms")
 ```
 
-or `python -m vista.extract export-ms stack.zarr stack.ms`, or
-`run_vista.sh --export-ms`. It writes the same MS that `output_format="ms"`
+or `python -m vista export stack.zarr stack.ms` (`run_vista.sh export ...`).
+It writes the same MS that `output_format="ms"`
 would, with the rows of every dataset in input order, and with `MODEL_DATA`
 and `CORRECTED_DATA` when the continuum was subtracted.
 
@@ -40,21 +40,24 @@ and `CORRECTED_DATA` when the continuum was subtracted.
 
 ## Speed and memory
 
-- `chunk_rows` (default 5000) bounds the memory of a chunk; it is lowered
-  automatically for wide spectra.
-- `n_readers` (default 2) reader processes: more help only on fast
-  filesystems.
-- `n_threads`: OpenMP threads of the kernel (default `OMP_NUM_THREADS`, else
-  `SLURM_CPUS_PER_TASK`, else all cores).
-- `n_writers` (default 4): Zarr writers.
-- `scratch_dir`: build the stack on local disk and move it at the end.
-- `device="gpu"`: the kernel on the GPU (CUDA build); on a GPU error the run
-  continues on the CPU, with a warning.
+- The **readers, writers and kernel threads** share the cores the process
+  may use (its CPU affinity, a SLURM allocation, a container quota): readers
+  and writers about a quarter of them each (at most 8), the kernel the rest.
+  `ViSta(..., n_readers=, n_writers=, n_threads=)` fixes any of them; the others
+  share what is left, and more than the cores is refused. On two cores one of
+  each was the fastest: oversubscribing does not pay.
+- The size of a chunk is bounded (about 512 MB of visibilities) and lowered
+  for wide spectra; the queues between the stages hold a few chunks each.
+- `ViSta(..., scratch_dir=)`: build the stack on local disk and move it at the end.
+- `ViSta(..., device="gpu")`: the kernel on the GPU (CUDA build); `gpu_batch`, the chunks
+  per launch, comes from the free memory of the GPU and of the host. On a GPU
+  error the run continues on the CPU, with a warning.
 
 With a Measurement Set the single writer sets the pace; with the Zarr store
-the limit moves to reading. `timing=True` says which stage limited the run.
-See [Performance](../reference/performance) for measured times.
+the limit moves to reading. `verbose="debug"` says which stage limited the
+run. See [Performance](../reference/performance) for measured times.
 
-A script that calls `run()` needs no `if __name__ == "__main__":` guard: the
-reader processes do not re-run it. In a container with a small `/dev/shm`,
-`reader_mode="thread"` avoids the shared memory.
+A script that runs the stacking needs no `if __name__ == "__main__":` guard:
+the reader processes do not re-run it. When `/dev/shm` is too small for the
+chunks in flight (some containers), the readers run as threads, and the log
+says so.

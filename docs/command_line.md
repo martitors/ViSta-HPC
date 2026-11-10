@@ -1,143 +1,93 @@
 # Command line
 
-`run_vista.sh` runs the whole workflow, from the input list to the measured
-line, with the same steps as the Python API:
-
-1. **stack** the datasets (Zarr store, or Measurement Set);
-2. **subtract the continuum**, dataset by dataset (optional);
-3. **compress** the stack into statistics;
-4. **measure** the line (and the continuum) on the statistics.
-
-When the stack is built in the same run, steps 2 and 3 are done while it is
-written, in one pass. Every step can be run on its own, so a refined step
-does not force the others to be repeated: steps 1–3 touch the stack, step 4
-works on a few MB and is cheap to repeat. The package must be importable
-(run it from the repository, or set `PYTHONPATH`).
+`run_vista.sh` (or `python -m vista`) is the command line of
+{class}`vista.ViSta`: every option of `ViSta()`, `stack()` and `extract()` is
+one flag, with the same default. As in Python, without `--extract` only the
+stack is written. The package must be importable (run it from the
+repository, or set `PYTHONPATH`); after `pip install -e .` the same command
+is also called `vista`.
 
 ```bash
-# everything, the continuum subtracted first, the line searched for
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 \
-               --velocity-range 900 --v-window "-500 500" --contsub before \
-               --method joint --mode search --unit Jy --out-dir co32
+# everything: stack, subtract the continuum, compress, measure
+./run_vista.sh --input input_list.txt --output-name co32 --verbose \
+               --line-freq 345.79599 --line-window 500 --velocity-range 900 --extract
 
-# the width known: a matched filter
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --out-dir co32 \
-               --only fit --contsub before --method joint --mode detect --fwhm 300
+# only the stack (for imaging, or to measure later)
+./run_vista.sh --input input_list.txt --output-name co32 --line-freq 345.79599 --line-window 500
 
-# measure again, another weighting, nothing else
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --out-dir co32 \
-               --only fit --contsub before --weighting democratic
+# the measurement again (seconds), with limits on the centre and the width
+./run_vista.sh --input input_list.txt --output-name co32 --line-freq 345.79599 --line-window 500 \
+               --only measure --extract --v0-range=-200:200 --fwhm-range 100:600
 
-# redo the continuum subtraction with another window, without stacking again
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 --out-dir co32 \
-               --skip-stack --contsub before --exclude-v "400 700"
+# two lines, each with its own window; the continuum also kept out between them
+./run_vista.sh --input input_list.txt --line-freq 345.79599 344.98857 \
+               --line-window 350 350 --exclude-between --velocity-range 1250 --extract
+
+# the continuum left in the data and fitted with the line
+./run_vista.sh --input input_list.txt --line-freq 345.79599 --continuum fit --extract
+
+# the stack as a Measurement Set
+./run_vista.sh export co32.zarr co32.ms
 ```
 
-`./run_vista.sh --help` prints all the options. They are grouped below; the
-meaning of each is on the page of its step.
+**Windows and ranges.** A number is a half-width (`500`: −500 to +500 km/s),
+a pair is `lo:hi` (or `"lo hi"` in quotes). With several lines give one per
+line, in the order of `--line-freq`, or one for all of them. A pair whose low
+end is negative needs the `=` form or the quotes: `--v0-range=-200:200`,
+`--v0-range "-200 200"`.
 
-## Inputs and outputs
+At the end the command prints what it did (the stack, the measured lines with
+`z_ref`, the continuum) and the files it wrote. `--help` lists every option;
+the meaning of each is in [Parameters](reference/parameters).
 
-| Option | |
-|---|---|
-| `--input FILE` | the [input list](getting_started/input_list) (required) |
-| `--rest-freq GHZ` | rest frequency of the line (required) |
-| `--tag NAME` | name of the run (default: from the rest frequency, e.g. `line345796`) |
-| `--out-dir DIR` | where everything is written (default `.`) |
-
-## Which steps
-
-| Option | |
-|---|---|
-| `--contsub {before,after}` | the [continuum](stacking/continuum): subtract it, then fit line and continuum separately (`before`), or fit it with the line (`after`). Without it nothing is subtracted and no continuum is fitted |
-| `--skip-stack`, `--skip-contsub`, `--skip-compress`, `--skip-fit` | skip a step whose result exists |
-| `--only {stack,contsub,compress,fit}` | run one step |
-| `--two-pass` | stack first, then subtract and compress reading the stack back (default: during the stacking) |
-
-## Stacking
+## Input, output, how it runs (`ViSta`)
 
 | Option | Default | |
 |---|---|---|
-| `--velocity-range KMS` | 2000 | half-width of the output band ([Spectral grid](stacking/spectral_grid)) |
-| `--nchan N` | | number of output channels instead |
-| `--width HZ` | coarsest rest-frame channel | common channel width |
-| `--frame {LSRK,BARY}` | `LSRK` | frame of the redshifts: the inputs are always brought to it ([Rest frame](stacking/restframing)) |
-| `--in-column NAME` | `auto` | column read: `auto` prefers `CORRECTED_DATA` |
-| `--format {zarr,ms}` | `zarr` | format of the stack ([The stack on disk](stacking/combination)) |
-| `--export-ms` | | also write the stack as a Measurement Set |
-| `--chunk-rows N` | 5000 | rows per chunk |
-| `--readers N`, `--threads N`, `--writers N`, `--io-threads N` | 2, all cores, 4, 4 | parallelism |
-| `--device {cpu,gpu}`, `--gpu-batch N` | `cpu`, 8 | the GPU |
-| `--scratch DIR` | `$TMPDIR` | build the stack there, then move it |
-| `--timing`, `--debug` | | timing of the stages; detailed log |
+| `--input FILE` | | the [input list](getting_started/input_list) (required) |
+| `--output-name NAME` | `stacked` | name and path of every file written ([Output files](extraction/outputs)) |
+| `--output-format {zarr,ms}` | `zarr` | the stack: a Zarr store or a Measurement Set ([The stack on disk](stacking/combination)) |
+| `--device {cpu,gpu}` | `cpu` | where the kernel runs |
+| `--readers N`, `--writers N`, `--threads N` | from the cores | reader processes, writer threads (Zarr), kernel threads ([Performance](reference/performance)) |
+| `--gpu-batch N` | from the memory | GPU: chunks per launch |
+| `--scratch DIR` | | write the stack on this disk, then move it |
+| `--verbose`, `--debug` | | progress and results; also the details and the time of every stage |
+| `--log-file FILE` | | also write the log to this file |
+| `--only STEP [STEP ...]` | all | `stack`, `continuum` (the subtraction again on the existing stack), `measure` |
+| `--tag NAME` | | name of the measurement: its files are `<name>_<tag>_*` |
 
-## Continuum subtraction and compression
-
-| Option | Default | |
-|---|---|---|
-| `--cont-order {0,1,-1}` | 0 | constant, slope, or BIC |
-| `--exclude LO HI` | the line window | asymmetric window left out of the continuum fit |
-| `--bins "MIN MAX N"` | `"3 3000 18"` | annuli of baseline length, kλ ([Compression](stacking/compression)) |
-| `--max-amplitude X` | | discard visibilities above `\|V\| = X` |
-| `--chunk-mb X` | 512 | read chunk size |
-
-## The line
+## What makes the stack (`stack`)
 
 | Option | Default | |
 |---|---|---|
-| `--v-window "LO HI"` | `"-600 600"` | velocity window of the line |
-| `--second-rest-freq GHZ`, `--second-v-window "LO HI"` | | a second line in the band |
-| `--exclude-v "LO HI ..."` | | more intervals kept out of the line-free channels |
+| `--line-freq FREQ [FREQ ...]` | | rest frequency of the line, or of several lines: GHz, or with the unit attached (`345.796GHz`, `345796MHz`); the first is the line of the stack (required) |
+| `--line-window W [W ...]` | 600 | window of every line, km/s; lines whose windows overlap are fitted together |
+| `--velocity-range KMS` | the widest band of one dataset | band of the stack around the first line, −KMS..+KMS ([Spectral grid](stacking/spectral_grid)) |
+| `--nchan N` | | a number of channels instead |
+| `--channel-width HZ` | coarsest rest-frame channel | common channel width |
+| `--frame NAME` | `LSRK` | frame of the redshifts: the inputs are always brought to it ([Rest frame](stacking/restframing)) |
+| `--data-column NAME` | `auto` | column read: `auto` prefers `CORRECTED_DATA` |
+| `--continuum {subtract,fit,none}` | `subtract` | subtracted while stacking, fitted with the lines, or left as it is ([Continuum](stacking/continuum)) |
+| `--continuum-order {0,1,bic}` | 0 | with `subtract`: constant, straight line, or chosen by the BIC |
+| `--exclude-between` | | also leave out of the continuum fit the channels between the lines |
 
-## Weighting and normalisation
+## What is measured (`extract`)
+
+The options below need `--extract` (without it the command stops and says so).
 
 | Option | Default | |
 |---|---|---|
-| `--weighting {natural,democratic}` | `natural` | ([Weighting](extraction/weighting)) |
-| `--norm-z` / `--no-norm-z`, `--z-ref Z` | on, median | redshift rescaling |
-| `--norm-flux` / `--no-norm-flux`, `--norm-ref X` | off, median | flux normalisation by the `NORM` column |
-| `--already-normalised` | | the data already carry the redshift factor |
-| `--match-tol-arcsec X` | 2.0 | same-source tolerance |
-
-## The measurement
-
-| Option | Default | |
-|---|---|---|
-| `--method {joint,template,window}` | `joint` | `joint`: [`measure_line`](extraction/measure_line); `template`, `window`: [the per-annulus chain](extraction/extract_flux) |
-| `--mode {search,detect}` | `search` | joint: free centre and width, or fixed (`--v0`, `--fwhm`) |
-| `--v0 KMS`, `--fwhm KMS` | 0, — | joint: centre and width (`--fwhm` required in `detect`) |
-| `--size {auto,point,gauss}` | `auto` | joint: the source size |
-| `--n-null N` | 1000 | joint: realisations of the search on noise |
-| `--theta-prior-from FILE.json`, `--theta-prior-sigma DEX` | —, 0.15 | a size prior from a previous fit, e.g. the continuum |
-| `--theta-fixed ARCSEC`, `--theta-max ARCSEC` | —, 15 | fix or bound the size |
-| `--model {gauss,point,gauss2}` | `gauss` | per-annulus chain: source model |
-| `--b-max-kl X`, `--min-src-bin N` | —, 2 | annuli left out |
-| `--fit-span KMS`, `--shape-tie` | 1500, `free` | per-annulus chain: shape fit |
-| `--nboot N`, `--seed N` | 500, 42 | bootstrap |
-
-## Figures
-
-| Option | |
-|---|---|
-| `--unit NAME` | amplitude unit on the axes, e.g. `Jy` |
-| `--v-limits "LO HI"` | velocity range of the spectrum |
-| `--plot-rebin N` | joint: channels per bin in the profile |
-| `--no-plot` | no figures |
-
-At the end the script prints the main results and the checks worth reading
-before believing them (imaginary part, size at its bound, χ²).
-
-## One step at a time
-
-The steps are also available as subcommands of the package:
-
-```bash
-python -m vista.extract contsub   stack.zarr     --rest-freq 345.79599
-python -m vista.extract compress  stack.zarr     --input input_list.txt \
-        --rest-freq 345.79599 --out-line line_stats.npy
-python -m vista.extract flux      line_stats.npy --input input_list.txt \
-        --rest-freq 345.79599 --weighting democratic --out co32_democratic
-python -m vista.extract export-ms stack.zarr     stack.ms
-```
-
-`python -m vista.extract <subcommand> --help` lists their options.
+| `--extract` | | measure the stack |
+| `--annuli BMIN BMAX N` | 3 3000 18 | annuli of baseline length, kλ ([Compression](stacking/compression)) |
+| `--weighting-scheme {natural,democratic}` | `natural` | [Weighting](extraction/weighting) |
+| `--no-z-norm`, `--z-ref Z` | on, median | transport to a common redshift |
+| `--no-pb-corr` | on | primary-beam correction |
+| `--flux-norm`, `--flux-ref X` | off, median | divide by the last column of the input list |
+| `--v0-range LO:HI [...]` | the window | allowed centres, km/s; `lo = hi` fixes it ([Measuring the line](extraction/measure_line)) |
+| `--fwhm-range LO:HI [...]` | two channels to the window | allowed FWHM; `lo = hi` fixes it |
+| `--model {auto,point,gauss,ARCSEC}` | `auto` | the source model, or a fixed size |
+| `--model-prior ARCSEC DEX` | | soft tie of the size |
+| `--flux-measure {auto,gauss,area}` | `auto` | the flux quoted (both are always given) |
+| `--window W [W ...]` | the line windows | window of the area flux |
+| `--n-bootstrap N`, `--n-null N`, `--seed N` | 500, 1000, 42 | bootstrap, null realisations, random seed |
+| `--figures-unit NAME`, `--no-figures` | `Jy` | unit of the data on the figures; no figures |

@@ -37,8 +37,7 @@ from typing import Iterable, Optional
 import numpy as np
 
 from .. import _reset_clock, _say, _warn
-from .config import ContinuumConfig, LineConfig
-from .profiles import line_free_mask
+from .config import ContinuumConfig, Lines
 
 # A Measurement Set is read in pieces of at most this many bytes of the data
 # column (complex64): about 1 GB in memory with the read-ahead, the fit and
@@ -129,7 +128,7 @@ def fit_rows(data, fit_mask, x_all, order, kernel=None, flag=None):
     return model.astype(data.dtype), (data64 - model).astype(data.dtype)
 
 
-def fit_plan(chan_freq, line: LineConfig, config: ContinuumConfig):
+def fit_plan(chan_freq, line: Lines, config: ContinuumConfig):
     """Line-free channels of one data descriptor.
 
     Returns ``(fit_mask, x_all, n_fit)``: the channels used in the fit, the
@@ -137,11 +136,7 @@ def fit_plan(chan_freq, line: LineConfig, config: ContinuumConfig):
     channels, which keeps the linear fit well conditioned) and their number.
     """
     chan_freq = np.asarray(chan_freq, dtype=np.float64)
-    explicit = (config.exclude_kms_lo is not None
-                and config.exclude_kms_hi is not None)
-    fit_mask = line_free_mask(
-        chan_freq, line, half_width_kms=config.exclude_kms,
-        window_kms=(config.exclude_kms_lo, config.exclude_kms_hi) if explicit else None)
+    fit_mask = line.free_mask(chan_freq)
     n_fit = int(fit_mask.sum())
     x0 = chan_freq[fit_mask].mean() if n_fit else 0.0
     return fit_mask, chan_freq - x0, n_fit
@@ -171,7 +166,7 @@ def order_from_sample(data, flag, fit_mask, x_all, config: ContinuumConfig):
     return order, int(valid.sum())
 
 
-def record(line: LineConfig, config: ContinuumConfig, orders: dict,
+def record(line: Lines, config: ContinuumConfig, orders: dict,
            skipped=(), mode: str = "separate") -> dict:
     """Description of a subtraction, stored in the stack (and in the
     statistics) so that the window behind CORRECTED_DATA is never ambiguous."""
@@ -184,14 +179,9 @@ def record(line: LineConfig, config: ContinuumConfig, orders: dict,
         "line_column": config.line_column,
         "rest_freq_ghz": float(line.rest_freq_ghz),
         "v_window_kms": [float(v) for v in line.v_window_kms],
-        "second_rest_freq_ghz": (None if line.second_rest_freq_ghz is None
-                                 else float(line.second_rest_freq_ghz)),
-        "second_v_window_kms": [float(v) for v in line.second_v_window_kms],
-        "exclude_v_kms": [[float(a), float(b)] for a, b in line.exclude_v_kms],
+        "lines": line.as_dict(),
         "order": int(config.order), "delta_bic": float(config.delta_bic),
         "require_positive_slope": bool(config.require_positive_slope),
-        "exclude_kms": float(config.exclude_kms),
-        "exclude_kms_lo": config.exclude_kms_lo, "exclude_kms_hi": config.exclude_kms_hi,
         "bic_rows": int(config.bic_rows),
         "orders": {str(int(k)): int(v) for k, v in sorted(orders.items())},
         "no_fit": sorted(int(d) for d in skipped),
@@ -200,20 +190,25 @@ def record(line: LineConfig, config: ContinuumConfig, orders: dict,
 
 def describe_record(rec: dict) -> str:
     """One line for the log: when and with which window."""
-    if rec.get("exclude_kms_lo") is not None and rec.get("exclude_kms_hi") is not None:
+    lines = rec.get("lines")
+    if lines:
+        parts = [f"{f:.6g} GHz {w[0]:+.0f}..{w[1]:+.0f} km/s"
+                 for f, w in zip(lines["rest_freq_ghz"], lines["window_kms"])]
+        window = "; ".join(parts)
+        extra = ", and between the lines" if lines.get("exclude_between") else ""
+    elif rec.get("exclude_kms_lo") is not None and rec.get("exclude_kms_hi") is not None:
         window = f"{rec['exclude_kms_lo']:+.0f}..{rec['exclude_kms_hi']:+.0f} km/s"
-    else:
+        extra = ""
+    else:                                   # recorded by a version before 3.0
         window = f"+-{rec.get('exclude_kms', float('nan')):.0f} km/s"
-    extra = ""
-    if rec.get("exclude_v_kms"):
-        extra = ", also " + ", ".join(f"{a:+.0f}..{b:+.0f}" for a, b in rec["exclude_v_kms"])
+        extra = ""
     order = {-1: "BIC", 0: "0", 1: "1"}.get(rec.get("order"), "?")
     return (f"{rec.get('date', '?')} ({rec.get('mode', '?')}): window {window}{extra}, "
             f"order {order}")
 
 
 def subtract_continuum(ms_path: str,
-                       line: LineConfig,
+                       line: Lines,
                        config: ContinuumConfig = ContinuumConfig(),
                        only_dd: Optional[Iterable[int]] = None,
                        start_dd: int = 0,
@@ -227,10 +222,9 @@ def subtract_continuum(ms_path: str,
         Path to the stack: the Zarr store written by the stacking, or a
         Measurement Set.
     line
-        Spectral setup: the excluded channels are those inside the line
-        window, widened by the second line window and by any extra
-        ``exclude_v_kms`` interval.  ``ContinuumConfig.exclude_kms`` (or the
-        explicit lo/hi pair) overrides the symmetric default width.
+        The lines (:class:`~vista.extract.config.Lines`): the channels inside
+        their windows (and between them with ``exclude_between``) are left
+        out of the fit.
     config
         Fit options: see :class:`~vista.extract.config.ContinuumConfig`.
     only_dd

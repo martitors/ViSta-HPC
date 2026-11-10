@@ -1,42 +1,44 @@
 # 6. What each option changes
 
 The statistics are a few MB: every variant takes seconds. Each one changes
-**one** thing with respect to the `detect` measurement of §4.
+**one** option of `extract()` with respect to the measurement of §4 (centre
+and width known).
 
 | Option | What it does | When |
 |---|---|---|
-| `size="point"` | point source only | the source is known to be unresolved |
-| `size="gauss"` | Gaussian only | clearly resolved |
-| `theta_prior_arcsec=(θ, σ_dex)` | soft prior on the size | a weak line, with a size from the continuum or another line |
-| `theta_fixed_arcsec=θ` | size fixed | the same, a hard version |
+| `model="point"` | point source only | the source is known to be unresolved |
+| `model="gauss"` | Gaussian only | clearly resolved |
+| `model_prior=(θ, σ_dex)` | soft prior on the size | a weak line, with a size from the continuum or another line |
+| `model=θ` | size fixed | the same, a hard version |
 | `noise="weights"` | noise from the weights, not the scatter | weights known to be absolute |
 | `channel_correlation=False` | channels treated as independent | (shown to see the effect) |
-| `scheme="democratic"` | every galaxy counts the same | the mean of the galaxies rather than of the data |
-| `redshift_rescaling=False` | no transport to z_ref | a narrow redshift range |
-| `primary_beam=False` | no primary-beam correction | data already corrected |
-| `fwhm_kms` in `detect` | the assumed width | |
+| `weighting_scheme="democratic"` | every galaxy counts the same | the mean of the galaxies rather than of the data |
+| `z_norm=False` | no transport to z_ref | a narrow redshift range |
+| `pb_corr=False` | no primary-beam correction | data already corrected |
+| `fwhm_range=(w, w)` | the assumed width | |
 
 ```python
-def variant(weighting=weighting, **fit):
-    cfg = dict(mode="detect", v0_kms=0.0, fwhm_kms=SIM["fwhm_kms"], n_null=200, n_null_phase=0)
-    cfg.update(fit)
-    return measure_line("line_stats.npy", LIST, line, weighting, LineFitConfig(**cfg),
-                        BootstrapConfig(n_realisations=100, seed=1), verbose=False)
+def variant(**options):
+    # one option changed with respect to §4; the Gaussian flux, to see how it changes the fit
+    stack.extract(**{**MEASURE, **KNOWN, "flux_measure": "gauss", "n_null": 200,
+                     "n_null_phase": 0, "n_bootstrap": 100, "seed": 1, "figures_draw": False,
+                     **options})
+    return stack.run(only="measure", tag="variant").line
 
 
 variants = {
-    "reference (size auto)": variant(),
-    "size = point": variant(size="point"),
-    "size = gauss": variant(size="gauss"),
-    "size prior 0.8\" ± 0.15 dex": variant(theta_prior_arcsec=(0.8, 0.15)),
-    "size fixed 0.8\"": variant(theta_fixed_arcsec=0.8),
+    "reference (model auto)": variant(),
+    "model = point": variant(model="point"),
+    "model = gauss": variant(model="gauss"),
+    "model prior 0.8\" ± 0.15 dex": variant(model_prior=(0.8, 0.15)),
+    "model: size fixed 0.8\"": variant(model=0.8),
     "noise from the weights": variant(noise="weights"),
     "no channel correlation": variant(channel_correlation=False),
-    "democratic weighting": variant(WeightingConfig(scheme="democratic")),
-    "no redshift rescaling": variant(WeightingConfig(redshift_rescaling=False)),
-    "no primary-beam correction": variant(WeightingConfig(primary_beam=False)),
-    "assumed FWHM 200 km/s": variant(fwhm_kms=200.0),
-    "assumed FWHM 400 km/s": variant(fwhm_kms=400.0),
+    "democratic weighting": variant(weighting_scheme="democratic"),
+    "no redshift rescaling": variant(z_norm=False),
+    "no primary-beam correction": variant(pb_corr=False),
+    "assumed FWHM 200 km/s": variant(fwhm_range=(200, 200)),
+    "assumed FWHM 400 km/s": variant(fwhm_range=(400, 400)),
 }
 
 fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(13, 5.2), sharey=True,
@@ -61,11 +63,75 @@ save(fig, "options")
 ```
 
 ```text
-[ViSta       1.8s] WARNING: measure: the imaginary part scatters 1.30 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
+[ViSta       1.5s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```text
-[ViSta       1.8s] WARNING: measure: the real part in the line-free channels scatters 1.17 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
+[ViSta       0.4s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.1 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       0.4s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.3s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.3s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.3s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       2.1s] WARNING: measure: the imaginary part scatters 1.30 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
+```
+
+```text
+[ViSta       2.1s] WARNING: measure: the real part in the line-free channels scatters 1.17 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
+```
+
+```text
+[ViSta       2.1s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.2 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       2.1s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.7s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.9 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       1.7s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.8s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.5s] no redshift rescaling, no flux normalisation
+```
+
+```text
+[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.6s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +3.3 sigma; quoted: gauss (flux_measure='gauss')
+```
+
+```text
+[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
+```
+
+```text
+[ViSta       1.6s] z_ref = 2.6218 (median of the sample)
 ```
 
 ```{image} figures/06_01.png
@@ -88,5 +154,10 @@ What the figure shows (the numbers are those of the default simulation):
 * **without the redshift rescaling** the stack is the mean of galaxies at
   different distances, not the flux at `z_ref`; **without the primary-beam
   correction** it is a little low;
-* a **wrong width** in `detect` mode biases the flux: when the width is not
-  known, use `search` (§5).
+* a **wrong width** fixed in advance biases the Gaussian flux: when the width
+  is not known, search it within limits (§5). With `flux_measure="auto"`
+  (the default) a width too narrow is caught: the area and the Gaussian flux then
+  differ by more than 2σ, and the area flux, which does not depend on the
+  width, is quoted. The same test fires, wrongly, when the noise is wrong (from
+  the weights, or without the channel correlation): its threshold is in units
+  of the noise.

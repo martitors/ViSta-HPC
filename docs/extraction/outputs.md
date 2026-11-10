@@ -2,35 +2,50 @@
 
 ## Files
 
-With `output_prefix` (`--out-dir`/`--tag` on the command line),
-`measure_line` writes:
+Everything a run writes starts with `output_name` (`stacked` by default; with
+`run(only="measure", tag="T")` the measurement files start with
+`<output_name>_T`):
 
 | File | Content |
 |---|---|
-| `<prefix>_results.json` | every number: `line`, `detection`, `window`, `size_test`, `noise`, the record of the continuum subtraction |
-| `<prefix>_profile.txt` | per channel: `v_kms freq_GHz flux_density err_thermal err_bootstrap imaginary model fitted line_free n_sources` |
-| `<prefix>_uvamp.txt` | per annulus: `b_klambda line_flux err_thermal used n_sources` (line flux at the fitted line shape) |
-| `<prefix>_noise.txt` | per channel: the noise of the profile from the scatter of the visibilities and from the weights |
-| `<prefix>_diagnostics.npz` | `channel_correlation` (the matrix), `z_imaginary`, `z_line_free` (cells over their noise), `null_snr`, `null_snr_phase` (null distributions of the detection S/N) |
+| `<name>.zarr` (or `.ms`) | the stack ([The stack on disk](../stacking/combination)) |
+| `<name>_line_stats.npy`, `<name>_cont_stats.npy` | the statistics of the line and of the continuum ([Compression](../stacking/compression)) |
+| `<name>_results.json` | every number of the lines: `line` (the first), `lines` (all of them), `detection`, `window`, `size_test`, `continuum_residual`, `continuum_fit` (the continuum fitted with the lines, when asked), `noise`, the record of the continuum subtraction |
+| `<name>_profile.txt` | per channel: `v_kms freq_GHz flux_density err_thermal err_bootstrap imaginary model fitted line_free n_sources` |
+| `<name>_uvamp.txt` | per annulus: `b_klambda line_flux err_thermal used n_sources` (flux of the first line at the fitted shape) |
+| `<name>_noise.txt` | per channel: the noise of the profile from the scatter of the visibilities and from the weights |
+| `<name>_diagnostics.npz` | `channel_correlation` (the matrix), `z_imaginary`, `z_line_free` (cells over their noise), `null_snr`, `null_snr_phase` (null distributions of the detection S/N) |
+| `<name>_continuum_results.json`, `_spectrum.txt`, `_uvamp.txt` | the continuum: flux at zero spacing, size, flux per annulus ([The continuum measurement](extract_flux)) |
 
-The results are also in `result.summary` (the same dictionary as the JSON).
-Fluxes are in data units × km/s for a line (Jy km/s for data in Jy), data
-units for the continuum; the flux normalisation rescales them by
-`norm_ref / NORM`.
+The same numbers are in the `RunResult` of `run()`: `result.line.summary`
+(the dictionary of the JSON) and `result.continuum.summary`. Fluxes are in
+data units × km/s for a line (Jy km/s for data in Jy), data units for the
+continuum; the flux normalisation rescales them by `flux_ref / NORM`.
+
+**Every line** has in `lines` (and the first in `line`): `flux`,
+`flux_error` (the larger of the thermal and the bootstrap error) and
+`flux_method` (which flux they are: `gauss` or `area`); `flux_gauss` and
+`flux_area` with their errors (thermal, bootstrap); `flux_optimal` (1.19
+FWHM); `shape_check` (the difference of the two fluxes, its error, the
+reason for the choice); `v0_kms`, `fwhm_kms`, `peak` with their errors;
+`detection` (S/N, significance, the ranges searched). The first line also
+has the size (`theta_fwhm_arcsec`, `size_model`) and the χ² of the fit,
+shared by all the lines.
 
 ## Figures
 
-`plot_line_result(result, line, prefix)` (and the command line without
-`--no-plot`) draws three figures:
+The run draws (unless `v.extract(figures_draw=False)`, `--no-figures`):
 
-- `<prefix>_profile.png`: the profile with the model, the ±1σ band, the
-  imaginary part (a null test), the windows and the residuals;
-  `--plot-rebin N` averages N channels, with the correlation in the errors;
-- `<prefix>_uv.png`: the line flux per annulus against the baseline, with
+- `<name>_profile.png`: the profile with the fitted lines, the area of the
+  Gaussian (hatched) and the window of the area flux (shaded) of every line,
+  both fluxes, the ±1σ band, the imaginary part (a null test), the continuum
+  left outside the windows and the residuals;
+- `<name>_uv.png`: the line flux per annulus against the baseline, with
   the point and the Gaussian model;
-- `<prefix>_noise.png`: the noise per channel from the scatter and from the
+- `<name>_noise.png`: the noise per channel from the scatter and from the
   weights, the standardised cells against N(0, 1), the null distribution of
-  the detection S/N.
+  the detection S/N;
+- `<name>_continuum_uvamp.png`: the continuum per annulus, with its fit.
 
 ## Figures in your own style: `plot_line.py`
 
@@ -71,6 +86,8 @@ and the rebinned errors ignore the correlation.
 | Key | What it tells you |
 |---|---|
 | `detection.significance_sigma`, `p_value` | is there a line at all. In a search this, not `F / σ_F`, is the evidence |
+| `line.flux_method`, `line.shape_check` | which flux is quoted, and whether the line looks Gaussian (`nsigma`: the area minus the Gaussian flux, in units of the error of their difference) |
+| `continuum_residual` | offset and slope of the profile outside the windows; `detected: true` means continuum left (or not subtracted) |
 | `noise.imaginary_rms_over_noise`, `line_free_rms_over_noise` | ≈ 1. Above: centring, calibration, residual continuum or an unmasked line; the thermal errors are optimistic there |
 | `noise.kappa_scatter_over_weights`, `kappa_per_entry` | how wrong the weights are; one entry far from the others has bad weights (harmless, the scatter is used) or bad data |
 | `noise.channel_correlation_method` | whether the whole correlation matrix was measured (≥ 30 source × annulus vectors) |
@@ -79,4 +96,4 @@ and the rebinned errors ignore the correlation.
 | `size_test` | point against Gaussian: Δχ² (corrected for the channel correlation) and both fluxes |
 | `line.chi2_reduced` | ≈ 1; much larger: one Gaussian, separable in velocity and baseline, does not describe the data |
 | `n_sources`, `n_entries` | how many sources the lines of the input list were merged into |
-| `warnings` | e.g. a weak line in a search, whose free-shape flux is unreliable |
+| `warnings` | e.g. a weak line in a search, whose free-shape flux is unreliable; a line that is not Gaussian; continuum outside the windows |

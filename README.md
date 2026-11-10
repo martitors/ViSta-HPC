@@ -44,29 +44,28 @@ cmake --build build -j && cmake --install build
 ## Quick start
 
 ```bash
-./run_vista.sh --input input_list.txt --rest-freq 345.79599 \
-               --velocity-range 900 --v-window "-500 500" --contsub before \
-               --method joint --mode search --unit Jy --out-dir co32
+./run_vista.sh --input input_list.txt --output-name co32 --verbose \
+               --line-freq 345.79599 --line-window 500 --velocity-range 900 --extract
 ```
 
 or from Python:
 
 ```python
 from vista import ViSta
-from vista.extract import LineConfig, ContinuumConfig, measure_line
 
-line = LineConfig(rest_freq_ghz=345.79599, v_window_kms=(-500, 500))
-ViSta("input_list.txt").run("stack.zarr", central_freq=line.rest_freq_hz,
-                            velocity_range_kms=900,
-                            line=line, continuum=ContinuumConfig(order=0),
-                            stats_line="line_stats.npy", stats_continuum="cont_stats.npy")
-result = measure_line("line_stats.npy", "input_list.txt", line, output_prefix="co32")
+v = ViSta("input_list.txt", output_name="co32")    # input, output, how it runs
+v.stack(line_freq=345.79599, line_window=500, velocity_range=900)   # the line, the band, the continuum
+v.extract(fwhm_range=(100, 600))                   # the measurement (skip it: only the stack)
+v.help()                                           # every option: its value now, what it can be
+result = v.run()
+print(result)
 ```
 
 with `input_list.txt` holding one dataset per line:
 `<ms_path> <redshift> <RA> <Dec> [FIELD_ID] [SPW_IDS] [NORM]`. The redshifts
 are taken in LSRK and the inputs are brought to it; add `--frame BARY`
-(`frame="BARY"`) if yours are barycentric.
+(`v.stack(..., frame="BARY")`) if yours are barycentric. Several lines:
+`v.stack(line_freq=[f1, f2], line_window=[w1, w2])`.
 
 The [worked example](https://vista-hpc.readthedocs.io/en/latest/examples/index.html)
 (`examples/ViSta_tutorial.ipynb`, runs on

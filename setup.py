@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="vista-hpc",
-    version="2.5.1",
+    version="3.0.0",
     description="HPC-optimised visibility-domain stacking for interferometric data",
     author="Martina Torsello",
     packages=find_packages(),
@@ -23,4 +23,5 @@ setup(
     extras_require={
         "plots": ["matplotlib>=3.4"],
     },
+    entry_points={"console_scripts": ["vista = vista.cli:main"]},
 )

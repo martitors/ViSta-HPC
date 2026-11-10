@@ -8,23 +8,21 @@ applied here, so the stack keeps its native amplitudes and the same stack
 serves every measurement.
 
 ```python
-from vista.extract import (LineConfig, WeightingConfig, LineFitConfig, BootstrapConfig,
-                           measure_line)
+from vista import ViSta
 
-line = LineConfig(rest_freq_ghz=345.79599, v_window_kms=(-500, 500))
-result = measure_line("line_stats.npy", "input_list.txt", line,
-                      WeightingConfig(scheme="natural", redshift_rescaling=True, primary_beam=True),
-                      LineFitConfig(mode="search"),
-                      BootstrapConfig(n_realisations=500),
-                      output_prefix="co32")
+v = ViSta("input_list.txt", output_name="co32")   # where the stack and its statistics are
+v.stack(line_freq=345.79599, line_window=500)               # the lines (and how the stack was made)
+v.extract(weighting_scheme="natural", z_norm=True, pb_corr=True,
+          fwhm_range=(100, 600), n_bootstrap=500)
+result = v.run(only="measure")          # from the statistics of an earlier run()
 ```
 
 | Page | |
 |---|---|
-| [Measuring the line](measure_line.md) | `measure_line`: the joint fit of all channels and annuli, the noise, detection and significance, size, errors |
-| [Weighting and normalisation](weighting) | natural or democratic; redshift rescaling; primary beam; flux normalisation; repeated observations |
+| [Measuring the line](measure_line.md) | the joint fit of all channels and annuli, the noise, the search within limits and its significance, several lines, the two fluxes, size, errors, residual continuum |
+| [Weighting and normalisation](weighting.md) | natural or democratic; redshift rescaling; primary beam; flux normalisation; repeated observations |
 | [Output files and figures](outputs) | what is written, the figures, `plot_line.py`, what to check |
-| [The per-annulus chain](extract_flux.md) | `extract_flux`, the method of Sec. 5.3 (template and window), and the continuum measurement |
+| [The continuum measurement](extract_flux.md) | the per-annulus chain of Sec. 5.3, which measures the continuum |
 | [Validation](validation) | how well it works on simulations; uv plane against image plane |
 
 ## Why not image the stack?

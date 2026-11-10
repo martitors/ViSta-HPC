@@ -90,15 +90,24 @@ def primary_beam(offset_arcsec, nu_hz, dish_m=12.0):
 # the sky
 # ---------------------------------------------------------------------------
 def source_spectrum(freq_hz, z, rest_freq_ghz, line_flux, fwhm_kms, v0_kms, cont_flux,
-                    cont_index):
+                    cont_index, extra_lines=()):
     """Line and continuum flux density [Jy] of the galaxy at the observed
     frequencies ``freq_hz`` (total flux: zero spacing, no primary beam).
-    The line is a Gaussian in radio velocity w.r.t. the rest frequency."""
+    The line is a Gaussian in radio velocity w.r.t. the rest frequency.
+    ``extra_lines``: more Gaussians, dicts with ``rest_freq_ghz``,
+    ``flux_ratio`` (to ``line_flux``), ``fwhm_kms`` and ``v0_kms`` (in their
+    own velocity): other lines of the band, or wings of the same line."""
     nu_r = rest_freq_ghz * 1e9
     nu_obs = nu_r / (1.0 + z)
     v = C_KMS * (nu_r - np.asarray(freq_hz) * (1.0 + z)) / nu_r
     sig = fwhm_kms / 2.3548200450309493
     line = line_flux / (sig * math.sqrt(2 * math.pi)) * np.exp(-0.5 * ((v - v0_kms) / sig) ** 2)
+    for x in extra_lines:
+        nu_x = x["rest_freq_ghz"] * 1e9
+        v_x = C_KMS * (nu_x - np.asarray(freq_hz) * (1.0 + z)) / nu_x
+        s_x = x["fwhm_kms"] / 2.3548200450309493
+        line = line + (line_flux * x["flux_ratio"] / (s_x * math.sqrt(2 * math.pi))
+                       * np.exp(-0.5 * ((v_x - x.get("v0_kms", 0.0)) / s_x) ** 2))
     cont = cont_flux * (np.asarray(freq_hz) / nu_obs) ** cont_index
     return line, cont
 
@@ -128,7 +137,7 @@ def model_visibility(rec, uvw, freq_hz):
     and the continuum part, primary beam included."""
     line, cont = source_spectrum(freq_hz, rec["z"], rec["rest_freq_ghz"], rec["line_flux"],
                                  rec["fwhm_kms"], rec["v0_kms"], rec["cont_flux"],
-                                 rec["cont_index"])
+                                 rec["cont_index"], rec.get("extra_lines", ()))
     q = np.hypot(uvw[:, 0], uvw[:, 1])[:, None] * np.asarray(freq_hz)[None, :] / C
     g_line = shape_visibility(q, rec["size_arcsec"])
     g_cont = shape_visibility(q, rec["cont_size_arcsec"])
@@ -143,7 +152,7 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
             phase_centre=(150.0, 2.0), offset_arcsec=(2.0, 1.0), noise=0.05, kappa=1.0,
             hanning=True, nchan=96, dv_kms=20.0, nant=43, rmax=250.0, ntime=40, dt=30.0,
             primary_beam_attenuation=True, noiseless=False, seed=1, band_offset_kms=0.0,
-            t0=5.06e9, layout_seed=12345, noise_seed=None):
+            t0=5.06e9, layout_seed=12345, noise_seed=None, extra_lines=()):
     """Write one Measurement Set; returns a dict of what was simulated.
 
     The spectral window has ``nchan`` channels of ``dv_kms`` centred on the
@@ -155,7 +164,8 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     observation, hence the hour angles and the uv tracks; ``layout_seed`` the
     antenna positions.  ``noise_seed`` draws the noise from its own
     generator: the same ``seed`` and another ``noise_seed`` give the same
-    weights and a new realisation of the noise.
+    weights and a new realisation of the noise.  ``extra_lines``: more
+    Gaussian lines (see :func:`source_spectrum`), sharing the size.
     """
     from casacore import tables as ct
 
@@ -195,6 +205,7 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
            "ra_deg": math.degrees(ra_s), "dec_deg": math.degrees(dec_s),
            "line_flux": line_flux, "line_peak": line_flux / (sig * math.sqrt(2 * math.pi)),
            "fwhm_kms": fwhm_kms, "v0_kms": v0_kms, "cont_flux": cont_flux,
+           "extra_lines": [dict(x) for x in extra_lines],
            "cont_index": cont_index, "size_arcsec": size_arcsec,
            "cont_size_arcsec": size_arcsec if cont_size_arcsec is None else cont_size_arcsec,
            "primary_beam": primary_beam(off, nu_obs) if primary_beam_attenuation else 1.0,
@@ -304,6 +315,28 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     for col in ("LOG", "SCHEDULE"):               # defined, so that readers can infer their shape
         ob.putcell(col, 0, np.array(["none"]))
     ob.close()
+    # SOURCE (optional in the format, present in ALMA data; CASA-based tools read it)
+    src_desc = ct.required_ms_desc("SOURCE")
+    full = ct.complete_ms_desc("SOURCE")
+    for col in ("REST_FREQUENCY", "SYSVEL", "TRANSITION"):
+        src_desc[col] = full[col]
+    so = ct.table(path + "/SOURCE", src_desc, nrow=1, ack=False)
+    so.putcell("SOURCE_ID", 0, 0)
+    so.putcell("TIME", 0, float(times.mean()))
+    so.putcell("INTERVAL", 0, float(times.max() - times.min() + dt))
+    so.putcell("SPECTRAL_WINDOW_ID", 0, 0)
+    so.putcell("NUM_LINES", 0, 1)
+    so.putcell("NAME", 0, "TARGET")
+    so.putcell("CALIBRATION_GROUP", 0, 0)
+    so.putcell("CODE", 0, "")
+    so.putcell("DIRECTION", 0, np.array([ra0, dec0]))
+    so.putcell("PROPER_MOTION", 0, np.zeros(2))
+    so.putcell("REST_FREQUENCY", 0, np.array([nu_r]))
+    so.putcell("SYSVEL", 0, np.array([0.0]))
+    so.putcell("TRANSITION", 0, np.array([""]))
+    so.close()
+    with ct.table(path, readonly=False, ack=False) as t:
+        t.putkeyword("SOURCE", "Table: " + os.path.abspath(path) + "/SOURCE")
 
     return rec
 
@@ -345,7 +378,7 @@ def spectrum_at(rec):
     expected = (wt * (v_line + v_cont)[:, :, None]).sum(axis=(0, 2)) / wsum
     line, cont = source_spectrum(freq, rec["z"], rec["rest_freq_ghz"], rec["line_flux"],
                                  rec["fwhm_kms"], rec["v0_kms"], rec["cont_flux"],
-                                 rec["cont_index"])
+                                 rec["cont_index"], rec.get("extra_lines", ()))
     nu_r = rec["rest_freq_ghz"] * 1e9
     return {"v": C_KMS * (nu_r - freq * (1 + rec["z"])) / nu_r, "mean": mean,
             "error": np.sqrt(var / n_eff), "expected": expected,

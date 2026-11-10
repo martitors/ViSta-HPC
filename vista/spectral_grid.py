@@ -201,7 +201,7 @@ def choose_nchan(central_freq, df_new, nn_per_ms, nchan_out, velocity_range_kms)
         detail(f"Output channels (auto): {nn}  [per-MS coverage: {lo}-{hi}]")
     else:
         nn = int(nchan_out)
-        note = f"channels: nchan_out, the MS can fill {lo}-{hi} of them"
+        note = f"channels: nchan, the MS can fill {lo}-{hi} of them"
         detail(f"Output channels (user-set): {nn}  [per-MS available: {lo}-{hi}]")
     if nn % 2:
         nn -= 1

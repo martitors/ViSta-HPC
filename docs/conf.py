@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "ViSta"
 author = "Martina Torsello"
 copyright = "2025-2026, Martina Torsello"
-release = "2.5.1"
-version = "2.5"
+release = "3.0.0"
+version = "3.0"
 
 extensions = [
     "myst_parser",

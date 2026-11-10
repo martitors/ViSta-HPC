@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Sequence, Union
 import numpy as np
 
 from .. import _reset_clock, _say, _warn
-from .config import BinningConfig, C_MS, LineConfig
+from .config import BinningConfig, C_MS, Lines
 from .sources import Entry, read_input_list
 
 FORMAT_VERSION = 4
@@ -270,7 +270,7 @@ class SufficientStatistics:
 # ---------------------------------------------------------------------------
 def compress_visibilities(ms_path: str,
                           input_list: Union[str, Sequence[Optional[Entry]]],
-                          line: Optional[LineConfig] = None,
+                          line: Optional[Lines] = None,
                           binning: BinningConfig = BinningConfig(),
                           out_line: str = "stack_line_stats.npy",
                           out_continuum: Optional[str] = None,

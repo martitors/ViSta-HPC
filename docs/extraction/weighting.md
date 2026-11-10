@@ -5,10 +5,10 @@ measured and never applied to the visibilities on disk: the same stack can be
 measured with every scheme, and comparing them is cheap.
 
 ```python
-WeightingConfig(scheme="natural",          # or "democratic"
-                redshift_rescaling=True, z_ref=None,
-                primary_beam=True,
-                flux_normalisation=False, norm_ref=None)
+v.extract(weighting_scheme="natural",          # or "democratic"
+          z_norm=True, z_ref=None,             # None: the median, reported
+          pb_corr=True,
+          flux_norm=False, flux_ref=None)      # None: the median, reported
 ```
 
 ## Natural or democratic
@@ -28,7 +28,7 @@ distribution of the sample.
 
 ## Redshift rescaling
 
-With `redshift_rescaling=True` (default) every source is transported to a
+With `z_norm=True` (default) every source is transported to a
 common redshift `z_ref` by the factor (Eq. 27)
 
 ```{math}
@@ -39,12 +39,14 @@ so that the stack measures the flux a source of the mean luminosity would
 have at `z_ref`. It matters over a broad redshift range (at z = 2–3 the
 factor spans about a factor of 2), little over a narrow one. `z_ref`
 defaults to the median of the sample, which moves with the selection: **fix
-it** when comparing stacks. `already_applied=True` if the amplitudes on disk
-already carry `α`. Cosmology: `H0`, `Om0` (67.4, 0.315).
+it** when comparing stacks. The value used is always reported: printed
+after every measurement (also with `verbose=False`), in the results (`z_ref`,
+`z_ref_given`) and in the result of `run()`.
+`already_applied=True` if the amplitudes on disk already carry `α`. Cosmology: `H0`, `Om0` (67.4, 0.315).
 
 ## Primary beam
 
-With `primary_beam=True` (default) every line of the input list is
+With `pb_corr=True` (default) every line of the input list is
 corrected for the primary beam at the position of its source: amplitudes
 divided by the gain `A`, weights multiplied by `A²`, so an attenuated
 source is corrected and also counts less. `A` is that of a Gaussian beam of
@@ -54,11 +56,12 @@ therefore needs the original Measurement Sets).
 
 ## Flux normalisation
 
-`flux_normalisation=True` rescales every source by `norm_ref / NORM`, with
+`flux_norm=True` rescales every source by `flux_ref / NORM`, with
 `NORM` the last column of the input list (a luminosity, a continuum flux,
 any proxy that correlates with the stacked emission), so that a bright
-minority cannot dominate the stack. `norm_ref` defaults to the median:
-**fix it** for the same reason as `z_ref`. Omit the normalisation when you
+minority cannot dominate the stack. Every line of the list must have it:
+otherwise `extract()` refuses. `flux_ref` defaults to the median, reported
+like `z_ref` (`flux_ref`, `flux_ref_given`): **fix it** for the same reason. Omit the normalisation when you
 want the emission weighted by the true intrinsic luminosities.
 
 ## Repeated observations
