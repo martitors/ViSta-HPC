@@ -47,6 +47,14 @@ The run draws (unless `v.extract(figures_draw=False)`, `--no-figures`):
   the detection S/N;
 - `<name>_continuum_uvamp.png`: the continuum per annulus, with its fit.
 
+In a notebook the same figures come from the result itself:
+`result.plot()` (profile and uv), `result.plot("noise")`,
+`result.plot("continuum")`; `save=` also writes them. `vista.compare({label:
+result, ...}, truth=...)` draws several measurements in one figure, the
+profiles with their fits, the flux per annulus with the source models and
+the fluxes with their errors, and prints their numbers side by side (the
+[Examples](../examples/index) use it throughout).
+
 ## Figures in your own style: `plot_line.py`
 
 `examples/plot_line.py` draws the same three figures from the output files

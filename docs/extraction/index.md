@@ -36,4 +36,5 @@ visibilities in memory. The measurement in the uv plane fits the visibility
 function directly, at every baseline the sample covers, and returns the flux
 at zero baseline — the total flux — with no aperture and no deconvolution.
 The image is still the place to look at the source: where the emission is,
-whether it is symmetric, which the uv fit assumes ([Example 9](../examples/09_the_stack_in_the_image)).
+whether it is symmetric, which the uv fit assumes (`vista.export_ms` writes
+the stack as a Measurement Set, for `tclean`).

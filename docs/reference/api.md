@@ -12,6 +12,9 @@ The options are listed in [Parameters](parameters).
    :members: stack, extract, run, help, files
 
 .. autoclass:: vista.RunResult
+   :members: plot
+
+.. autofunction:: vista.compare
 ```
 
 ## Other functions

@@ -223,6 +223,11 @@ v.extract(v0_range=(-150, 150),        # km/s; (0, 0): fixed
           n_bootstrap=500, n_null=1000)
 ```
 
-[Example 4](../examples/04_measuring_the_stacked_line) and
-[Example 6](../examples/06_what_each_option_changes) show them on a simulated
-sample, against the true signal.
+The [Examples](../examples/index) change them one at a time on a simulated
+sample, against the true signal: the centre and the width
+([4](../examples/04_centre_and_width_searched_or)), the source model
+([5](../examples/05_the_source_point_or_extended)), the window
+([6](../examples/06_the_window_of_the_area_flux)), the errors
+([8](../examples/08_the_errors)), a line that is not Gaussian
+([10](../examples/10_a_line_that_is_not_gaussian)), two lines
+([11](../examples/11_two_lines_in_the_band)).

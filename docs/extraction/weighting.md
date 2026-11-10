@@ -40,7 +40,8 @@ have at `z_ref`. It matters over a broad redshift range (at z = 2–3 the
 factor spans about a factor of 2), little over a narrow one. `z_ref`
 defaults to the median of the sample, which moves with the selection: **fix
 it** when comparing stacks. The value used is always reported: printed
-after every measurement (also with `verbose=False`), in the results (`z_ref`,
+after the measurement (also with `verbose=False`; again when it changes), in
+the results (`z_ref`,
 `z_ref_given`) and in the result of `run()`.
 Nothing on disk is rescaled: `α` is applied to the statistics of every source when they are combined. Cosmology: `H0`, `Om0` (67.4, 0.315).
 

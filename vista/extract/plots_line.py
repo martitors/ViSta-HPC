@@ -79,11 +79,22 @@ def _typical(result):
     return float(np.nanmedian(e)) if np.isfinite(e).any() else None
 
 
-def plot_profile(result, line: Lines, path: str, unit: Optional[str] = None,
-                 v_limits=None, rebin: int = 1):
+def _finish(fig, path):
+    """Save the figure to ``path`` and close it (returns the path), or return
+    it open (``path`` None)."""
+    if path is None:
+        return fig
+    fig.savefig(path, dpi=140, bbox_inches="tight")
+    _pyplot().close(fig)
+    return path
+
+
+def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = None,
+                 unit: Optional[str] = None, v_limits=None, rebin: int = 1):
     """The profile at zero spacing with the fitted lines, the two fluxes of
     every line (the area of the Gaussian, hatched, and the window over which
-    the spectrum is summed) and the check of the residual continuum."""
+    the spectrum is summed) and the check of the residual continuum.
+    Without ``path`` the figure is returned."""
     plt = _pyplot()
     s = result.summary
     f, ulabel = _scale(unit, _typical(result))
@@ -176,9 +187,7 @@ def plot_profile(result, line: Lines, path: str, unit: Optional[str] = None,
         axr.set_xlim(*v_limits)
     else:
         axr.set_xlim(v[used].min() - dvb, v[used].max() + dvb)
-    fig.savefig(path, dpi=140, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    return _finish(fig, path)
 
 
 def _size_text(model, theta, size_test):
@@ -190,7 +199,9 @@ def _size_text(model, theta, size_test):
     return out
 
 
-def plot_uv(result, path: str, unit: Optional[str] = None):
+def plot_uv(result, path: Optional[str] = None, unit: Optional[str] = None):
+    """Line flux of every annulus against baseline, with the source models.
+    Without ``path`` the figure is returned."""
     plt = _pyplot()
     s = result.summary
     f, ulabel = _scale(unit, _typical(result))
@@ -225,12 +236,11 @@ def plot_uv(result, path: str, unit: Optional[str] = None):
     ax.set_xlabel(r"baseline [k$\lambda$]")
     ax.set_ylabel(f"line flux [{ulabel} km/s]")
     ax.legend(fontsize=8, frameon=False)
-    fig.savefig(path, dpi=140, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    return _finish(fig, path)
 
 
-def plot_noise(result, path: str, unit: Optional[str] = None):
+def plot_noise(result, path: Optional[str] = None, unit: Optional[str] = None):
+    """The noise checks.  Without ``path`` the figure is returned."""
     plt = _pyplot()
     s = result.summary
     n = s["noise"]
@@ -285,9 +295,7 @@ def plot_noise(result, path: str, unit: Optional[str] = None):
     ax.set_title(f"significance {d['significance_sigma']:.1f}$\\sigma$", fontsize=9)
     ax.legend(fontsize=7.5, frameon=False)
     fig.tight_layout()
-    fig.savefig(path, dpi=140, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    return _finish(fig, path)
 
 
 def plot_line_result(result, line: Lines, prefix: str, unit: Optional[str] = None,
@@ -300,4 +308,201 @@ def plot_line_result(result, line: Lines, prefix: str, unit: Optional[str] = Non
     return out
 
 
-__all__ = ["plot_line_result", "plot_profile", "plot_uv", "plot_noise"]
+def display(fig, save: Optional[str] = None, show: bool = True):
+    """Save the figure (``save``: a path) and show it: in a notebook it is
+    drawn now and closed (returns None, so it is not drawn twice); with
+    ``show=False``, or outside a notebook, it is returned."""
+    import sys
+    if save:
+        fig.savefig(save, dpi=140, bbox_inches="tight")
+    if show and "IPython" in sys.modules:
+        from IPython.display import display as _display
+        _display(fig)
+        _pyplot().close(fig)
+        return None
+    return fig
+
+
+def _line_of(result):
+    """The LineResult of a RunResult (or the object itself)."""
+    return getattr(result, "line", None) or result
+
+
+_COLOURS = ["#000000", "#c0392b", "#2471a3", "#d68910", "#7d3c98", "#17a589", "#7f8c8d"]
+
+
+def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
+            rebin: int = 1, v_limits=None, save: Optional[str] = None, show: bool = True,
+            table: bool = True):
+    """Several measurements side by side: the profiles at zero spacing with
+    their fits, the line flux per annulus with the source model, and the
+    fluxes with their errors.
+
+    Parameters
+    ----------
+    results : dict
+        ``{label: result}``, results of :meth:`vista.ViSta.run` (or their
+        ``.line``), in the order to draw them.
+    truth : dict, optional
+        What they should give, for simulations: ``flux`` (line flux, or a
+        list, one per line), ``profile`` (``(velocity_kms, flux_density)``),
+        ``uv`` (``(baseline_klambda, line_flux)``), ``continuum``.
+    unit : str
+        Unit of the data (``"Jy"``: drawn in mJy).
+    rebin : int
+        Channels averaged in the profile.
+    save, show
+        As for :func:`display`.
+    table : bool
+        Also print the numbers of every measurement.
+    """
+    plt = _pyplot()
+    items = [(str(k), _line_of(r)) for k, r in dict(results).items()]
+    if not items:
+        raise ValueError("compare: no result")
+    truth = truth or {}
+    f, ulabel = _scale(unit, _typical(items[0][1]))
+    fig = plt.figure(figsize=(12, 7.6), layout="constrained")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.15, 1])
+    ax_p, ax_u, ax_f = fig.add_subplot(gs[0, :]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])
+
+    # ---- the profiles --------------------------------------------------
+    # the windows of the measurement with the most lines
+    n_lines = [len(r.summary.get("lines") or [1]) for _, r in items]
+    s0 = items[int(np.argmax(n_lines))][1].summary
+    for k, b in enumerate(s0.get("lines") or [s0["line"]]):
+        lo, hi = b.get("window_kms_line1_velocity") or s0["window"]["user_kms"]
+        ax_p.axvspan(lo, hi, color="C1", alpha=0.07, lw=0,
+                     label=("line windows" if len(s0.get("lines") or []) > 1
+                            else "line window") if k == 0 else None)
+    vmin, vmax = np.inf, -np.inf
+    for i, (label, r) in enumerate(items):
+        c = _COLOURS[i % len(_COLOURS)]
+        v = r.velocity_kms
+        o = np.argsort(v)
+        corr = r.channel_correlation
+        rho = None if corr is None else corr[np.ix_(o, o)]
+        used = r.fitted[o]
+        vb, yb, eb = _rebin(v[o], np.where(used, r.profile[o] * f, np.nan),
+                            r.profile_error[o] * f, rho, rebin)
+        _, mb, _ = _rebin(v[o], np.where(used, r.profile_model[o] * f, np.nan),
+                          r.profile_error[o] * f, rho, rebin)
+        if i == 0:
+            ax_p.fill_between(vb, -eb, eb, step="mid", color="0.6", alpha=0.3, lw=0,
+                              label=r"$\pm1\sigma$ noise")
+        ax_p.step(vb, yb, where="mid", color=c, lw=1.0, alpha=0.75)
+        ax_p.step(vb, mb, where="mid", color=c, lw=1.8, ls="--", label=label)
+        if used.any():
+            vmin, vmax = min(vmin, v[o][used].min()), max(vmax, v[o][used].max())
+    if "profile" in truth:
+        tv, ty = truth["profile"]
+        ax_p.plot(tv, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="true")
+    ax_p.axhline(0, color="0.3", lw=0.6)
+    ax_p.set_xlim(*(v_limits or (vmin, vmax)))
+    ax_p.set_xlabel("velocity [km/s]")
+    ax_p.set_ylabel(f"flux density [{ulabel}]")
+    ax_p.set_title("profile at zero spacing: data (thin) and fit (dashed)", fontsize=9)
+    ax_p.legend(fontsize=8, frameon=False, loc="upper right")
+
+    # ---- the line flux per annulus ----------------------------------------
+    bmin, bmax = np.inf, 0.0
+    drawn = []                 # the points of every measurement, unless the same as drawn
+    for i, (label, r) in enumerate(items):
+        b = r.baseline_klambda
+        ok = r.annulus_ok & np.isfinite(r.annulus_flux)
+        if not ok.any():
+            continue
+        bmin, bmax = min(bmin, b[ok].min()), max(bmax, b[ok].max())
+        y, e = r.annulus_flux, r.annulus_flux_error
+        if any(len(y) == len(y0) and np.allclose(np.where(ok, y, 0), np.where(ok, y0, 0),
+                                                 atol=0.25 * np.nanmedian(e[ok]))
+               for y0 in drawn):
+            continue
+        drawn.append(y)
+        shift = 1 + 0.025 * (len(drawn) - 1)                  # side by side
+        ax_u.errorbar(b[ok] * shift, y[ok] * f, e[ok] * f, fmt="o",
+                      color=_COLOURS[i % len(_COLOURS)], ms=3.5, capsize=1.5, lw=0.9)
+    if bmax > 0:
+        bb = np.geomspace(max(bmin * 0.5, 0.1), bmax * 1.5, 300)
+        for i, (label, r) in enumerate(items):
+            p = r.summary["line"]
+            th = p.get("theta_fwhm_arcsec") or 0.0
+            curve = p["flux_gauss"] * (uv_gaussian(bb * 1e3, th) if th else np.ones_like(bb))
+            ax_u.plot(bb, curve * f, color=_COLOURS[i % len(_COLOURS)], lw=1.5,
+                      label=f"{label}: " + (f"{th:.2f}\"" if th else "point"))
+        if "uv" in truth:
+            tb, ty = truth["uv"]
+            ax_u.plot(tb, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="true")
+    ax_u.axhline(0, color="0.3", lw=0.6)
+    ax_u.set_xscale("log")
+    ax_u.set_xlabel(r"baseline [k$\lambda$]")
+    ax_u.set_ylabel(f"line flux [{ulabel} km/s]")
+    ax_u.set_title("line 1 per annulus, and the source model", fontsize=9)
+    ax_u.legend(fontsize=7.5, frameon=False)
+
+    # ---- the fluxes ---------------------------------------------------------
+    rows = []
+    for i, (label, r) in enumerate(items):
+        blocks = r.summary.get("lines") or [r.summary["line"]]
+        for k, b in enumerate(blocks):
+            rows.append((label + (f", line {k + 1}" if len(blocks) > 1 else ""), i, k, b))
+    y = np.arange(len(rows))[::-1]
+    for yi, (label, i, k, b) in zip(y, rows):
+        c = _COLOURS[i % len(_COLOURS)]
+        ax_f.errorbar(b["flux"] * f, yi, xerr=b["flux_error"] * f, fmt="o", color=c, ms=6,
+                      capsize=3, lw=1.4)
+        ax_f.plot(b["flux_gauss"] * f, yi - 0.22, marker="s", mfc="none", mec=c, ms=5, ls="none")
+        ax_f.plot(b["flux_area"] * f, yi - 0.22, marker="^", mfc="none", mec=c, ms=5, ls="none")
+    tf = truth.get("flux")
+    if tf is not None:
+        for t in np.atleast_1d(tf):
+            ax_f.axvline(t * f, color="#1e8449", ls="--", lw=1.8)
+    ax_f.plot([], [], "o", color="0.3", label="quoted")
+    ax_f.plot([], [], "s", mfc="none", mec="0.3", ls="none", label="Gaussian")
+    ax_f.plot([], [], "^", mfc="none", mec="0.3", ls="none", label="area")
+    if tf is not None:
+        ax_f.plot([], [], color="#1e8449", ls="--", label="true")
+    ax_f.set_yticks(y)
+    ax_f.set_yticklabels([r[0] for r in rows], fontsize=8)
+    ax_f.set_ylim(-0.8, len(rows) - 0.4)
+    ax_f.set_xlabel(f"line flux [{ulabel} km/s]")
+    ax_f.legend(fontsize=7.5, frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                ncol=4, handletextpad=0.3, columnspacing=1.2)
+
+    if table:
+        print(_table(items, truth))
+    return display(fig, save, show)
+
+
+def _table(items, truth):
+    """The numbers of every measurement, one row per line."""
+    width = max([len(label) + 4 for label, _ in items] + [8])
+    head = (f"{'':{width}s} {'flux':>8s} {'± err':>7s} {'quoted':>7s} {'Gauss':>8s} "
+            f"{'area':>8s} {'v0':>6s} {'FWHM':>5s} {'size':>6s} {'S/N':>5s} {'signif.':>7s}"
+            f"  continuum")
+    out = [head]
+    tf = truth.get("flux")
+    for label, r in items:
+        s = r.summary
+        cf = s.get("continuum_fit")
+        rc = s.get("continuum_residual") or {}
+        cont = (f"fitted {cf['flux_density']:.3g} ± {cf['flux_density_error']:.2g}" if cf
+                else ("residual FLAGGED" if rc.get("detected") else ""))
+        for k, b in enumerate(s.get("lines") or [s["line"]]):
+            th = b.get("theta_fwhm_arcsec", s.get("theta_fwhm_arcsec")) or 0.0
+            d = b["detection"]
+            sig = d.get("significance_sigma", np.nan)
+            name = label + (f" ({k + 1})" if len(s.get("lines") or []) > 1 else "")
+            out.append(f"{name:{width}s} {b['flux']:8.4g} {b['flux_error']:7.2g} "
+                       f"{b['flux_method']:>7s} {b['flux_gauss']:8.4g} {b['flux_area']:8.4g} "
+                       f"{b['v0_kms']:+6.0f} {b['fwhm_kms']:5.0f} "
+                       f"{(f'{th:.2f}' if th else 'point'):>6s} {d['snr']:5.1f} "
+                       + (f"{sig:6.1f}σ" if np.isfinite(sig) else f"{'':7s}")
+                       + (f"  {cont}" if k == 0 else ""))
+    if tf is not None:
+        out.append(f"{'true':{width}s} " + ", ".join(f"{t:.4g}" for t in np.atleast_1d(tf))
+                   + (f"   continuum {truth['continuum']:.3g}" if truth.get("continuum") else ""))
+    return "\n".join(out)
+
+
+__all__ = ["plot_line_result", "plot_profile", "plot_uv", "plot_noise", "compare", "display"]

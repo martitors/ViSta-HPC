@@ -113,7 +113,11 @@ def main():
         else:
             if current is None:
                 continue
-            current["blocks"].append("```python\n" + text_of(c).rstrip() + "\n```")
+            src = text_of(c).rstrip()
+            if src.startswith("!"):                  # a shell command of the notebook
+                current["blocks"].append("```bash\n" + src[1:] + "\n```")
+            else:
+                current["blocks"].append("```python\n" + src + "\n```")
             current.setdefault("cells", []).append(d)
             current["blocks"].extend(outputs_md(d, current["number"],
                                                 current.setdefault("counter", [0]), replace))

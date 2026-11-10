@@ -24,8 +24,9 @@ matplotlib >= 3.4           # optional: figures
 **To build the kernel**: CMake ≥ 3.18, a C++ compiler with OpenMP (GCC),
 `pybind11`; for the GPU, the CUDA Toolkit ≥ 11.0.
 
-CASA is **not** needed. `casatasks` and `casatools` are used only by the
-example notebook, to image a stack with `tclean`.
+CASA is **not** needed (`python-casacore` is, and its wheels carry the
+data tables it uses). To image a stack, `vista.export_ms` writes it as a
+Measurement Set for CASA's `tclean`.
 
 ## 1. Clone the repository
 

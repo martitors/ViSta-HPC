@@ -10,6 +10,11 @@ ViSta: Visibility Stacking tool for broadband interferometric data.
     v.extract()                                        # what is measured (skip: stack only)
     result = v.run()            # stack, subtract the continuum, compress, measure
     print(result)
+    result.plot()               # the figures (in a notebook: right away)
+
+    v.extract(model="point")                           # another measurement, in seconds
+    point = v.run(only="measure", tag="point")
+    vista.compare({"auto": result, "point": point})    # side by side
 
 ``ViSta(...)`` takes the input list, the outputs and how the run uses the
 machine; ``v.stack(...)`` the lines, the band and the continuum;
@@ -31,7 +36,7 @@ import logging as _logging
 import sys as _sys
 import time as _time
 
-__all__ = ["ViSta", "set_verbosity", "export_ms", "open_stack"]
+__all__ = ["ViSta", "compare", "set_verbosity", "export_ms", "open_stack"]
 __version__ = "3.0.0"
 
 
@@ -136,6 +141,9 @@ def __getattr__(name):
     if name in ("ViSta", "RunResult"):
         from . import api
         return getattr(api, name)
+    if name == "compare":
+        from .extract.plots_line import compare
+        return compare
     if name in ("export_ms", "open_stack"):
         from . import stackio
         return getattr(stackio, name)

@@ -2,7 +2,7 @@
 
 How well the measurement works, on simulations where the true line is known.
 The [Examples](../examples/index) show the same on a complete simulated
-sample, step by step, against the noiseless twin of every dataset.
+sample, one option at a time, against the true values of the simulation.
 
 ## Point and resolved sources
 
@@ -113,6 +113,3 @@ about ±30%):
 
 This agrees with Lindroos et al. (2015, MNRAS 446, 3502), who find
 uv stacking more robust than image stacking, with better size estimates.
-[Example 2](../examples/02_one_galaxy_without_and_with) and
-[Example 9](../examples/09_the_stack_in_the_image) show the comparison on one
-galaxy and on a stack, with and without noise.

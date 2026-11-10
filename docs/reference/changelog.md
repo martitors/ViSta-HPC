@@ -22,6 +22,10 @@
 
 **Quiet by default**: `verbose=False` (warnings only); `True` for the progress, `"debug"` for the details and the timing. The significance stays finite at very high S/N (it was infinite above S/N ≈ 37).
 
+**Figures in a notebook**: `result.plot()` draws the figures of a measurement right away (`"profile"`, `"uv"`, `"noise"`, `"continuum"`), and `vista.compare({label: result, ...}, truth=...)` puts several measurements in one figure (the profiles with their fits, the flux per annulus with the source models, the fluxes with their errors) and prints their numbers side by side. `examples/simulate.py` has `expected(truth)`, what the stack of a sample should give, in the form `compare` takes.
+
+**The example notebook** is shorter: one simulated sample, stacked and measured with the three calls, then one option of the measurement at a time (centre and width, source model, window, weighting, errors, continuum), a line with wings and two blended lines, each compared with `vista.compare` against the truth. It no longer needs CASA (whose data tables made it stop on Colab): the images with `tclean` are gone.
+
 **Documentation**: the installation without the cluster section; every page on the new interface; the examples regenerated.
 
 ## v2.5.1

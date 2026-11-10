@@ -153,16 +153,19 @@ command_line
 
 examples/index
 examples/00_setup
-examples/01_the_simulated_sample
-examples/02_one_galaxy_without_and_with
-examples/03_stacking
-examples/04_measuring_the_stacked_line
-examples/05_searching_for_the_line
-examples/06_what_each_option_changes
-examples/07_the_continuum
-examples/08_redoing_the_continuum
-examples/09_the_stack_in_the_image
-examples/10_from_the_command_line_and_on
+examples/01_a_simulated_sample
+examples/02_stack_and_measure
+examples/03_one_option_at_a_time
+examples/04_centre_and_width_searched_or
+examples/05_the_source_point_or_extended
+examples/06_the_window_of_the_area_flux
+examples/07_weighting_redshift_and
+examples/08_the_errors
+examples/09_the_continuum_subtracted
+examples/10_a_line_that_is_not_gaussian
+examples/11_two_lines_in_the_band
+examples/12_the_command_line
+examples/13_on_your_own_data
 ```
 
 ```{toctree}

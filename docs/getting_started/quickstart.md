@@ -102,9 +102,20 @@ It writes the same files ([all the options](../command_line)).
 ## Look at the result
 
 `co32_profile.png`, `co32_uv.png` and `co32_noise.png` show the line with its
-two fluxes, the flux per annulus of baseline length and the noise.
-`examples/plot_line.py` redraws them from the output files in your own style
-([Output files and figures](../extraction/outputs)).
+two fluxes, the flux per annulus of baseline length and the noise. In a
+notebook, `result.plot()` draws them right away (`result.plot("noise")`,
+`"continuum"`), and `vista.compare` puts several measurements side by side:
+
+```python
+import vista
+
+v.extract(model="point")                       # another measurement, in seconds
+point = v.run(only="measure", tag="point")
+vista.compare({"auto": result, "point source": point})
+```
+
+`examples/plot_line.py` redraws the figures from the output files in your
+own style ([Output files and figures](../extraction/outputs)).
 
 Before believing a number, check that the imaginary part and the line-free
 channels are at the noise level (`noise.imaginary_rms_over_noise` and

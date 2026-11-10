@@ -197,12 +197,68 @@ class RunResult:
         Summary of the stacking (when it ran).
     files : dict
         The files of the run, by kind.
+
+    ``plot()`` draws the figures of the measurement (in a notebook, right
+    away); :func:`vista.compare` draws several results side by side.
     """
 
     line: object = None
     continuum: object = None
     stack: Optional[dict] = None
     files: dict = field(default_factory=dict)
+    unit: Optional[str] = None
+
+    def plot(self, what=("profile", "uv"), unit=None, rebin=1, v_limits=None, save=None,
+             show=True):
+        """The figures of the measurement, the same as the files of the run.
+
+        Parameters
+        ----------
+        what : str or list
+            ``"profile"`` (the lines at zero spacing, the two fluxes, the
+            residuals), ``"uv"`` (line flux per annulus and the source
+            models), ``"noise"`` (the noise checks and the null searches),
+            ``"continuum"`` (the continuum measured on its own), or a list.
+        unit : str
+            Unit of the data (default: ``figures_unit`` of the run).
+        rebin : int
+            Channels averaged in the profile.
+        save : str
+            Also write the figure(s) here: a path, or a prefix for several
+            (``<save>_<what>.png``).
+        show : bool
+            In a notebook the figures are drawn and nothing is returned;
+            ``show=False`` returns them (a list for several).
+        """
+        from .extract import plots_line
+
+        if self.line is None:
+            raise RuntimeError("nothing measured: run() with v.extract(...) set")
+        kinds = [what] if isinstance(what, str) else list(what)
+        unit = unit if unit is not None else (self.unit or "Jy")
+        out = []
+        for kind in kinds:
+            if kind == "profile":
+                fig = plots_line.plot_profile(self.line, unit=unit, v_limits=v_limits,
+                                              rebin=rebin)
+            elif kind == "uv":
+                fig = plots_line.plot_uv(self.line, unit=unit)
+            elif kind == "noise":
+                fig = plots_line.plot_noise(self.line, unit=unit)
+            elif kind == "continuum":
+                if self.continuum is None:
+                    raise RuntimeError("no continuum measured on its own (it is, with "
+                                       "stack(..., continuum='subtract'))")
+                from .extract.plots import plot_uv_profile
+                fig = plot_uv_profile(self.continuum, unit=unit)
+            else:
+                raise ValueError(f"plot: 'profile', 'uv', 'noise' or 'continuum', not {kind!r}")
+            path = (None if not save else save if len(kinds) == 1
+                    else f"{os.path.splitext(save)[0]}_{kind}.png")
+            out.append(plots_line.display(fig, path, show))
+        if show and all(f is None for f in out):
+            return None
+        return out[0] if len(out) == 1 else out
 
     def __repr__(self):
         rows = []
@@ -327,6 +383,7 @@ class ViSta:
         self.verbose = verbose
         self.log_file = log_file
         self.lines = None
+        self._reported = None                 # z_ref and flux_ref, as last said
         self.stack_options = None
         self.extract_options = None
 
@@ -754,7 +811,8 @@ class ViSta:
         if tag is not None and (not str(tag) or "/" in str(tag)):
             raise ValueError(f"tag must be a plain name, not {tag!r}")
         set_verbosity(self.verbose, self.log_file)
-        out = RunResult(files=dict(self._files(tag)))
+        out = RunResult(files=dict(self._files(tag)),
+                        unit=ex["unit"] if ex is not None else None)
         d = os.path.dirname(os.path.abspath(self.output_name))
         os.makedirs(d, exist_ok=True)
         if "stack" in steps:
@@ -871,7 +929,11 @@ class ViSta:
         if sm.get("flux_ref") is not None:
             refs.append(f"flux_ref = {sm['flux_ref']:.4g} "
                         f"({'given' if sm['flux_ref_given'] else 'median of the sample'})")
-        _notice("; ".join(refs) if refs else "no redshift rescaling, no flux normalisation")
+        # always said, once: again only when it changes (e.g. another selection)
+        text = "; ".join(refs) if refs else "no redshift rescaling, no flux normalisation"
+        if text != self._reported:
+            _notice(text)
+            self._reported = text
         if ex["draw"]:
             plot_line_result(line, self.lines, prefix, unit=ex["unit"], verbose=verbose)
         cont = None

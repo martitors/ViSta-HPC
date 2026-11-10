@@ -70,7 +70,8 @@ are taken in LSRK and the inputs are brought to it; add `--frame BARY`
 The [worked example](https://vista-hpc.readthedocs.io/en/latest/examples/index.html)
 (`examples/ViSta_tutorial.ipynb`, runs on
 [Google Colab](https://colab.research.google.com/github/martitors/ViSta-HPC/blob/extract_opt/examples/ViSta_tutorial.ipynb))
-goes through every step on simulated ALMA data, against the true signal.
+stacks simulated ALMA data and changes one option at a time, against the
+true signal (`result.plot()`, `vista.compare`).
 
 ## Citation
 

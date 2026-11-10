@@ -453,6 +453,43 @@ def true_uv(truth, b_klambda, part="line"):
     return out
 
 
+def expected(truth, v_kms=None, b_klambda=None):
+    """What the stack of a sample should give, in the form of
+    ``vista.compare(..., truth=...)``: ``flux`` (one value per line: the
+    lines of the band, by rest frequency, the first the line of the stack;
+    the components at the same rest frequency, e.g. wings, add up),
+    ``profile`` (velocity of the first line, flux density at zero spacing:
+    every component), ``uv`` (baseline, line flux of the first line) and
+    ``continuum``.  As the extraction measures it: rescaled to z_ref, the
+    primary beam corrected, natural weighting."""
+    v = np.linspace(-1500, 1500, 1201) if v_kms is None else np.asarray(v_kms, float)
+    b = np.geomspace(1, 3000, 200) if b_klambda is None else np.asarray(b_klambda, float)
+    a, w = _stack_weights(truth)
+    rest0 = truth["sources"][0]["rest_freq_ghz"]
+    freqs = [rest0]
+    flux, prof, uv = {}, np.zeros_like(v), np.zeros_like(b)
+    for r, ai, wi in zip(truth["sources"], a, w):
+        comps = [dict(rest_freq_ghz=r["rest_freq_ghz"], flux_ratio=1.0, fwhm_kms=r["fwhm_kms"],
+                      v0_kms=r["v0_kms"])] + list(r.get("extra_lines", []))
+        for c in comps:
+            nu = c["rest_freq_ghz"]
+            k = next((i for i, f in enumerate(freqs) if abs(f - nu) < 1e-9), None)
+            if k is None:
+                freqs.append(nu)
+                k = len(freqs) - 1
+            f_c = wi * ai * r["line_flux"] * c["flux_ratio"]
+            flux[k] = flux.get(k, 0.0) + f_c
+            # in the velocity of the first line: shifted, and narrower by nu / rest0
+            scale = nu / rest0
+            v1 = C_KMS * (1 - scale) + c.get("v0_kms", 0.0) * scale
+            sig = c["fwhm_kms"] / 2.3548200450309493 * scale
+            prof += f_c / (sig * math.sqrt(2 * math.pi)) * np.exp(-0.5 * ((v - v1) / sig) ** 2)
+            if k == 0:
+                uv += f_c * shape_visibility(b * 1e3, r["size_arcsec"])
+    return {"flux": [flux[k] for k in range(len(freqs))], "profile": (v, prof), "uv": (b, uv),
+            "continuum": truth.get("cont_flux_stack", 0.0), "rest_freq_ghz": freqs}
+
+
 # ---------------------------------------------------------------------------
 # a sample
 # ---------------------------------------------------------------------------

@@ -73,7 +73,7 @@ options are given by name.
 | `annuli` | `(3, 3000, 18)` | Annuli of rest-frame baseline length: from `b_min` to `b_max` kλ, how many (logarithmic); they should bracket the baselines present ([Compression](../stacking/compression)). Changing them compresses the stack again at the next measurement |
 | `weighting_scheme` | `"natural"` | `natural` uses the native visibility weights: the deepest observations dominate and the formal S/N is highest. `democratic` gives every source the same total weight: the mean of the population ([Weighting](../extraction/weighting)) |
 | `z_norm` | `True` | Transport every source to `z_ref` |
-| `z_ref` | `None` | Reference redshift. `None`: the median of the sample. The value used is always reported: printed after every measurement (also with `verbose=False`), in the results (`z_ref`, `z_ref_given`) and in the result of `run()`. It moves with the selection: fix it when comparing stacks |
+| `z_ref` | `None` | Reference redshift. `None`: the median of the sample. The value used is always reported: printed after the measurement (also with `verbose=False`; again when it changes), in the results (`z_ref`, `z_ref_given`) and in the result of `run()`. It moves with the selection: fix it when comparing stacks |
 | `pb_corr` | `True` | Correct every source for the primary beam at its position (amplitudes / A, weights × A²) |
 | `flux_norm` | `False` | Rescale the amplitudes by `flux_ref / NORM`, with `NORM` the last column of the input list; every line of the list must have it (otherwise `extract()` refuses) |
 | `flux_ref` | `None` | Reference of that normalisation. `None`: the median, reported like `z_ref` (`flux_ref`, `flux_ref_given`) |
