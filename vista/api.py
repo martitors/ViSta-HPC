@@ -218,7 +218,10 @@ class RunResult:
             ``"profile"`` (the lines at zero spacing, the two fluxes, the
             residuals), ``"uv"`` (line flux per annulus and the source
             models), ``"noise"`` (the noise checks and the null searches),
-            ``"continuum"`` (the continuum measured on its own), or a list.
+            ``"continuum"`` (the continuum measured on its own), ``"image"``
+            (the dirty image of the stack over the window of the first
+            line: where the emission is; see :func:`vista.dirty_image`), or
+            a list.
         unit : str
             Unit of the data (default: ``figures_unit`` of the run).
         rebin : int
@@ -240,11 +243,13 @@ class RunResult:
         for kind in kinds:
             if kind == "profile":
                 fig = plots_line.plot_profile(self.line, unit=unit, v_limits=v_limits,
-                                              rebin=rebin)
+                                              rebin=rebin, continuum=self.continuum)
             elif kind == "uv":
                 fig = plots_line.plot_uv(self.line, unit=unit)
             elif kind == "noise":
                 fig = plots_line.plot_noise(self.line, unit=unit)
+            elif kind == "image":
+                fig = self._image(unit)
             elif kind == "continuum":
                 if self.continuum is None:
                     raise RuntimeError("no continuum measured on its own (it is, with "
@@ -252,7 +257,8 @@ class RunResult:
                 from .extract.plots import plot_uv_profile
                 fig = plot_uv_profile(self.continuum, unit=unit)
             else:
-                raise ValueError(f"plot: 'profile', 'uv', 'noise' or 'continuum', not {kind!r}")
+                raise ValueError(f"plot: 'profile', 'uv', 'noise', 'image' or 'continuum', "
+                                 f"not {kind!r}")
             path = (None if not save else save if len(kinds) == 1
                     else f"{os.path.splitext(save)[0]}_{kind}.png")
             out.append(plots_line.display(fig, path, show))
@@ -260,35 +266,109 @@ class RunResult:
             return None
         return out[0] if len(out) == 1 else out
 
-    def __repr__(self):
+    def _image(self, unit):
+        """Dirty image of the stack over the window of the first line."""
+        from . import quicklook
+        b = self.line.summary["line"]
+        img = quicklook.dirty_image(self.files["stack"], line_freq=b["rest_freq_ghz"],
+                                    velocity=b["window_kms"])
+        ax = quicklook.plot_image(img, unit=unit,
+                                  title=f"the stack, {b['window_kms'][0]:+.0f} to "
+                                        f"{b['window_kms'][1]:+.0f} km/s")
+        return ax.figure
+
+    def report(self):
+        """What was measured and the choices made, in words: for every line
+        the detection, the flux quoted and why, the Gaussian, the source
+        model and why; the continuum; the references.  ``print(result)``."""
+        u = self.unit or "data units"
+        # flux densities of data in Jy are written in mJy
+        fd, ud = (1e3, "mJy") if u.lower() == "jy" else (1.0, u)
         rows = []
         if self.stack is not None:
             s = self.stack
-            rows.append(f"stack: {s['output']} ({s['n_rows']:,} rows, {s['nchan']} channels, "
-                        f"{s['seconds']:.0f} s)")
+            rows.append(f"Stack      {s['output']}: {s['n_rows']:,} rows, {s['nchan']} channels, "
+                        f"{s['seconds']:.0f} s")
         if self.line is not None:
             sm = self.line.summary
+            several = len(sm["lines"]) > 1
             for k, b in enumerate(sm["lines"]):
-                rows.append(f"line {k + 1} ({b['rest_freq_ghz']:.6g} GHz): "
-                            f"F = {b['flux']:.4g} ± {b['flux_error']:.2g} "
-                            f"({'area' if b['flux_method'] == 'area' else 'Gaussian'}), "
-                            f"v0 = {b['v0_kms']:+.0f} km/s, FWHM = {b['fwhm_kms']:.0f} km/s, "
-                            f"{b['detection']['significance_sigma']:.1f} sigma")
+                d, sc = b["detection"], b.get("shape_check", {})
+                rows.append(f"{f'Line {k + 1}' if several else 'Line':10s} "
+                            f"{b['rest_freq_ghz']:.6g} GHz, {sm['n_sources']} sources: "
+                            + (f"S/N {d['snr']:.1f} with the centre and the width fixed"
+                               if d.get("fixed_shape") else
+                               f"detected at {d['significance_sigma']:.1f} sigma (S/N "
+                               f"{d['snr']:.1f}, searched over centre and width)"))
+                area = b.get("flux_method") == "area"
+                rows.append(f"  flux     {b['flux']:.4g} ± {b['flux_error']:.2g} {u} km/s, "
+                            + ("the area under the spectrum in the window"
+                               if area else "the area of the Gaussian fit"))
+                rows.append(f"           because {sc.get('reason', 'asked')}")
+                rows.append(f"           Gaussian fit {b['flux_gauss']:.4g} ± "
+                            f"{b['flux_gauss_error']:.2g}; area in the window "
+                            f"({b['window_kms'][0]:+.0f} to {b['window_kms'][1]:+.0f} km/s) "
+                            f"{b['flux_area']:.4g} ± {b['flux_area_error']:.2g}")
+                rows.append(f"  Gaussian centre {b['v0_kms']:+.0f} ± {b['v0_error_kms']:.0f} km/s, "
+                            f"FWHM {b['fwhm_kms']:.0f} ± {b['fwhm_error_kms']:.0f} km/s, "
+                            f"peak {b['peak'] * fd:.3g} ± "
+                            f"{b.get('peak_error', float('nan')) * fd:.2g} {ud}")
+                first_of_group = any(g and g[0] == k + 1 for g in sm.get("line_groups") or [[1]])
+                if first_of_group:
+                    st = b.get("size_test") or (sm.get("size_test") if k == 0 else None)
+                    theta = b.get("theta_fwhm_arcsec", sm.get("theta_fwhm_arcsec"))
+                    err = b.get("theta_error_arcsec", sm.get("theta_error_arcsec"))
+                    model = b.get("size_model", sm["line"].get("size_model"))
+                    shape = (f"Gaussian, FWHM {theta:.2f} ± {err:.2f} arcsec" if theta
+                             else "point source")
+                    if st:
+                        dchi2, need = st["delta_chi2_point_minus_gauss"], st["threshold"]
+                        why = (f"it fits better than a point source: delta chi2 = {dchi2:.1f} "
+                               f"(at least {need:.0f} needed to call it extended)"
+                               if st["adopted"] == "gauss" else
+                               f"a Gaussian source improves the fit by delta chi2 = {dchi2:.1f} "
+                               f"only (at least {need:.0f} needed to call it extended)")
+                    else:
+                        why = {"fixed": "the size was fixed",
+                               "gauss (prior)": "a size prior was given"}.get(
+                                   model, "asked")
+                    rows.append(f"  source   {shape}")
+                    rows.append(f"           because {why}")
+            cf, rc = sm.get("continuum_fit"), sm.get("continuum_residual") or {}
+            if cf:
+                rows.append(f"Continuum  fitted with the line: {cf['flux_density'] * fd:.3g} ± "
+                            f"{cf['flux_density_error'] * fd:.2g} {ud}")
+            elif self.continuum is not None:
+                c = self.continuum.summary
+                value = f"{c['flux_total'] * fd:.3g} ± {c['flux_total_error'] * fd:.2g} {ud}"
+                found = c["flux_total"] > 2 * c["flux_total_error"]
+                rows.append("Continuum  subtracted while stacking and measured on its own: "
+                            + (f"{value}, FWHM {c.get('theta_fwhm_arcsec', 0):.2f} arcsec"
+                               if found else f"none detected ({value})"))
+            elif rc.get("continuum_subtracted"):
+                rows.append("Continuum  subtracted while stacking")
+            else:
+                rows.append("Continuum  not subtracted, not fitted")
+            if rc:
+                rows.append(f"           outside the line window: {rc['offset'] * fd:.2g} ± "
+                            f"{rc['offset_error'] * fd:.2g} {ud} "
+                            f"({rc['offset_nsigma']:+.1f} sigma): "
+                            + ("STILL THERE, the line flux includes it" if rc["detected"]
+                               else "nothing left"))
+            ref = [f"{sm['weighting_scheme']} weighting"]
             if sm.get("z_ref") is not None:
-                rows.append(f"z_ref = {sm['z_ref']:.4f} "
-                            f"({'given' if sm.get('z_ref_given') else 'median of the sample'})")
+                ref.append(f"fluxes at z_ref = {sm['z_ref']:.4f} "
+                           f"({'given' if sm.get('z_ref_given') else 'median of the sample'})")
+            else:
+                ref.append("no redshift rescaling")
             if sm.get("flux_ref") is not None:
-                rows.append(f"flux_ref = {sm['flux_ref']:.4g} "
-                            f"({'given' if sm.get('flux_ref_given') else 'median of the sample'})")
-        if self.continuum is not None:
-            c = self.continuum.summary
-            rows.append(f"continuum: {c['flux_total']:.4g} ± {c['flux_total_error']:.2g}, "
-                        f"size {c.get('theta_fwhm_arcsec', 0):.2f}\"")
-        elif self.line is not None and self.line.summary.get("continuum_fit"):
-            c = self.line.summary["continuum_fit"]
-            rows.append(f"continuum (fitted with the lines): {c['flux_density']:.4g} ± "
-                        f"{c['flux_density_error']:.2g}")
-        return "RunResult(\n  " + "\n  ".join(rows or ["nothing run"]) + "\n)"
+                ref.append(f"normalised to flux_ref = {sm['flux_ref']:.4g} "
+                           f"({'given' if sm.get('flux_ref_given') else 'median'})")
+            rows.append("Reference  " + ", ".join(ref))
+        return "\n".join(rows or ["nothing run"])
+
+    def __repr__(self):
+        return self.report()
 
 
 class ViSta:
@@ -874,6 +954,14 @@ class ViSta:
         if self.extract_options is not None:
             self._compress()
 
+    def _stack_has(self, column):
+        from .stackio import open_stack
+        try:
+            stack = open_stack(self.files["stack"])
+            return column in stack.columns(stack.dd_ids()[0])
+        except Exception:
+            return False
+
     def _statistics_ready(self):
         """Compress the stack again when its statistics are missing, or were
         made with other annuli or from another column."""
@@ -892,11 +980,12 @@ class ViSta:
                     or not np.allclose(st.bin_edges_lambda, edges, rtol=1e-9)):
                 why = "the annuli changed"
             elif (st.meta or {}).get("line_column", column) != column:
-                if subtract:
+                if subtract and not self._stack_has("CORRECTED_DATA"):
                     raise RuntimeError(
-                        "the statistics are from DATA (a stack without the continuum "
-                        "subtraction): subtract it first, run(only=['continuum', 'measure'])")
-                why = "the continuum is no longer subtracted: the line from DATA"
+                        "the stack was made without the continuum subtraction: subtract "
+                        "it first, run(only=['continuum', 'measure'])")
+                why = ("the continuum subtraction is used again" if subtract
+                       else "the continuum is no longer subtracted: the line from DATA")
         if why is None:
             return
         if not os.path.isdir(f["stack"]):
@@ -934,8 +1023,6 @@ class ViSta:
         if text != self._reported:
             _notice(text)
             self._reported = text
-        if ex["draw"]:
-            plot_line_result(line, self.lines, prefix, unit=ex["unit"], verbose=verbose)
         cont = None
         has_cont = mode == "subtract" and os.path.isfile(f["continuum_statistics"])
         if has_cont and (self.n_entries < 2 or ex["bootstrap"].n_realisations < 2):
@@ -955,6 +1042,9 @@ class ViSta:
             if ex["draw"]:
                 from .extract.plots import plot_all
                 plot_all(cont, self.lines, f"{prefix}_continuum", unit=ex["unit"])
+        if ex["draw"]:
+            plot_line_result(line, self.lines, prefix, unit=ex["unit"], verbose=verbose,
+                             continuum=cont)
         return line, cont
 
     def __repr__(self):

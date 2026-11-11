@@ -36,21 +36,32 @@ shared by all the lines.
 
 The run draws (unless `v.extract(figures_draw=False)`, `--no-figures`):
 
-- `<name>_profile.png`: the profile with the fitted lines, the area of the
-  Gaussian (hatched) and the window of the area flux (shaded) of every line,
-  both fluxes, the ±1σ band, the imaginary part (a null test), the continuum
-  left outside the windows and the residuals;
-- `<name>_uv.png`: the line flux per annulus against the baseline, with
-  the point and the Gaussian model;
+- `<name>_profile.png`: the stacked spectrum with its ±1σ band, the fitted
+  Gaussian (its area hatched), the window of the area flux of every line
+  (shaded, with its limits), and the continuum: its value and what is left
+  outside the windows. The box gives the flux quoted and says where it
+  comes from (the Gaussian fit, or the area under the spectrum in the
+  window), the other of the two, and centre, width and peak. Below, the
+  residuals and the imaginary part (crosses) in units of the noise: both
+  should scatter around zero;
+- `<name>_uv.png`: the line flux in every annulus against the baseline
+  length, with the source models (the one chosen thicker; the title says
+  which and why);
 - `<name>_noise.png`: the noise per channel from the scatter and from the
   weights, the standardised cells against N(0, 1), the null distribution of
   the detection S/N;
 - `<name>_continuum_uvamp.png`: the continuum per annulus, with its fit.
 
+`print(result)` gives the measurement in words: the detection, the flux
+quoted and why (the Gaussian fit or the area in the window), the source
+model chosen and why, the continuum, the reference redshift.
+
 In a notebook the same figures come from the result itself:
 `result.plot()` (profile and uv), `result.plot("noise")`,
-`result.plot("continuum")`; `save=` also writes them. `vista.compare({label:
-result, ...}, truth=...)` draws several measurements in one figure, the
+`result.plot("continuum")`, and `result.plot("image")`, a dirty image of the
+stack over the line window ({func}`vista.dirty_image`: a quick look at where
+the emission is, not a cleaned image); `save=` also writes them. `vista.compare({label:
+result, ...}, expected=...)` draws several measurements in one figure, the
 profiles with their fits, the flux per annulus with the source models and
 the fluxes with their errors, and prints their numbers side by side (the
 [Examples](../examples/index) use it throughout).

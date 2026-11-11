@@ -153,19 +153,21 @@ command_line
 
 examples/index
 examples/00_setup
-examples/01_a_simulated_sample
-examples/02_stack_and_measure
-examples/03_one_option_at_a_time
-examples/04_centre_and_width_searched_or
-examples/05_the_source_point_or_extended
-examples/06_the_window_of_the_area_flux
-examples/07_weighting_redshift_and
-examples/08_the_errors
-examples/09_the_continuum_subtracted
-examples/10_a_line_that_is_not_gaussian
-examples/11_two_lines_in_the_band
-examples/12_the_command_line
-examples/13_on_your_own_data
+examples/01_the_simulator_and_one_galaxy
+examples/02_a_sample_of_twelve_galaxies
+examples/03_the_stack
+examples/04_the_measurement
+examples/05_refining_the_window
+examples/06_the_source_model_the_wrong
+examples/07_the_normalisations
+examples/08_the_weighting
+examples/09_the_errors
+examples/10_the_continuum
+examples/11_a_harder_case_a_line_that_is
+examples/12_a_harder_case_sources_that
+examples/13_a_harder_case_two_lines_in
+examples/14_the_command_line
+examples/15_on_your_own_data
 ```
 
 ```{toctree}

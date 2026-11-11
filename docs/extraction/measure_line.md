@@ -223,11 +223,12 @@ v.extract(v0_range=(-150, 150),        # km/s; (0, 0): fixed
           n_bootstrap=500, n_null=1000)
 ```
 
-The [Examples](../examples/index) change them one at a time on a simulated
-sample, against the true signal: the centre and the width
-([4](../examples/04_centre_and_width_searched_or)), the source model
-([5](../examples/05_the_source_point_or_extended)), the window
-([6](../examples/06_the_window_of_the_area_flux)), the errors
-([8](../examples/08_the_errors)), a line that is not Gaussian
-([10](../examples/10_a_line_that_is_not_gaussian)), two lines
-([11](../examples/11_two_lines_in_the_band)).
+The [Examples](../examples/index) go through them one step at a time on a
+simulated sample, against the expected values: how to read the measurement
+([4](../examples/04_the_measurement)), the window
+([5](../examples/05_refining_the_window)), the source model
+([6](../examples/06_the_source_model_the_wrong)), the errors
+([9](../examples/09_the_errors)), a line that is not a Gaussian
+([11](../examples/11_a_harder_case_a_line_that_is)), sources that are not
+Gaussians ([12](../examples/12_a_harder_case_sources_that)), two lines
+([13](../examples/13_a_harder_case_two_lines_in)).

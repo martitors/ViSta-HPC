@@ -89,12 +89,49 @@ def _finish(fig, path):
     return path
 
 
+def _window_label(lo, hi):
+    return (f"line window, ±{hi:.0f} km/s" if abs(lo + hi) < 1e-6 * max(abs(hi), 1)
+            else f"line window, {lo:+.0f} to {hi:+.0f} km/s")
+
+
+def _continuum_label(s, f, ulabel, continuum=None):
+    """What happened to the continuum, for the legend: its value when it was
+    measured, and what is left outside the line windows."""
+    rc = s.get("continuum_residual") or {}
+    cf = s.get("continuum_fit")
+    left = (f"{_pm(rc['offset'] * f, rc['offset_error'] * f)} {ulabel} "
+            f"({rc['offset_nsigma']:+.1f}$\\sigma$)") if rc else ""
+    if cf:
+        return (f"continuum, fitted with the line: "
+                f"{_pm(cf['flux_density'] * f, cf['flux_density_error'] * f)} {ulabel}")
+    if rc.get("continuum_subtracted"):
+        value = ""
+        if continuum is not None:
+            c = continuum.summary
+            value = (f" ({_pm(c['flux_total'] * f, c['flux_total_error'] * f)} {ulabel})"
+                     if c["flux_total"] > 2 * c["flux_total_error"] else " (none detected)")
+        return (f"continuum: subtracted{value}; "
+                + (f"still there: {left}" if rc.get("detected") else "nothing left outside the window"))
+    if rc.get("detected"):
+        return f"continuum left in the data: {left}"
+    return f"continuum: none found outside the window: {left}" if rc else "continuum: not measured"
+
+
 def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = None,
-                 unit: Optional[str] = None, v_limits=None, rebin: int = 1):
-    """The profile at zero spacing with the fitted lines, the two fluxes of
-    every line (the area of the Gaussian, hatched, and the window over which
-    the spectrum is summed) and the check of the residual continuum.
-    Without ``path`` the figure is returned."""
+                 unit: Optional[str] = None, v_limits=None, rebin: int = 1, continuum=None):
+    """The stacked line: the flux density at zero spacing against velocity
+    (black), its noise (grey band), the fitted Gaussian (red, its area
+    hatched), the window over which the spectrum is summed (shaded) and the
+    level of the continuum outside it (dashed).  The box gives, for every
+    line, the flux quoted and where it comes from (the Gaussian fit, or the
+    area under the spectrum in the window), the other of the two, and the
+    centre, width and peak of the Gaussian.  Below: the residuals of the fit
+    and the imaginary part (crosses), both in units of the noise: they should
+    scatter around zero.
+
+    ``continuum``: the continuum measured on its own (the result of
+    ``extract_flux``), to quote its value.  Without ``path`` the figure is
+    returned."""
     plt = _pyplot()
     s = result.summary
     f, ulabel = _scale(unit, _typical(result))
@@ -109,18 +146,19 @@ def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = Non
     _, yib, _ = _rebin(v, np.where(used, yi, np.nan), e, rho, rebin)
     dvb = abs(vb[1] - vb[0]) if len(vb) > 1 else 1.0
     blocks = s.get("lines") or [s["line"]]
+    several = len(blocks) > 1
 
     fig, (ax, axr) = plt.subplots(2, 1, figsize=(8.6, 6.6), sharex=True,
                                   gridspec_kw={"height_ratios": [3.2, 1], "hspace": 0.05})
     # the windows of the area fluxes, one per line
     for k, b in enumerate(blocks):
         lo, hi = b.get("window_kms_line1_velocity") or s["window"]["user_kms"]
-        ax.axvspan(lo, hi, color="C1", alpha=0.08, lw=0,
-                   label="window of the area flux" if k == 0 else None)
+        own = b.get("window_kms") or (lo, hi)
+        ax.axvspan(lo, hi, color="C1", alpha=0.10, lw=0,
+                   label=_window_label(*own) + (f" (line {k + 1})" if several else ""))
     ax.fill_between(vb, -eb, eb, step="mid", color="0.6", alpha=0.35, lw=0,
-                    label=r"$\pm1\sigma$ noise")
-    ax.step(vb, yib, where="mid", color="0.45", lw=0.8, ls=":", label="imaginary (null)")
-    ax.step(vb, yb, where="mid", color="k", lw=1.2, label="stacked flux density")
+                    label=r"noise, $\pm1\sigma$")
+    ax.step(vb, yb, where="mid", color="k", lw=1.2, label="stacked spectrum")
     # the model averaged over the channels, as it was fitted
     _, mb, _ = _rebin(v, np.where(used, result.profile_model[order] * f, np.nan), e, rho, rebin)
     ax.step(vb, mb, where="mid", color="C3", lw=1.5, label="Gaussian fit")
@@ -128,61 +166,59 @@ def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = Non
     cf = s.get("continuum_fit")
     base = cf["flux_density"] * f if cf else 0.0
     ax.fill_between(vb, base, np.where(np.isfinite(mb), mb, base), step="mid",
-                    facecolor="none", edgecolor="C3", hatch="////", lw=0, alpha=0.5,
-                    label="area of the Gaussian")
-    if cf:
-        ax.axhline(base, color="C0", lw=1.0, ls="-.",
-                   label=f"continuum fitted with the line: {_pm(base, cf['flux_density_error'] * f)} {ulabel}")
-    # residual continuum: offset and slope outside the windows
+                    facecolor="none", edgecolor="C3", hatch="////", lw=0, alpha=0.5)
+    # the continuum: the fitted level, or what is left outside the windows
     rc = s.get("continuum_residual")
-    if rc:
+    label = _continuum_label(s, f, ulabel, continuum)
+    if cf:
+        ax.axhline(base, color="C0", lw=1.2, ls="--", label=label)
+    elif rc:
         vv = np.linspace(*rc["velocity_range_kms"], 50)
-        c0 = (s.get("continuum_fit") or {}).get("flux_density", 0.0)   # on the fitted one
-        ax.plot(vv, (c0 + rc["offset"] + rc["slope_per_1000kms"] * vv / 1000) * f,
-                color="C2" if not rc["detected"] else "C1", lw=1.4, ls="--",
-                label=("continuum outside the windows: "
-                       + ("FLAGGED" if rc["detected"] else "none") + f" ({rc['offset_nsigma']:+.1f}"
-                       r"$\sigma$)"))
+        ax.plot(vv, (rc["offset"] + rc["slope_per_1000kms"] * vv / 1000) * f,
+                color="C1" if rc["detected"] else "C0", lw=1.2, ls="--", label=label)
     ax.axhline(0, color="0.3", lw=0.6)
+
     rows = []
     separate = len(s.get("line_groups") or [[1]]) > 1
     for k, b in enumerate(blocks):
         d = b["detection"]
-        sc = b.get("shape_check", {})
-        name = "" if len(blocks) == 1 else f"line {k + 1}: "
-        quoted = "area" if b.get("flux_method") == "area" else "Gaussian"
-        sig = (f"S/N {d['snr']:.1f} (fixed shape)" if d.get("fixed_shape")
-               else f"{d['significance_sigma']:.1f}$\\sigma$")
+        gauss = f"{_pm(b['flux_gauss'] * f, b['flux_gauss_error'] * f)} {ulabel} km/s"
+        area = f"{_pm(b['flux_area'] * f, b['flux_area_error'] * f)} {ulabel} km/s"
+        if b.get("flux_method") == "area":
+            fluxes = (f"Flux = {area}  (area under the spectrum, in the window)\n"
+                      f"   from the Gaussian fit: {gauss}")
+        else:
+            fluxes = (f"Flux = {gauss}  (area of the Gaussian fit)\n"
+                      f"   under the spectrum, in the window: {area}")
+        sig = (f"S/N {d['snr']:.1f} (centre and width fixed)" if d.get("fixed_shape")
+               else f"detected at {d['significance_sigma']:.1f}$\\sigma$")
         rows.append(
-            f"{name}F = {_pm(b['flux'] * f, b['flux_error'] * f)} {ulabel} km/s ({quoted}), {sig}\n"
-            f"   Gaussian {_pm(b['flux_gauss'] * f, b['flux_gauss_error'] * f)}, "
-            f"area {_pm(b['flux_area'] * f, b['flux_area_error'] * f)}"
-            + (f" ($\\Delta$ {sc['nsigma']:+.1f}$\\sigma$)" if np.isfinite(sc.get("nsigma", np.nan)) else "")
-            + f"\n   v$_0$ = {b['v0_kms']:+.0f}, FWHM = {b['fwhm_kms']:.0f} km/s, "
-            f"peak {_pm(b['peak'] * f, b.get('peak_error', np.nan) * f)} {ulabel}"
-            # lines fitted apart: each has its own size
-            + ("\n   size " + _size_text(b["size_model"], b.get("theta_fwhm_arcsec"),
-                                          b.get("size_test"))
+            (f"Line {k + 1} ({b['rest_freq_ghz']:.6g} GHz), " if several else "") + sig + "\n"
+            + fluxes
+            + f"\n$\\mu$ = {b['v0_kms']:+.0f} $\\pm$ {b.get('v0_error_kms', np.nan):.0f} km/s,  "
+              f"FWHM = {b['fwhm_kms']:.0f} $\\pm$ {b.get('fwhm_error_kms', np.nan):.0f} km/s,  "
+              f"peak = {_pm(b['peak'] * f, b.get('peak_error', np.nan) * f)} {ulabel}"
+            + (f"\nsource: {_size_text(b['size_model'], b.get('theta_fwhm_arcsec'))}"
                if separate and "size_model" in b else ""))
-    ax.text(0.02, 0.97, "\n".join(rows), transform=ax.transAxes, va="top", fontsize=8,
-            bbox=dict(boxstyle="round", fc="white", ec="0.8", alpha=0.9))
+    ax.text(0.02, 0.97, "\n".join(rows), transform=ax.transAxes, va="top", fontsize=7.8,
+            linespacing=1.35, bbox=dict(boxstyle="round", fc="white", ec="0.8", alpha=0.92))
     ax.set_ylabel(f"flux density [{ulabel}]")
     lo_y, hi_y = ax.get_ylim()
-    ax.set_ylim(lo_y, hi_y + (0.35 + (0.16 if separate else 0.12) * len(blocks))
-                * (hi_y - lo_y))
-    ax.legend(loc="upper right", fontsize=7, frameon=False)
-    p = s["line"]
-    ax.set_title(f"stacked line{'s' if len(blocks) > 1 else ''}, zero spacing "
-                 f"({s['n_sources']} sources, {s['weighting_scheme']}, size "
-                 f"{_size_text(p['size_model'], p['theta_fwhm_arcsec'], s.get('size_test'))}"
-                 + (f", {rebin} channels per bin" if rebin > 1 else "") + ")", fontsize=9)
-    # residuals
+    n_rows = sum(r.count("\n") + 1 for r in rows)
+    ax.set_ylim(lo_y - 0.22 * (hi_y - lo_y), hi_y + (0.10 + 0.085 * n_rows) * (hi_y - lo_y))
+    ax.legend(loc="lower right", fontsize=7.5, frameon=False, ncol=2)
+    ax.set_title(f"stacked line{'s' if several else ''} at zero spacing: {s['n_sources']} "
+                 f"sources, {s['weighting_scheme']} weighting"
+                 + (f", {rebin} channels per bin" if rebin > 1 else ""), fontsize=9)
+    # residuals and the imaginary part, in units of the noise
     with np.errstate(invalid="ignore", divide="ignore"):
-        axr.step(vb, (yb - mb) / eb, where="mid", color="k", lw=1)
+        axr.step(vb, (yb - mb) / eb, where="mid", color="k", lw=1, label="spectrum − fit")
+        axr.plot(vb, yib / eb, "x", color="C0", ms=3.5, mew=0.8, label="imaginary part")
     axr.axhspan(-1, 1, color="0.6", alpha=0.3, lw=0)
     axr.axhline(0, color="0.3", lw=0.6)
-    axr.set_ylabel(r"resid./$\sigma$")
+    axr.set_ylabel(r"in units of $\sigma$")
     axr.set_xlabel("velocity [km/s]")
+    axr.legend(fontsize=7, frameon=False, ncol=2, loc="upper right", borderaxespad=0.1)
     if v_limits:
         axr.set_xlim(*v_limits)
     else:
@@ -190,52 +226,64 @@ def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = Non
     return _finish(fig, path)
 
 
-def _size_text(model, theta, size_test):
-    """'gauss 0.46" (Δχ² 35.2)': the size and how much a Gaussian improves
-    on a point source."""
-    out = str(model) + (f" {theta:.2f}\"" if theta else "")
-    if size_test and np.isfinite(size_test.get("delta_chi2_point_minus_gauss", np.nan)):
-        out += f" ($\\Delta\\chi^2$ {size_test['delta_chi2_point_minus_gauss']:.1f})"
-    return out
+def _size_text(model, theta):
+    """'Gaussian, FWHM 0.46"' or 'point source'."""
+    if not theta:
+        return "point source"
+    return f"Gaussian, FWHM {theta:.2f}\"" + (" (fixed)" if model == "fixed" else "")
 
 
 def plot_uv(result, path: Optional[str] = None, unit: Optional[str] = None):
-    """Line flux of every annulus against baseline, with the source models.
+    """The line flux measured in every annulus of baseline length (points),
+    and the source model fitted to all of them: flat for a point source,
+    falling with the baseline for an extended one.  The flux quoted for the
+    Gaussian fit is where the model meets zero baseline.  With
+    ``model="auto"`` both models are drawn, the preferred one thicker.
     Without ``path`` the figure is returned."""
     plt = _pyplot()
     s = result.summary
     f, ulabel = _scale(unit, _typical(result))
     b = result.baseline_klambda
     ok = result.annulus_ok & np.isfinite(result.annulus_flux)
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    fig, ax = plt.subplots(figsize=(6.8, 4.4))
     ax.errorbar(b[ok], result.annulus_flux[ok] * f, result.annulus_flux_error[ok] * f,
-                fmt="o", color="k", ms=4, capsize=2, label="line flux per annulus")
+                fmt="o", color="k", ms=4, capsize=2, label="line flux in every annulus")
     bb = np.geomspace(max(b[ok].min() * 0.5, 0.1), b[ok].max() * 1.5, 300)
     p = s["line"]
     ax.axhline(0, color="0.3", lw=0.6)
     st = s.get("size_test")
+    unit_f = f"{ulabel} km/s"
     if st and st.get("weight_gauss") is not None:
-        wg = st["weight_gauss"]
+        gauss_wins = st["adopted"] == "gauss"
         ax.plot(bb, np.full_like(bb, st["flux_point"] * f), color="C0",
-                lw=0.8 + 1.6 * (1 - wg), label=f"point source (weight {1 - wg:.2f})")
+                lw=1.0 if gauss_wins else 2.2, ls="--" if gauss_wins else "-",
+                label=f"point source: flux {_pm(st['flux_point'] * f, st['flux_point_error'] * f)}")
         if st.get("theta_gauss_arcsec"):
             ax.plot(bb, st["flux_gauss"] * f * uv_gaussian(bb * 1e3, st["theta_gauss_arcsec"]),
-                    color="C3", lw=0.8 + 1.6 * wg,
-                    label=f"Gaussian, FWHM {st['theta_gauss_arcsec']:.2f}\" (weight {wg:.2f}, "
-                          f"$\\Delta\\chi^2$ = {st['delta_chi2_point_minus_gauss']:.1f})")
-        ax.axhline(p["flux"] * f, color="k", ls=":", lw=1,
-                   label=f"total flux, model average: {p['flux'] * f:.3g}")
+                    color="C3", lw=2.2 if gauss_wins else 1.0, ls="-" if gauss_wins else "--",
+                    label=f"Gaussian source, FWHM {st['theta_gauss_arcsec']:.2f}\": flux "
+                          f"{_pm(st['flux_gauss'] * f, st['flux_gauss_error'] * f)}")
+        chosen = (f"extended: the Gaussian source fits better ($\\Delta\\chi^2$ = "
+                  f"{st['delta_chi2_point_minus_gauss']:.1f}, needed {st['threshold']:.0f})"
+                  if gauss_wins else
+                  f"compatible with a point source ($\\Delta\\chi^2$ = "
+                  f"{st['delta_chi2_point_minus_gauss']:.1f}, needed {st['threshold']:.0f})")
     elif p["theta_fwhm_arcsec"]:
-        ax.plot(bb, p["flux"] * f * uv_gaussian(bb * 1e3, p["theta_fwhm_arcsec"]), color="C3",
-                label=f"Gaussian, FWHM {p['theta_fwhm_arcsec']:.2f}\"")
+        ax.plot(bb, p["flux_gauss"] * f * uv_gaussian(bb * 1e3, p["theta_fwhm_arcsec"]),
+                color="C3", lw=2.2,
+                label=f"Gaussian source, FWHM {p['theta_fwhm_arcsec']:.2f}\": flux "
+                      f"{_pm(p['flux_gauss'] * f, p['flux_gauss_error'] * f)}")
+        chosen = "Gaussian source, as asked"
     else:
-        ax.plot(bb, np.full_like(bb, p["flux"] * f), color="C3", label="point source")
+        ax.plot(bb, np.full_like(bb, p["flux_gauss"] * f), color="C0", lw=2.2,
+                label=f"point source: flux {_pm(p['flux_gauss'] * f, p['flux_gauss_error'] * f)}")
+        chosen = "point source, as asked"
     ax.set_xscale("log")
-    if len(s.get("lines") or []) > 1:
-        ax.set_title(f"line 1 ({s['rest_freq_ghz']:.6g} GHz)", fontsize=9)
-    ax.set_xlabel(r"baseline [k$\lambda$]")
-    ax.set_ylabel(f"line flux [{ulabel} km/s]")
-    ax.legend(fontsize=8, frameon=False)
+    ax.set_title(("line 1: " if len(s.get("lines") or []) > 1 else "") + chosen, fontsize=9)
+    ax.set_xlabel(r"baseline length [k$\lambda$]   (longer = finer details)")
+    ax.set_ylabel(f"line flux [{unit_f}]")
+    ax.legend(fontsize=8, frameon=False, title=f"flux of the Gaussian fit in velocity, {unit_f}",
+              title_fontsize=7.5)
     return _finish(fig, path)
 
 
@@ -299,9 +347,10 @@ def plot_noise(result, path: Optional[str] = None, unit: Optional[str] = None):
 
 
 def plot_line_result(result, line: Lines, prefix: str, unit: Optional[str] = None,
-                     v_limits=None, rebin: int = 1, verbose=True) -> List[str]:
+                     v_limits=None, rebin: int = 1, verbose=True, continuum=None) -> List[str]:
     """All three figures; returns their paths."""
-    out = [plot_profile(result, line, f"{prefix}_profile.png", unit, v_limits, rebin),
+    out = [plot_profile(result, line, f"{prefix}_profile.png", unit, v_limits, rebin,
+                        continuum),
            plot_uv(result, f"{prefix}_uv.png", unit),
            plot_noise(result, f"{prefix}_noise.png", unit)]
     _say("  figures: " + ", ".join(out), verbose)
@@ -331,7 +380,7 @@ def _line_of(result):
 _COLOURS = ["#000000", "#c0392b", "#2471a3", "#d68910", "#7d3c98", "#17a589", "#7f8c8d"]
 
 
-def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
+def compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy",
             rebin: int = 1, v_limits=None, save: Optional[str] = None, show: bool = True,
             table: bool = True):
     """Several measurements side by side: the profiles at zero spacing with
@@ -343,10 +392,11 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
     results : dict
         ``{label: result}``, results of :meth:`vista.ViSta.run` (or their
         ``.line``), in the order to draw them.
-    truth : dict, optional
-        What they should give, for simulations: ``flux`` (line flux, or a
-        list, one per line), ``profile`` (``(velocity_kms, flux_density)``),
-        ``uv`` (``(baseline_klambda, line_flux)``), ``continuum``.
+    expected : dict, optional
+        What a perfect measurement would give, when it is known (a
+        simulation): ``flux`` (line flux, or a list, one per line),
+        ``profile`` (``(velocity_kms, flux_density)``), ``uv``
+        (``(baseline_klambda, line_flux)``), ``continuum``.  Drawn in green.
     unit : str
         Unit of the data (``"Jy"``: drawn in mJy).
     rebin : int
@@ -360,7 +410,7 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
     items = [(str(k), _line_of(r)) for k, r in dict(results).items()]
     if not items:
         raise ValueError("compare: no result")
-    truth = truth or {}
+    truth = expected or {}
     f, ulabel = _scale(unit, _typical(items[0][1]))
     fig = plt.figure(figsize=(12, 7.6), layout="constrained")
     gs = fig.add_gridspec(2, 2, height_ratios=[1.15, 1])
@@ -370,12 +420,16 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
     # the windows of the measurement with the most lines
     n_lines = [len(r.summary.get("lines") or [1]) for _, r in items]
     s0 = items[int(np.argmax(n_lines))][1].summary
+    windows = {tuple(np.round(r.summary["line"]["window_kms"], 3)) for _, r in items}
     for k, b in enumerate(s0.get("lines") or [s0["line"]]):
         lo, hi = b.get("window_kms_line1_velocity") or s0["window"]["user_kms"]
-        ax_p.axvspan(lo, hi, color="C1", alpha=0.07, lw=0,
-                     label=("line windows" if len(s0.get("lines") or []) > 1
-                            else "line window") if k == 0 else None)
+        if len(windows) == 1:
+            ax_p.axvspan(lo, hi, color="C1", alpha=0.07, lw=0,
+                         label=("line windows" if len(s0.get("lines") or []) > 1
+                                else _window_label(lo, hi)) if k == 0 else None)
     vmin, vmax = np.inf, -np.inf
+    spectra = []               # the spectrum of every measurement, unless the same as drawn
+    dashes = [(6, 2), (2, 2), (8, 2, 2, 2), (4, 4), (1, 1.5), (10, 3)]
     for i, (label, r) in enumerate(items):
         c = _COLOURS[i % len(_COLOURS)]
         v = r.velocity_kms
@@ -390,18 +444,30 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
         if i == 0:
             ax_p.fill_between(vb, -eb, eb, step="mid", color="0.6", alpha=0.3, lw=0,
                               label=r"$\pm1\sigma$ noise")
-        ax_p.step(vb, yb, where="mid", color=c, lw=1.0, alpha=0.75)
-        ax_p.step(vb, mb, where="mid", color=c, lw=1.8, ls="--", label=label)
+        if not any(len(yb) == len(y0) and np.allclose(np.nan_to_num(yb), np.nan_to_num(y0),
+                                                      atol=0.02 * np.nanmedian(eb))
+                   for y0 in spectra):
+            spectra.append(yb)
+            ax_p.step(vb, yb, where="mid", color=c if len(spectra) > 1 else "0.25", lw=1.0,
+                      alpha=0.75)
+        # different dashes: fits that coincide stay visible, one over the other
+        ax_p.step(vb, mb, where="mid", color=c, lw=1.8, dashes=dashes[i % len(dashes)],
+                  label=label)
+        if len(windows) > 1:                 # the window of the area flux of each
+            for edge in r.summary["line"]["window_kms"]:
+                ax_p.axvline(edge, color=c, lw=1.0, ls=":")
         if used.any():
             vmin, vmax = min(vmin, v[o][used].min()), max(vmax, v[o][used].max())
     if "profile" in truth:
         tv, ty = truth["profile"]
-        ax_p.plot(tv, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="true")
+        ax_p.plot(tv, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="expected")
     ax_p.axhline(0, color="0.3", lw=0.6)
     ax_p.set_xlim(*(v_limits or (vmin, vmax)))
     ax_p.set_xlabel("velocity [km/s]")
     ax_p.set_ylabel(f"flux density [{ulabel}]")
-    ax_p.set_title("profile at zero spacing: data (thin) and fit (dashed)", fontsize=9)
+    ax_p.set_title("stacked spectrum at zero spacing (thin) and the fits (dashed)"
+                   + ("; dotted: the window of each area flux" if len(windows) > 1 else ""),
+                   fontsize=9)
     ax_p.legend(fontsize=8, frameon=False, loc="upper right")
 
     # ---- the line flux per annulus ----------------------------------------
@@ -429,15 +495,16 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
             th = p.get("theta_fwhm_arcsec") or 0.0
             curve = p["flux_gauss"] * (uv_gaussian(bb * 1e3, th) if th else np.ones_like(bb))
             ax_u.plot(bb, curve * f, color=_COLOURS[i % len(_COLOURS)], lw=1.5,
-                      label=f"{label}: " + (f"{th:.2f}\"" if th else "point"))
+                      dashes=dashes[i % len(dashes)],
+                      label=f"{label}: " + (f"Gaussian {th:.2f}\"" if th else "point source"))
         if "uv" in truth:
             tb, ty = truth["uv"]
-            ax_u.plot(tb, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="true")
+            ax_u.plot(tb, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="expected")
     ax_u.axhline(0, color="0.3", lw=0.6)
     ax_u.set_xscale("log")
     ax_u.set_xlabel(r"baseline [k$\lambda$]")
     ax_u.set_ylabel(f"line flux [{ulabel} km/s]")
-    ax_u.set_title("line 1 per annulus, and the source model", fontsize=9)
+    ax_u.set_title("line flux in every annulus, and the source models", fontsize=9)
     ax_u.legend(fontsize=7.5, frameon=False)
 
     # ---- the fluxes ---------------------------------------------------------
@@ -457,11 +524,11 @@ def compare(results, truth: Optional[dict] = None, unit: Optional[str] = "Jy",
     if tf is not None:
         for t in np.atleast_1d(tf):
             ax_f.axvline(t * f, color="#1e8449", ls="--", lw=1.8)
-    ax_f.plot([], [], "o", color="0.3", label="quoted")
-    ax_f.plot([], [], "s", mfc="none", mec="0.3", ls="none", label="Gaussian")
-    ax_f.plot([], [], "^", mfc="none", mec="0.3", ls="none", label="area")
+    ax_f.plot([], [], "o", color="0.3", label="flux quoted")
+    ax_f.plot([], [], "s", mfc="none", mec="0.3", ls="none", label="Gaussian fit")
+    ax_f.plot([], [], "^", mfc="none", mec="0.3", ls="none", label="area in the window")
     if tf is not None:
-        ax_f.plot([], [], color="#1e8449", ls="--", label="true")
+        ax_f.plot([], [], color="#1e8449", ls="--", label="expected")
     ax_f.set_yticks(y)
     ax_f.set_yticklabels([r[0] for r in rows], fontsize=8)
     ax_f.set_ylim(-0.8, len(rows) - 0.4)
@@ -500,7 +567,7 @@ def _table(items, truth):
                        + (f"{sig:6.1f}σ" if np.isfinite(sig) else f"{'':7s}")
                        + (f"  {cont}" if k == 0 else ""))
     if tf is not None:
-        out.append(f"{'true':{width}s} " + ", ".join(f"{t:.4g}" for t in np.atleast_1d(tf))
+        out.append(f"{'expected':{width}s} " + ", ".join(f"{t:.4g}" for t in np.atleast_1d(tf))
                    + (f"   continuum {truth['continuum']:.3g}" if truth.get("continuum") else ""))
     return "\n".join(out)
 

@@ -1,9 +1,9 @@
 # 0. Setup
 
-The code is cloned from GitHub and the C++/OpenMP kernel (`ms_ops`) is built
-with CMake (a couple of minutes, once). For a private repository, add a
-GitHub token to the Colab secrets (key icon on the left) as `GITHUB_TOKEN`.
-Outside Colab, set `VISTA_REPO` to a built checkout.
+The code is cloned from GitHub and its C++ kernel is built (a couple of
+minutes, once). For a private repository, add a GitHub token to the Colab
+secrets (key icon on the left) as `GITHUB_TOKEN`. Outside Colab, set
+`VISTA_REPO` to a built checkout.
 
 ```python
 REPO_URL = "https://github.com/martitors/ViSta-HPC.git"
@@ -32,7 +32,9 @@ if not glob.glob(f"{REPO}/vista/ms_ops*.so"):          # build the kernel once
                    f" && cmake --install {REPO}/build > /dev/null", shell=True, check=True)
 sys.path[:0] = [REPO, os.path.join(REPO, "examples")]
 
-import simulate                                        # examples/simulate.py: the observations
+import numpy as np
+import matplotlib.pyplot as plt
+import simulate                                        # examples/simulate.py: the simulator
 import vista
 from vista import ViSta
 

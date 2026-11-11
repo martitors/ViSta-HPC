@@ -15,7 +15,7 @@ These objects are internal: the user sets the same options through
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np

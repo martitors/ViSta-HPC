@@ -109,6 +109,6 @@ A good sequence when the line window is uncertain:
    subtraction on the stack;
 4. check that `continuum_residual` is not flagged.
 
-[Example 9](../examples/09_the_continuum_subtracted) compares the continuum
+[Example 10](../examples/10_the_continuum) compares the continuum
 subtracted, fitted with the line and left in the data, on the simulated
 sample.

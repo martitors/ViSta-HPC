@@ -36,7 +36,8 @@ import logging as _logging
 import sys as _sys
 import time as _time
 
-__all__ = ["ViSta", "compare", "set_verbosity", "export_ms", "open_stack"]
+__all__ = ["ViSta", "compare", "dirty_image", "plot_image", "set_verbosity", "export_ms",
+           "open_stack"]
 __version__ = "3.0.0"
 
 
@@ -144,6 +145,9 @@ def __getattr__(name):
     if name == "compare":
         from .extract.plots_line import compare
         return compare
+    if name in ("dirty_image", "plot_image"):
+        from . import quicklook
+        return getattr(quicklook, name)
     if name in ("export_ms", "open_stack"):
         from . import stackio
         return getattr(stackio, name)

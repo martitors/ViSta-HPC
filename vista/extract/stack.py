@@ -35,7 +35,7 @@ from .config import (BootstrapConfig, Lines, ProfileConfig, UVFitConfig,
 from .profiles import (LineShape, fit_line_shape, flux_per_annulus_continuum,
                        flux_per_annulus_template, flux_per_annulus_window,
                        integrated_spectrum)
-from .sources import (Entry, amplitude_factors, group_by_position,
+from .sources import (amplitude_factors, group_by_position,
                       read_input_list)
 from .statistics import SufficientStatistics
 from .uvfit import UVFitResult, fit_uv_profile, gaussian_visibility

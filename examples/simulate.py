@@ -12,7 +12,8 @@ redshift ``z``, a few arcsec from the phase centre, with
 * a continuum of ``cont_flux`` [Jy] at the line frequency, with a spectral
   index ``cont_index``;
 * a circular Gaussian shape of FWHM ``size_arcsec`` (0: a point source), the
-  same for line and continuum unless ``cont_size_arcsec`` is given;
+  same for line and continuum unless ``cont_size_arcsec`` is given; or a
+  ring of that diameter (``shape="ring"``), a source that is not a Gaussian;
 * the primary-beam attenuation at the source position (Gaussian beam of
   FWHM 1.2 c / (nu D), the model the extraction corrects for);
 * Gaussian noise of ``noise`` [Jy] per real / imaginary part of a typical
@@ -112,13 +113,23 @@ def source_spectrum(freq_hz, z, rest_freq_ghz, line_flux, fwhm_kms, v0_kms, cont
     return line, cont
 
 
-def shape_visibility(q_wavelengths, size_arcsec):
-    """Visibility of a circular Gaussian of FWHM ``size_arcsec`` and unit
-    flux at uv distance ``q`` [wavelengths] (1 for a point source)."""
+def shape_visibility(q_wavelengths, size_arcsec, shape="gauss"):
+    """Visibility of a source of unit flux at uv distance ``q``
+    [wavelengths] (1 for a point source, ``size_arcsec`` 0).
+
+    ``shape="gauss"``: a circular Gaussian of FWHM ``size_arcsec``.
+    ``shape="ring"``: a ring of diameter ``size_arcsec``, a quarter of it
+    thick: not a Gaussian, its visibility oscillates and goes negative."""
+    q = np.asarray(q_wavelengths, float)
     if not size_arcsec:
-        return np.ones_like(np.asarray(q_wavelengths, float))
+        return np.ones_like(q)
     t = math.radians(size_arcsec / 3600.0)
-    return np.exp(-(math.pi * t * np.asarray(q_wavelengths)) ** 2 / (4 * math.log(2)))
+    if shape == "ring":
+        from scipy.special import j0
+        return j0(math.pi * t * q) * np.exp(-(math.pi * 0.25 * t * q) ** 2 / (4 * math.log(2)))
+    if shape != "gauss":
+        raise ValueError(f"shape: 'gauss' or 'ring', not {shape!r}")
+    return np.exp(-(math.pi * t * q) ** 2 / (4 * math.log(2)))
 
 
 def line_profile(rec, v_kms):
@@ -139,8 +150,8 @@ def model_visibility(rec, uvw, freq_hz):
                                  rec["fwhm_kms"], rec["v0_kms"], rec["cont_flux"],
                                  rec["cont_index"], rec.get("extra_lines", ()))
     q = np.hypot(uvw[:, 0], uvw[:, 1])[:, None] * np.asarray(freq_hz)[None, :] / C
-    g_line = shape_visibility(q, rec["size_arcsec"])
-    g_cont = shape_visibility(q, rec["cont_size_arcsec"])
+    g_line = shape_visibility(q, rec["size_arcsec"], rec.get("shape", "gauss"))
+    g_cont = shape_visibility(q, rec["cont_size_arcsec"], rec.get("shape", "gauss"))
     return rec["primary_beam"] * line[None, :] * g_line, rec["primary_beam"] * cont[None, :] * g_cont
 
 
@@ -148,7 +159,7 @@ def model_visibility(rec, uvw, freq_hz):
 # one dataset
 # ---------------------------------------------------------------------------
 def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0_kms=0.0,
-            cont_flux=0.0, cont_index=3.0, size_arcsec=0.0, cont_size_arcsec=None,
+            cont_flux=0.0, cont_index=3.0, size_arcsec=0.0, cont_size_arcsec=None, shape="gauss",
             phase_centre=(150.0, 2.0), offset_arcsec=(2.0, 1.0), noise=0.05, kappa=1.0,
             hanning=True, nchan=96, dv_kms=20.0, nant=43, rmax=250.0, ntime=40, dt=30.0,
             primary_beam_attenuation=True, noiseless=False, seed=1, band_offset_kms=0.0,
@@ -206,7 +217,8 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
            "line_flux": line_flux, "line_peak": line_flux / (sig * math.sqrt(2 * math.pi)),
            "fwhm_kms": fwhm_kms, "v0_kms": v0_kms, "cont_flux": cont_flux,
            "extra_lines": [dict(x) for x in extra_lines],
-           "cont_index": cont_index, "size_arcsec": size_arcsec,
+           "cont_index": cont_index, "size_arcsec": size_arcsec, "shape": shape,
+           "rmax_m": rmax,
            "cont_size_arcsec": size_arcsec if cont_size_arcsec is None else cont_size_arcsec,
            "primary_beam": primary_beam(off, nu_obs) if primary_beam_attenuation else 1.0,
            "offset_arcsec": off, "nu_obs_ghz": nu_obs / 1e9, "noise": noise, "kappa": kappa}
@@ -341,17 +353,10 @@ def make_ms(path, z, rest_freq_ghz=345.79599, line_flux=0.25, fwhm_kms=250.0, v0
     return rec
 
 
-def spectrum_at(rec):
-    """Quick look at one simulated dataset (a record of make_ms /
-    make_sample): its visibilities phase-shifted to the galaxy and averaged
-    over all baselines with their weights (real part, both correlations).
-
-    Returns a dict: ``v`` (radio velocity, km/s), ``mean`` and ``error`` (of
-    the data), ``expected`` (the same average of the noiseless visibilities:
-    what the data scatter around) and ``total`` (the true flux density times
-    the primary beam: what a zero-length baseline would see).  For a source
-    larger than the beam ``expected`` is well below ``total``: the long
-    baselines resolve it."""
+def _centred(rec):
+    """The visibilities of one simulated dataset with the phase centre moved
+    onto the galaxy: ``data`` (nrow, nchan, ncorr), ``uvw`` [m], the weights
+    (0 where flagged) and the channel frequencies [Hz]."""
     from casacore import tables as ct
     path = rec["path"]
     with ct.table(path, ack=False) as t:
@@ -367,8 +372,109 @@ def spectrum_at(rec):
     l, m, n = _basis(ra0, dec0) @ src
     phase = 2 * math.pi * (uvw[:, 0:1] * l + uvw[:, 1:2] * m + uvw[:, 2:3] * (n - 1)) \
         * freq[None, :] / C
-    shifted = (data * np.exp(-1j * phase)[:, :, None]).real
-    wt = np.where(flag, 0.0, w[:, None, :])
+    return (data * np.exp(-1j * phase)[:, :, None], uvw, np.where(flag, 0.0, w[:, None, :]),
+            freq)
+
+
+def channel_image(rec, v_kms=0.0, fov_arcsec=None):
+    """Dirty image of one simulated dataset, centred on the galaxy, in the
+    channel nearest to the velocity ``v_kms`` (0: the line centre)."""
+    from vista.quicklook import image_visibilities
+    data, uvw, wt, freq = _centred(rec)
+    nu_r = rec["rest_freq_ghz"] * 1e9
+    k = int(np.argmin(np.abs(C_KMS * (nu_r - freq * (1 + rec["z"])) / nu_r - v_kms)))
+    w = wt[:, k, :].sum(axis=1)
+    vis = (wt[:, k, :] * data[:, k, :]).sum(axis=1) / np.maximum(w, 1e-300)
+    return image_visibilities(uvw[:, 0] * freq[k] / C, uvw[:, 1] * freq[k] / C, vis, w,
+                              fov_arcsec)
+
+
+def plot_galaxy(clean, noisy, unit_factor=1e3):
+    """One simulated galaxy as the telescope would see it without noise
+    (``clean``, a record of ``make_ms(..., noiseless=True)``) and with it
+    (``noisy``): the image of the channel at the line centre, and below it
+    the spectrum at the position of the galaxy (the visibilities averaged
+    over the baselines), with the true line."""
+    import matplotlib.pyplot as plt
+    from vista.quicklook import plot_image
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.2), gridspec_kw={"height_ratios": [1.25, 1]})
+    images = [channel_image(clean), channel_image(noisy)]
+    top = max(float(images[0].data.max()), 4 * images[1].rms)
+    for j, (rec, name, img) in enumerate(zip((clean, noisy), ("without noise", "with noise"),
+                                             images)):
+        if j == 0:
+            img.rms = images[1].rms               # the same colours and contours as the noisy one
+        plot_image(img, axes[0, j], title=f"{name}: channel at the line centre", vmax=top)
+        sp = spectrum_at(rec)
+        ax = axes[1, j]
+        o = np.argsort(sp["v"])
+        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=1,
+                label="observed, average of all baselines")
+        ax.plot(sp["v"][o], sp["total"][o] * unit_factor, color="#1e8449", lw=1.8,
+                label="true total flux density")
+        ax.axhline(0, color="0.4", lw=0.6)
+        ax.set_xlabel("velocity [km/s]")
+        ax.set_ylabel("flux density [mJy]")
+        ax.legend(fontsize=7.5, frameon=False, loc="upper left")
+    lo = min(a.get_ylim()[0] for a in axes[1])
+    hi = max(a.get_ylim()[1] for a in axes[1]) * 1.25
+    axes[1, 0].set_ylim(lo, hi)
+    axes[1, 1].set_ylim(lo, hi)
+    fig.tight_layout()
+
+
+def plot_sample(truth, unit_factor=1e3, ncols=4):
+    """The spectrum of every galaxy of a sample at its position (black) and
+    its true line (green): what each observation sees on its own."""
+    import matplotlib.pyplot as plt
+    recs = truth["sources"]
+    nrows = -(-len(recs) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.0 * nrows), sharex=True,
+                             sharey=True, squeeze=False)
+    for ax, rec in zip(axes.ravel(), recs):
+        sp = spectrum_at(rec)
+        o = np.argsort(sp["v"])
+        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=0.8)
+        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=1.5)
+        ax.axhline(0, color="0.4", lw=0.5)
+        ax.set_title(f"z = {rec['z']:.2f}, {rec['size_arcsec']:.1f}\", "
+                     f"noise {rec['noise'] * rec['kappa']:.2f} Jy", fontsize=8)
+    for ax in axes.ravel()[len(recs):]:
+        ax.axis("off")
+    for ax in axes[-1]:
+        ax.set_xlabel("velocity [km/s]")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("mJy")
+    fig.tight_layout()
+
+
+def describe(truth):
+    """A table of the galaxies of a sample: what was simulated for each."""
+    rows = [f"{'':>3s} {'z':>6s} {'nu_obs':>8s} {'line':>8s} {'FWHM':>6s} {'size':>6s} "
+            f"{'continuum':>10s} {'noise':>7s} {'array':>6s} {'offset':>7s} {'PB':>5s}",
+            f"{'':>3s} {'':>6s} {'GHz':>8s} {'Jy km/s':>8s} {'km/s':>6s} {'arcsec':>6s} "
+            f"{'mJy':>10s} {'Jy/vis':>7s} {'m':>6s} {'arcsec':>7s} {'':>5s}"]
+    for k, r in enumerate(truth["sources"]):
+        rows.append(f"{k:3d} {r['z']:6.3f} {r['nu_obs_ghz']:8.2f} {r['line_flux']:8.3f} "
+                    f"{r['fwhm_kms']:6.0f} {r['size_arcsec']:6.2f} {r['cont_flux'] * 1e3:10.3f} "
+                    f"{r['noise'] * r['kappa']:7.3f} {r.get('rmax_m', float('nan')):6.0f} "
+                    f"{r['offset_arcsec']:7.1f} {r['primary_beam']:5.2f}")
+    return "\n".join(rows)
+
+
+def spectrum_at(rec):
+    """Quick look at one simulated dataset (a record of make_ms /
+    make_sample): its visibilities phase-shifted to the galaxy and averaged
+    over all baselines with their weights (real part, both correlations).
+
+    Returns a dict: ``v`` (radio velocity, km/s), ``mean`` and ``error`` (of
+    the data), ``expected`` (the same average of the noiseless visibilities:
+    what the data scatter around) and ``total`` (the true flux density times
+    the primary beam: what a zero-length baseline would see).  For a source
+    larger than the beam ``expected`` is well below ``total``: the long
+    baselines resolve it."""
+    data, uvw, wt, freq = _centred(rec)
+    shifted = data.real
     wsum = wt.sum(axis=(0, 2))
     mean = (wt * shifted).sum(axis=(0, 2)) / wsum
     # error from the scatter (the weights need not be absolute)
@@ -403,7 +509,7 @@ def expected_in_stack(rec, uvw, weight, flag, rest_freq_hz):
 # ---------------------------------------------------------------------------
 # the true values of a stack
 # ---------------------------------------------------------------------------
-def _stack_weights(truth, rescaled=True):
+def _stack_weights(truth, rescaled=True, weighting="natural"):
     """Factor applied to the flux of every galaxy and its relative weight in
     a naturally weighted stack (approximate: it ignores the differences in uv
     coverage, here the same for all).  ``rescaled``: as the extraction
@@ -415,7 +521,8 @@ def _stack_weights(truth, rescaled=True):
     noise = np.array([r["noise"] * r["kappa"] for r in truth["sources"]])
     if rescaled:
         a = np.array([alpha_factor(r["z"], truth["z_ref"]) for r in truth["sources"]])
-        w = (pb / a / noise) ** 2
+        # democratic: every galaxy the same weight, whatever its noise
+        w = (pb / a / noise) ** 2 if weighting == "natural" else np.ones(len(a))
         return a, w / w.sum()
     w = noise ** -2.0
     return pb, w / w.sum()
@@ -447,13 +554,15 @@ def true_uv(truth, b_klambda, part="line"):
     out = np.zeros_like(b)
     for r, ai, wi in zip(truth["sources"], a, w):
         if part == "line":
-            out += wi * ai * r["line_flux"] * shape_visibility(b, r["size_arcsec"])
+            out += wi * ai * r["line_flux"] * shape_visibility(b, r["size_arcsec"],
+                                                               r.get("shape", "gauss"))
         else:
-            out += wi * ai * r["cont_flux"] * shape_visibility(b, r["cont_size_arcsec"])
+            out += wi * ai * r["cont_flux"] * shape_visibility(b, r["cont_size_arcsec"],
+                                                               r.get("shape", "gauss"))
     return out
 
 
-def expected(truth, v_kms=None, b_klambda=None):
+def expected(truth, v_kms=None, b_klambda=None, weighting="natural"):
     """What the stack of a sample should give, in the form of
     ``vista.compare(..., truth=...)``: ``flux`` (one value per line: the
     lines of the band, by rest frequency, the first the line of the stack;
@@ -461,10 +570,12 @@ def expected(truth, v_kms=None, b_klambda=None):
     ``profile`` (velocity of the first line, flux density at zero spacing:
     every component), ``uv`` (baseline, line flux of the first line) and
     ``continuum``.  As the extraction measures it: rescaled to z_ref, the
-    primary beam corrected, natural weighting."""
+    primary beam corrected, with the ``weighting`` asked (``"natural"``: the
+    deeper observations count more; ``"democratic"``: every galaxy the
+    same).  Known only because the sample is simulated."""
     v = np.linspace(-1500, 1500, 1201) if v_kms is None else np.asarray(v_kms, float)
     b = np.geomspace(1, 3000, 200) if b_klambda is None else np.asarray(b_klambda, float)
-    a, w = _stack_weights(truth)
+    a, w = _stack_weights(truth, weighting=weighting)
     rest0 = truth["sources"][0]["rest_freq_ghz"]
     freqs = [rest0]
     flux, prof, uv = {}, np.zeros_like(v), np.zeros_like(b)
@@ -485,9 +596,10 @@ def expected(truth, v_kms=None, b_klambda=None):
             sig = c["fwhm_kms"] / 2.3548200450309493 * scale
             prof += f_c / (sig * math.sqrt(2 * math.pi)) * np.exp(-0.5 * ((v - v1) / sig) ** 2)
             if k == 0:
-                uv += f_c * shape_visibility(b * 1e3, r["size_arcsec"])
+                uv += f_c * shape_visibility(b * 1e3, r["size_arcsec"], r.get("shape", "gauss"))
+    cont = sum(wi * ai * r["cont_flux"] for r, ai, wi in zip(truth["sources"], a, w))
     return {"flux": [flux[k] for k in range(len(freqs))], "profile": (v, prof), "uv": (b, uv),
-            "continuum": truth.get("cont_flux_stack", 0.0), "rest_freq_ghz": freqs}
+            "continuum": float(cont), "rest_freq_ghz": freqs}
 
 
 # ---------------------------------------------------------------------------

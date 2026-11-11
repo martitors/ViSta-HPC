@@ -781,7 +781,8 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                    f"for a flux without a shape")
         else:
             method = "area"
-            why = "the sum over the window is quoted"
+            why = (f"the area and the Gaussian fit differ by {nsig:+.1f} sigma: the line is "
+                   f"not a Gaussian")
         if method == "area":
             flux_k, err_k, eth_k, ebt_k = f_a, e_a, e_a_th, e_a_bt
         else:
@@ -840,8 +841,8 @@ def measure_line(statistics: Union[str, SufficientStatistics],
             s_parts.append(s_g - gs.result.params.get("C", 0.0))
             e_parts.append(e_g_all)
         s_all, e_all = compose(s_parts), compose(e_parts)
-    else:
-        s_all, e_all = zero_spacing_spectrum(cube_all, 0.0)
+    else:                                    # with the size of the first line, as drawn
+        s_all, e_all = zero_spacing_spectrum(cube_all, G[0].theta)
     resid = residual_continuum(s_all, e_all, velocity, line_free, corr)
     if resid is not None:
         thr = cfg.residual_nsigma
@@ -976,7 +977,7 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                   f"widen the window" + (quoted or " (the Gaussian flux is quoted)"))
         else:
             _warn(f"measure: {name} is not Gaussian (double peak, wings?): the area and the "
-                  f"Gaussian flux differ by {nsig:+.1f} sigma" + (quoted or f"; {why}"))
+                  f"Gaussian flux differ by {nsig:+.1f} sigma" + (quoted or "; the area in the window is quoted"))
         notes.append(f"{name}: area and Gaussian flux differ by {nsig:+.1f} sigma")
     sig1 = detection.get("significance_sigma", 0)
     if not detection["fixed_shape"] and sig1 < 4:
