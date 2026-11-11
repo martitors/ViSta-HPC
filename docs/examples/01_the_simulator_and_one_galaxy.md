@@ -38,13 +38,18 @@ noisy = simulate.make_ms("one_noisy.ms", **galaxy)                     # as obse
 `simulate.plot_galaxy` shows them side by side. **Top**: the image of the
 channel at the centre of the line (a *dirty* image: the Fourier transform of
 the visibilities as they are; the circle is the resolution). **Bottom**: the
-spectrum at the position of the galaxy, and in green the true line on its
-continuum.
+spectrum at the position of the galaxy (black), the average of all the
+baselines.
 
-Without noise the galaxy is there, at the centre. The observed spectrum is
-below the true one because the source is extended: the long baselines see
-only part of it. With the noise of a real observation neither the image nor
-the spectrum show it: this is the galaxy that stacking is for.
+Two green curves give the true signal. The **solid** one is what these
+baselines should see: without noise the black spectrum lies exactly on it.
+The **dashed** one is the total flux of the galaxy, higher: the source is
+extended (0.8″), and the long baselines see only part of it. The total flux
+is what a baseline of zero length would measure, and what ViSta estimates by
+fitting how the flux falls with the baseline length (§4).
+
+With the noise of a real observation neither the image nor the spectrum
+show the galaxy clearly: this is the galaxy that stacking is for.
 
 ```python
 simulate.plot_galaxy(clean, noisy)

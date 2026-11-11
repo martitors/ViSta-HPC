@@ -394,7 +394,10 @@ def plot_galaxy(clean, noisy, unit_factor=1e3):
     (``clean``, a record of ``make_ms(..., noiseless=True)``) and with it
     (``noisy``): the image of the channel at the line centre, and below it
     the spectrum at the position of the galaxy (the visibilities averaged
-    over the baselines), with the true line."""
+    over the baselines).  In green the true signal: as these baselines see
+    it (solid: what the data scatter around) and its total flux (dashed:
+    higher when the source is extended, because the long baselines see only
+    part of it)."""
     import matplotlib.pyplot as plt
     from vista.quicklook import plot_image
     fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.2), gridspec_kw={"height_ratios": [1.25, 1]})
@@ -409,9 +412,11 @@ def plot_galaxy(clean, noisy, unit_factor=1e3):
         ax = axes[1, j]
         o = np.argsort(sp["v"])
         ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=1,
-                label="observed, average of all baselines")
-        ax.plot(sp["v"][o], sp["total"][o] * unit_factor, color="#1e8449", lw=1.8,
-                label="true total flux density")
+                label="observed (average of all baselines)")
+        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=1.8,
+                label="true signal on these baselines")
+        ax.plot(sp["v"][o], sp["total"][o] * unit_factor, color="#1e8449", lw=1.0, ls="--",
+                label="true total flux (zero baseline)")
         ax.axhline(0, color="0.4", lw=0.6)
         ax.set_xlabel("velocity [km/s]")
         ax.set_ylabel("flux density [mJy]")

@@ -20,7 +20,7 @@ print(r)
 ```
 
 ```text
-[ViSta      12.3s] z_ref = 2.2867 (median of the sample)
+[ViSta      12.6s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text

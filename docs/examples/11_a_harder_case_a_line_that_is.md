@@ -20,15 +20,15 @@ print(wings)
 ```
 
 ```text
-[ViSta      17.6s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
+[ViSta      14.9s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
 ```
 
 ```text
-[ViSta      17.6s] z_ref = 2.5250 (median of the sample)
+[ViSta      14.9s] z_ref = 2.5250 (median of the sample)
 ```
 
 ```text
-Stack      wings.zarr: 433,440 rows, 140 channels, 11 s
+Stack      wings.zarr: 433,440 rows, 140 channels, 8 s
 Line       345.796 GHz, 12 sources: detected at 48.7 sigma (S/N 48.8, searched over centre and width)
   flux     0.6295 ± 0.045 Jy km/s, the area under the spectrum in the window
            because the area and the Gaussian fit differ by +2.4 sigma: the line is not a Gaussian
@@ -66,7 +66,7 @@ vista.compare({"flux_measure='auto'": wings, "flux_measure='gauss'": wings_gauss
 ```
 
 ```text
-[ViSta      15.5s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; quoted: gauss (flux_measure='gauss')
+[ViSta      15.3s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; quoted: gauss (flux_measure='gauss')
 ```
 
 ```text

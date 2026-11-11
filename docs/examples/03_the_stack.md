@@ -21,7 +21,7 @@ v.run()
 ```
 
 ```text
-Stack      stack.zarr: 433,440 rows, 90 channels, 6 s
+Stack      stack.zarr: 433,440 rows, 90 channels, 5 s
 ```
 
 **What stacking does, in an image.** `vista.dirty_image` makes the image of

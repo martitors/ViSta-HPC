@@ -20,7 +20,7 @@ vista.compare({"z_norm=True (default)": r, "z_norm=False": no_z}, expected=expec
 ```
 
 ```text
-[ViSta      12.5s] no redshift rescaling, no flux normalisation
+[ViSta      11.7s] no redshift rescaling, no flux normalisation
 ```
 
 ```text
@@ -47,7 +47,7 @@ vista.compare({"pb_corr=True (default)": r, "pb_corr=False": no_pb}, expected=ex
 ```
 
 ```text
-[ViSta      13.5s] z_ref = 2.2867 (median of the sample)
+[ViSta      12.7s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text

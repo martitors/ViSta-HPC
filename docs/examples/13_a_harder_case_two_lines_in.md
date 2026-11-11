@@ -20,11 +20,11 @@ first_only.plot("profile")
 ```
 
 ```text
-[ViSta      26.7s] WARNING: measure: the real part in the line-free channels scatters 1.31 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
+[ViSta      23.5s] WARNING: measure: the real part in the line-free channels scatters 1.31 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
 ```
 
 ```text
-[ViSta      26.7s] z_ref = 2.2867 (median of the sample)
+[ViSta      23.5s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```{image} figures/13_01.png
@@ -44,11 +44,11 @@ print(both)
 ```
 
 ```text
-[ViSta      17.1s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.5 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
+[ViSta      17.8s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.5 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
 ```
 
 ```text
-Stack      two.zarr: 433,440 rows, 140 channels, 9 s
+Stack      two.zarr: 433,440 rows, 140 channels, 8 s
 Line 1     345.796 GHz, 12 sources: detected at 37.3 sigma (S/N 37.4, searched over centre and width)
   flux     0.4021 ± 0.021 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (+1.9 sigma)

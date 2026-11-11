@@ -31,11 +31,11 @@ vista.compare({"noise from the data (default)": r, "noise from the weights": fro
 ```
 
 ```text
-[ViSta      13.9s] WARNING: measure: the imaginary part scatters 1.20 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
+[ViSta      12.8s] WARNING: measure: the imaginary part scatters 1.20 x the noise of the visibilities: centring or calibration effects, the thermal errors are optimistic there
 ```
 
 ```text
-[ViSta      13.9s] WARNING: measure: the real part in the line-free channels scatters 1.32 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
+[ViSta      12.8s] WARNING: measure: the real part in the line-free channels scatters 1.32 x the noise of the visibilities: residual continuum or baseline effects, the thermal errors are optimistic there
 ```
 
 ```text

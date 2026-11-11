@@ -27,7 +27,7 @@ left.plot("profile")
 ```
 
 ```text
-[ViSta      13.1s] WARNING: measure: continuum in the data (not subtracted) outside the line windows: offset 0.000149 +- 4.9e-05 (+3.0 sigma, +10% of the line peak), slope 2.48e-05 +- 6.1e-05 per 1000 km/s (+0.4 sigma).  Subtract it (the default) or fit it with the lines (stack(..., continuum='fit')): as it is, the line fluxes include it
+[ViSta      10.8s] WARNING: measure: continuum in the data (not subtracted) outside the line windows: offset 0.000149 +- 4.9e-05 (+3.0 sigma, +10% of the line peak), slope 2.48e-05 +- 6.1e-05 per 1000 km/s (+0.4 sigma).  Subtract it (the default) or fit it with the lines (stack(..., continuum='fit')): as it is, the line fluxes include it
 ```
 
 ```{image} figures/10_02.png

@@ -51,7 +51,7 @@ vista.compare({"window ±500": wide, "window ±320": r, "window ±120": narrow},
 ```
 
 ```text
-[ViSta      12.8s] WARNING: measure: the line: the area flux differs from the Gaussian by -2.7 sigma, but the window holds only 70% of the fitted line: widen the window (the Gaussian flux is quoted)
+[ViSta      12.3s] WARNING: measure: the line: the area flux differs from the Gaussian by -2.7 sigma, but the window holds only 70% of the fitted line: widen the window (the Gaussian flux is quoted)
 ```
 
 ```text

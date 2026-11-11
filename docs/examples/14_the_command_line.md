@@ -12,11 +12,11 @@ PYTHONPATH={REPO} python -m vista --input sample/input_list.txt --output-name cl
 ```
 
 ```text
-[ViSta      14.2s] z_ref = 2.2867 (median of the sample)
+[ViSta      12.7s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text
-Stack      cli/stack.zarr: 433,440 rows, 90 channels, 7 s
+Stack      cli/stack.zarr: 433,440 rows, 90 channels, 8 s
 Line       345.796 GHz, 12 sources: detected at 11.4 sigma (S/N 11.8, searched over centre and width)
   flux     0.3656 ± 0.054 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (-0.5 sigma)

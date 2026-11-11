@@ -18,7 +18,7 @@ ring.plot("image")
 ```
 
 ```text
-[ViSta      17.5s] z_ref = 2.3959 (median of the sample)
+[ViSta      16.0s] z_ref = 2.3959 (median of the sample)
 ```
 
 ```{image} figures/12_01.png
