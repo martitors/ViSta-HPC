@@ -1,70 +1,151 @@
-# Output files and figures
+# Results, figures and files
 
-## Files
+**In one sentence.** A run gives you the same measurement in four forms: a
+report in words, a dictionary of numbers, figures, and files on disk.
 
-Everything a run writes starts with `output_name` (`stacked` by default; with
-`run(only="measure", tag="T")` the measurement files start with
-`<output_name>_T`):
+```python
+result = v.run()
+print(result)            # the report
+result.results           # the numbers
+result.plot()            # the figures
+result.files             # the files
+```
+
+## The report
+
+`print(result)` says what was measured **and why each choice was made**:
+
+- **Line**: the S/N, and how sure the detection is after the search over
+  centre and width;
+- **flux**: the number to quote, and whether it is the Gaussian fit or the
+  area in the window, with the reason;
+- **source**: a point or a Gaussian, with the Δχ² that decided;
+- **Continuum**: its flux density, its model, and what was done with it;
+- **Sizes**: the size from the line and from the continuum, each measured
+  on its own, and how far apart they are;
+- **Reference**: the weighting and the redshift the fluxes refer to.
+
+## The numbers: `result.results`
+
+One dictionary with everything measured. Every quantity has its `value`,
+`error` and `unit`.
+
+```python
+res = result.results
+res["flux"]          # {'value': 0.404, 'error': 0.040, 'unit': 'Jy km/s', 'method': 'fit', 'reason': ...}
+res["flux_fit"]      # area of the Gaussian fit
+res["flux_window"]   # area under the spectrum in the window
+res["centre"], res["fwhm"], res["peak"]
+res["snr"], res["significance"]
+res["size"]          # FWHM of the source used for the line (0: a point)
+res["model"]         # {'chosen': 'gauss', 'size_from': 'own fit', 'probability': ..., 'delta_chi2': ...}
+res["window"], res["noise"]
+res["continuum"]     # flux density, S/N, size, model, how it was treated
+res["sizes"]         # line and continuum, each on its own, and their difference in sigma
+res["lines"]         # the same keys for every line (the ones above are of the first)
+print(res["summary"])  # all of it in words: the same as print(result)
+```
+
+- **Units.** Fluxes are in data units × km/s for a line (Jy km/s for data
+  in Jy) and data units for the continuum. The flux normalisation rescales
+  them by `flux_ref / NORM`.
+- **`model["probability"]`** is how much more likely the chosen source
+  model is than the other one (point or Gaussian). It comes from the Δχ² of
+  the two fits, with a penalty for the extra parameter of the Gaussian
+  (Akaike weights). The choice itself is made on the fixed threshold
+  Δχ² ≥ 9.
+- **Everything else** (every error separately, the ranges searched, the
+  checks of the noise) is in `result.line.summary` and
+  `result.continuum.summary`, the dictionaries written to the JSON files.
+
+## The figures
+
+```python
+result.plot()                 # all those of the measurement
+result.plot("line")           # one at a time
+```
+
+| `plot(...)` | File | What it shows |
+|---|---|---|
+| `"line"` | `<name>_profile.png` | the stacked spectrum of the line, the fit, the window, the two fluxes |
+| `"line_uv"` | `<name>_uv.png` | the line flux against the baseline length, with the two source models |
+| `"continuum"` | `<name>_continuum.png` | the channels outside the line windows, and the level measured |
+| `"continuum_uv"` | `<name>_continuum_uv.png` | the continuum against the baseline length, with the two source models |
+| `"noise"` | `<name>_noise.png` | the checks of the noise and of the detection |
+| `"image"` | — | a quick image of the stack over the line window |
+
+The files are drawn by the run unless `v.extract(figures_draw=False)`
+(`--no-figures`). `save=` writes what `plot` draws.
+
+**How to read them.** The same conventions hold in every figure:
+
+- the **title** says what is stacked, in bold: `line (contsub)` after the
+  continuum subtraction, `line + cont` when the continuum was fitted with
+  the line, `cont`;
+- the axis says **Re**: the real part of the visibilities, where the signal
+  of a centred source is. The imaginary part (**Im**, grey crosses) holds
+  only noise;
+- **red** is the Gaussian (the fit of the line; the Gaussian source);
+  **green dashed** is the point source; **blue** is the continuum;
+  **orange** is the window;
+- what was **chosen** is in **bold**: the flux quoted, the source model
+  used.
+
+```{image} ../_static/fig_line.png
+:alt: The stacked line
+:width: 49%
+```
+```{image} ../_static/fig_line_uv.png
+:alt: The line against the baseline length
+:width: 49%
+```
+
+```{image} ../_static/fig_continuum.png
+:alt: The stacked continuum
+:width: 49%
+```
+```{image} ../_static/fig_continuum_uv.png
+:alt: The continuum against the baseline length
+:width: 49%
+```
+
+[Measuring the line](measure_line) and [The continuum](extract_flux)
+explain every element. The image (`"image"`, {func}`vista.dirty_image`) is
+a quick look at where the emission is, not a cleaned image.
+
+**Several measurements together.**
+`vista.compare({"label": result, ...}, expected=...)` draws them in one
+figure and prints their numbers side by side.
+
+## The files
+
+Every file starts with `output_name` (`stacked` by default). With
+`run(only="measure", tag="T")` the files of the measurement start with
+`<output_name>_T`, so they do not replace the others.
 
 | File | Content |
 |---|---|
 | `<name>.zarr` (or `.ms`) | the stack ([The stack on disk](../stacking/combination)) |
 | `<name>_line_stats.npy`, `<name>_cont_stats.npy` | the statistics of the line and of the continuum ([Compression](../stacking/compression)) |
-| `<name>_results.json` | every number of the lines: `line` (the first), `lines` (all of them), `detection`, `window`, `size_test`, `continuum_residual`, `continuum_fit` (the continuum fitted with the lines, when asked), `noise`, the record of the continuum subtraction |
+| `<name>_results.json` | every number of the lines |
 | `<name>_profile.txt` | per channel: `v_kms freq_GHz flux_density err_thermal err_bootstrap imaginary model fitted line_free n_sources` |
-| `<name>_uvamp.txt` | per annulus: `b_klambda line_flux err_thermal used n_sources` (flux of the first line at the fitted shape) |
-| `<name>_noise.txt` | per channel: the noise of the profile from the scatter of the visibilities and from the weights |
-| `<name>_diagnostics.npz` | `channel_correlation` (the matrix), `z_imaginary`, `z_line_free` (cells over their noise), `null_snr`, `null_snr_phase` (null distributions of the detection S/N) |
-| `<name>_continuum_results.json`, `_spectrum.txt`, `_uvamp.txt` | the continuum: flux at zero spacing, size, flux per annulus ([The continuum measurement](extract_flux)) |
+| `<name>_uvamp.txt` | per annulus: `b_klambda line_flux err_thermal used n_sources line_flux_imaginary` (the first line) |
+| `<name>_noise.txt` | per channel: the noise from the scatter of the visibilities and from the weights |
+| `<name>_diagnostics.npz` | the channel correlation matrix, the standardised cells, the null distributions of the S/N |
+| `<name>_continuum_results.json`, `_spectrum.txt`, `_uvamp.txt` | the continuum ([The continuum](extract_flux)) |
 
-The same numbers are in the `RunResult` of `run()`: `result.line.summary`
-(the dictionary of the JSON) and `result.continuum.summary`. Fluxes are in
-data units × km/s for a line (Jy km/s for data in Jy), data units for the
-continuum; the flux normalisation rescales them by `flux_ref / NORM`.
+**In the JSON**, every line has (in `lines`; the first also in `line`):
 
-**Every line** has in `lines` (and the first in `line`): `flux`,
-`flux_error` (the larger of the thermal and the bootstrap error) and
-`flux_method` (which flux they are: `gauss` or `area`); `flux_gauss` and
-`flux_area` with their errors (thermal, bootstrap); `flux_optimal` (1.19
-FWHM); `shape_check` (the difference of the two fluxes, its error, the
-reason for the choice); `v0_kms`, `fwhm_kms`, `peak` with their errors;
-`detection` (S/N, significance, the ranges searched). The first line also
-has the size (`theta_fwhm_arcsec`, `size_model`) and the χ² of the fit,
-shared by all the lines.
+- `flux`, `flux_error` and `flux_method`: the flux quoted, and whether it
+  is `gauss` or `area`;
+- `flux_gauss`, `flux_area`: the two fluxes, each with its thermal and
+  bootstrap error;
+- `shape_check`: their difference, its error, the reason for the choice;
+- `v0_kms`, `fwhm_kms`, `peak`, with their errors;
+- `detection`: S/N, significance, the ranges searched.
 
-## Figures
-
-The run draws (unless `v.extract(figures_draw=False)`, `--no-figures`):
-
-- `<name>_profile.png`: the stacked spectrum with its ±1σ band, the fitted
-  Gaussian (its area hatched), the window of the area flux of every line
-  (shaded, with its limits), and the continuum: its value and what is left
-  outside the windows. The box gives the flux quoted and says where it
-  comes from (the Gaussian fit, or the area under the spectrum in the
-  window), the other of the two, and centre, width and peak. Below, the
-  residuals and the imaginary part (crosses) in units of the noise: both
-  should scatter around zero;
-- `<name>_uv.png`: the line flux in every annulus against the baseline
-  length, with the source models (the one chosen thicker; the title says
-  which and why);
-- `<name>_noise.png`: the noise per channel from the scatter and from the
-  weights, the standardised cells against N(0, 1), the null distribution of
-  the detection S/N;
-- `<name>_continuum_uvamp.png`: the continuum per annulus, with its fit.
-
-`print(result)` gives the measurement in words: the detection, the flux
-quoted and why (the Gaussian fit or the area in the window), the source
-model chosen and why, the continuum, the reference redshift.
-
-In a notebook the same figures come from the result itself:
-`result.plot()` (profile and uv), `result.plot("noise")`,
-`result.plot("continuum")`, and `result.plot("image")`, a dirty image of the
-stack over the line window ({func}`vista.dirty_image`: a quick look at where
-the emission is, not a cleaned image); `save=` also writes them. `vista.compare({label:
-result, ...}, expected=...)` draws several measurements in one figure, the
-profiles with their fits, the flux per annulus with the source models and
-the fluxes with their errors, and prints their numbers side by side (the
-[Examples](../examples/index) use it throughout).
+The first line also has the size (`theta_fwhm_arcsec`, `size_model`) and
+the χ² of the fit.
 
 ## Figures in your own style: `plot_line.py`
 

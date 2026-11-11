@@ -1,8 +1,8 @@
 # Weighting and normalisation
 
-How the sources are combined is a scientific choice, made when the stack is
-measured and never applied to the visibilities on disk: the same stack can be
-measured with every scheme, and comparing them is cheap.
+**In one sentence.** How the galaxies are combined is a scientific choice;
+it is made when the stack is measured, never on the data on disk, so the
+same stack can be measured in every way.
 
 ```python
 v.extract(weighting_scheme="natural",          # or "democratic"
@@ -11,65 +11,81 @@ v.extract(weighting_scheme="natural",          # or "democratic"
           flux_norm=False, flux_ref=None)      # None: the median, reported
 ```
 
+Changing one of these and running `v.run(only="measure")` again takes
+seconds. [Example 3](../examples/03_the_window_the) and
+[Example 7](../examples/07_a_few_galaxies_that_count) show each of them.
+
 ## Natural or democratic
 
-- **`natural`** (default) keeps the native visibility weights: the deepest
-  observations dominate, the formal S/N is the highest, and the result may
-  not represent the population. Use it for emission too faint to be seen in
-  the individual sources.
-- **`democratic`** rescales the weights of each source so that they sum to
-  one (Eq. 26 of the paper): every source counts the same, whatever its
-  depth. It buys the representativeness of the population at the cost of
-  sensitivity. Use it when the question is the *average behaviour* of the
-  sample and the line is bright enough.
+| | What it does | When |
+|---|---|---|
+| **`natural`** (default) | keeps the weights of the visibilities: the deepest observations count most | emission too faint to be seen in the single galaxies. The lowest noise |
+| **`democratic`** | rescales the weights so that every galaxy counts the same (Eq. 26 of the paper) | the *average* of the sample, when the line is bright enough. More noise |
 
-The difference between the two is itself informative about the depth
-distribution of the sample.
+**What to watch.** With natural weighting a few galaxies observed much
+deeper than the others decide the result. If they are also different (a
+lensed galaxy, a much brighter one), the stack looks like them and not like
+the sample. The difference between the two schemes tells you how uneven the
+depths are.
 
-## Redshift rescaling
+## The redshift correction
 
-With `z_norm=True` (default) every source is transported to a
-common redshift `z_ref` by the factor (Eq. 27)
+**What.** With `z_norm=True` (default) every galaxy is brought to the flux
+it would have at one redshift, `z_ref`, by the factor (Eq. 27)
 
 ```{math}
-\alpha = \left(\frac{D_L(z)}{D_L(z_\mathrm{ref})}\right)^2 \frac{1 + z_\mathrm{ref}}{1 + z},
+\alpha = \left(\frac{D_L(z)}{D_L(z_\mathrm{ref})}\right)^2 \frac{1 + z_\mathrm{ref}}{1 + z}.
 ```
 
-so that the stack measures the flux a source of the mean luminosity would
-have at `z_ref`. It matters over a broad redshift range (at z = 2–3 the
-factor spans about a factor of 2), little over a narrow one. `z_ref`
-defaults to the median of the sample, which moves with the selection: **fix
-it** when comparing stacks. The value used is always reported: printed
-after the measurement (also with `verbose=False`; again when it changes), in
-the results (`z_ref`,
-`z_ref_given`) and in the result of `run()`.
-Nothing on disk is rescaled: `α` is applied to the statistics of every source when they are combined. Cosmology: `H0`, `Om0` (67.4, 0.315).
+**Why.** The same galaxy is fainter when it is farther. After the
+correction the stack measures the flux that a galaxy of the mean luminosity
+would have at `z_ref`. It matters over a broad redshift range (between
+z = 2 and 3 the factor changes by about 2), little over a narrow one.
 
-## Primary beam
+**`z_ref`.** By default the median of the sample, which moves when the
+sample changes: **give it** when you compare stacks. The value used is
+always printed after the measurement, and it is in the results (`z_ref`,
+`z_ref_given`).
 
-With `pb_corr=True` (default) every line of the input list is
-corrected for the primary beam at the position of its source: amplitudes
-divided by the gain `A`, weights multiplied by `A²`, so an attenuated
-source is corrected and also counts less. `A` is that of a Gaussian beam of
-FWHM `1.2 c / (ν D)` at the observed frequency of the line, with the dish
-diameter of the original MS, computed during the compression (which
-therefore needs the original Measurement Sets).
+Nothing on disk is rescaled: `α` is applied to the statistics of every
+galaxy when they are combined. Cosmology: `H0`, `Om0` (67.4, 0.315).
 
-## Flux normalisation
+## The primary beam
 
-`flux_norm=True` rescales every source by `flux_ref / NORM`, with
-`NORM` the last column of the input list (a luminosity, a continuum flux,
-any proxy that correlates with the stacked emission), so that a bright
-minority cannot dominate the stack. Every line of the list must have it:
-otherwise `extract()` refuses. `flux_ref` defaults to the median, reported
-like `z_ref` (`flux_ref`, `flux_ref_given`): **fix it** for the same reason. Omit the normalisation when you
-want the emission weighted by the true intrinsic luminosities.
+**What.** An antenna is less sensitive away from the centre of its field.
+With `pb_corr=True` (default) every galaxy is corrected for the gain `A` at
+its position: amplitudes divided by `A`, weights multiplied by `A²`.
 
-## Repeated observations
+**Why.** A galaxy off-centre is seen fainter than it is. The correction
+restores its flux, and gives it less weight, because its noise grows by the
+same factor.
+
+`A` is that of a Gaussian beam of FWHM `1.2 c / (ν D)` at the observed
+frequency of the line, with the dish diameter of the original Measurement
+Set. It is computed during the compression, which therefore needs the
+original Measurement Sets.
+
+## The flux normalisation
+
+**What.** `flux_norm=True` rescales every galaxy by `flux_ref / NORM`.
+`NORM` is the last column of the input list: a magnification, a luminosity,
+a continuum flux, anything that scales with the stacked emission.
+
+**Why.** So that a bright minority does not dominate the stack. With the
+magnification of lensed galaxies as `NORM` and `flux_ref=1`, the stack is
+that of the unlensed galaxies
+([Example 7](../examples/07_a_few_galaxies_that_count)).
+
+Every line of the list must have a `NORM`, otherwise `extract()` refuses.
+`flux_ref` defaults to the median and is reported like `z_ref` (`flux_ref`,
+`flux_ref_given`): **give it** when you compare stacks. Leave the
+normalisation off when you want the emission weighted by the true
+luminosities.
+
+## The same galaxy observed several times
 
 Lines of the input list with the same coordinates (within
-`match_tol_arcsec`, 2″) are the same source: their statistics are added
-before the average, which combines them naturally (with their own weights),
-and the democratic renormalisation then treats the source as one
-measurement. `n_sources` and `n_entries` in the results say how many sources
-the lines were merged into.
+`match_tol_arcsec`, 2″) are the same galaxy. Their statistics are added
+before the average, each with its weights, and the democratic weighting
+then counts the galaxy once. `n_sources` and `n_entries` in the results say
+how many galaxies the lines were merged into.

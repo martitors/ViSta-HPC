@@ -77,6 +77,12 @@ def outputs_md(cell, number, counter, replace):
     return parts
 
 
+def sections(text):
+    """A chapter of the notebook (##) is the title of its page (#): its
+    sections (###) go one level up with it."""
+    return re.sub(r"^###(?=\s)", "##", text, flags=re.M)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("executed", help="the executed copy of the tutorial notebook")
@@ -107,9 +113,9 @@ def main():
                 pages.append(current)
                 body = HEADING.sub("", text_of(c), count=1).strip()
                 if body:
-                    current["blocks"].append(body)
+                    current["blocks"].append(sections(body))
                 continue
-            (current["blocks"] if current else intro).append(text_of(c).strip())
+            (current["blocks"] if current else intro).append(sections(text_of(c).strip()))
         else:
             if current is None:
                 continue

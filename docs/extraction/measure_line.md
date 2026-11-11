@@ -1,10 +1,44 @@
 # Measuring the line
 
-`ViSta.run()` measures the stacked lines on all channels and all annuli of
-baseline length at once, with the noise measured from the data; the options
-are those of `v.extract(...)` ([Parameters](../reference/parameters.md#extract-what-is-measured)).
-`run(only="measure")` repeats the measurement from the statistics, in
+**In one sentence.** The line is fitted on all the channels and all the
+baselines at once, with a Gaussian in velocity from a source that is a point
+or a Gaussian on the sky, and with the noise measured from the data.
+
+The options are those of `v.extract(...)`
+([Parameters](../reference/parameters.md#extract-what-is-measured));
+`v.run(only="measure")` repeats the measurement from the statistics, in
 seconds.
+
+## What you get
+
+```{image} ../_static/fig_line.png
+:alt: The stacked line: spectrum, fit, window, the two fluxes
+:width: 70%
+:align: center
+```
+
+- **The spectrum** (black): the flux density the source would show at zero
+  baseline, in every channel. It is the real part (Re) of the stacked
+  visibilities, corrected for the size of the source.
+- **The fit** (red): a Gaussian in velocity.
+- **Two fluxes**, the one quoted in bold:
+  `F_fit`, the area of the Gaussian, and `F_window`, the area under the
+  spectrum in the orange window.
+- **μ, FWHM, peak**: centre, width and peak of the Gaussian.
+- **S/N**: of the line, through the best filter (centre and width).
+- **Below**: the residuals in units of the noise, and the number of sources
+  that contribute at every velocity.
+
+```{image} ../_static/fig_line_uv.png
+:alt: Line flux against baseline length, with the Gaussian and the point source models
+:width: 60%
+:align: center
+```
+
+- **The line against the baseline length**: the line flux in every ring
+  (*annulus*) of baseline length. Red: the Gaussian source. Green, dashed:
+  the point source. In bold the one used. Grey crosses: the imaginary part
+  (Im), which holds only noise if the sources are where the list says.
 
 ## The model
 
@@ -14,58 +48,102 @@ For every cell (channel `c`, annulus `b`) of the stack
 \mathrm{Re}\,V(c, b) = \Big[\sum_k F_k\,\phi_c(v_{0,k}, \mathrm{FWHM}_k)\Big]\,g(b;\theta)
 ```
 
-with `φ` a Gaussian of unit integral *averaged over the channel* (a line a
-few channels wide is not distorted), `F` the integrated line flux, and `g` the
-visibility of a circular Gaussian of FWHM `θ` (1 for a point source), averaged
-over the baselines of the annulus rather than taken at its mean. The sum runs
-over the lines fitted together (those whose windows overlap, see
-[Several lines](#several-lines)): every line `k` has its own flux, centre and
-width, in its own velocity, and they share the size. The cells are
-fitted by weighted least squares, each by the inverse of its variance; `F`,
-the peak, `v₀`, the FWHM and `θ` of every line come out of one fit, with
-their covariance.
+- `F` is the integrated flux of a line;
+- `φ` is a Gaussian of unit area, **averaged over the channel**, so a line
+  only a few channels wide is not distorted;
+- `g` is how a round Gaussian source of size `θ` (FWHM) fades with the
+  baseline: 1 for a point source. It is averaged over the baselines of the
+  annulus.
 
-Compared with measuring the shape on the spectrum averaged over the annuli
-and then the amplitude annulus by annulus ([the per-annulus chain](extract_flux.md)),
-the joint fit uses all the information at once, with the right weights: the
-spectrum averaged over the annuli is dominated by the long baselines, where a
-resolved source has the least signal.
+All the cells are fitted together, each weighted by its noise. Flux, centre,
+width and size come out of one fit, with their covariance.
 
-## The noise
+**Why all at once.** Measuring first the shape on the spectrum averaged over
+the baselines, and then the flux baseline by baseline, wastes information:
+that average is dominated by the long baselines, where an extended source
+has the least signal.
 
-The noise is measured four ways, and compared in the results and in the
-noise figure:
+## The two fluxes, and which one is quoted
 
-1. **from the weights**, `1 / Σw` — right only if the weights are absolute;
-2. **from the scatter of the visibilities inside each cell**, thanks to the
-   sums of squares stored by the compression:
-   `Σw (x − x̄)² = Σw x² − (Σw x)² / Σw`, whose expectation is `(N − 1) κ²`.
-   `κ` is the factor by which the weights misjudge the noise, measured for
-   every dataset (`kappa_per_entry`: an MS with wrong weights stands out) and
-   every channel (atmospheric lines, which a weight per row ignores). A
-   single visibility has S/N far below 1, so the signal does not inflate it.
-   **This is the noise used**;
-3. from the **imaginary part** of the stack, zero for centred, symmetric
-   sources;
-4. from the **real part in the line-free channels**, after a subtraction.
+- **`F_fit`** (`flux_fit`): the area of the fitted Gaussian. It uses every
+  channel with the weight the line gives it, so it is the most precise. It
+  is right if the line is a Gaussian.
+- **`F_window`** (`flux_window`): the sum of the spectrum over the window,
+  times the channel width. It assumes no shape, and carries the noise of
+  every channel of the window.
 
-3 and 4 must scatter like 2: a ratio above 1 gives a warning (the source is
-not centred or not symmetric, a phase error, a residual continuum, an
-unmasked line), and the thermal errors are optimistic there.
+`flux_measure` chooses: `"gauss"`, `"area"`, or `"auto"` (default).
 
-**The correlation between channels** has two causes: the spectral response
-and the rebinning (Hanning smoothing: +0.67 at lag 1, +0.17 at lag 2), and
-the continuum subtraction, which removes from every row a level fitted on the
-line-free channels — a noisy level, shared by all the channels of the row: a
-correlation at *every* lag, about 1 / (effective number of fit channels). On
-a narrow band it can double the error of a flux summed over the line. The
-whole channel × channel matrix is measured from the imaginary part of every
-source in every annulus (same spectral response and same subtraction as the
-real part, no line) and enters every error, S/N and null realisation. With
-fewer than 30 such vectors a model of the first lags is used instead
-(`channel_correlation_method`).
+**What `"auto"` does.** It compares the two. The error of their difference
+is computed from the same data. If they differ by more than `shape_nsigma`
+(2) times that error, the line is not a Gaussian (a double horn, wings, an
+asymmetry): the flux in the window is quoted, with a warning. Otherwise the
+fit. The window flux is never quoted when
 
-## Centre and width: limits
+- the window holds less than 95 % of the fitted Gaussian (too narrow), or
+- it overlaps the window of another line (only the joint fit separates
+  them).
+
+The reason of the choice is in the report and in `results["flux"]["reason"]`.
+
+**The window.** `window` sets it (default: the `line_window` of the stack).
+Too wide, and `F_window` sums channels of pure noise: a larger error. Too
+narrow, and it cuts the line. About 2.3 FWHM gives `F_window` the same error
+as `F_fit`. [Example 3](../examples/03_the_window_the) shows both.
+
+On simulated lines at S/N ≈ 10, `F_fit` was within 1 % for a Gaussian line,
+7 % high for a double horn, 6 % low with broad wings; `F_window` over four
+FWHM was within 2 % in all three, with an error 1.3 times larger.
+
+## The source: a point or a Gaussian
+
+`model` chooses the source of the lines.
+
+| `model` | The source |
+|---|---|
+| `"auto"` (default) | a Gaussian only if the data ask for it, otherwise a point |
+| `"point"`, `"gauss"` | always that one |
+| a number | a Gaussian of that size (FWHM, arcsec) |
+| `"continuum"` | the model and the size measured on the continuum |
+
+**What `"auto"` does.** It fits both. The Gaussian is kept when it improves
+the fit by Δχ² ≥ 9 (a 3σ preference). The Δχ² is first corrected for the
+correlation between channels, which would otherwise make noise look like an
+extended source.
+
+The flux of the fit is the average of the two fits, each weighted by how
+well it fits (Akaike weights), so that an undecided case carries the
+uncertainty of the size in its error.
+
+**When the line cannot tell its size.** A weak line fits a point and a
+Gaussian equally well. If the continuum of the same stack is extended, the
+line is fitted again with **the size of the continuum**: the galaxies are
+the same, so they cannot be a point in the line and extended in the
+continuum. The report says so, and the legend of the figure reads
+`size from cont`:
+
+```{image} ../_static/fig_line_uv_size_from_cont.png
+:alt: A weak line fitted with the size measured on the continuum
+:width: 60%
+:align: center
+```
+
+The continuum does the same the other way round
+([The continuum](extract_flux)). The two sizes, each measured on its own,
+are always reported with their difference in units of its error (`Sizes` in
+the report, `results["sizes"]`).
+[Examples 5](../examples/05_a_weak_continuum_under_a) and
+[6](../examples/06_a_weak_line_on_a_strong) are the two cases.
+
+**Why it matters.** The total flux of an extended source depends on its
+size. A point source fitted to an extended one is too low
+([Example 8](../examples/08_point_sources_only_extended)).
+
+**A size from elsewhere.** `model=0.8` fixes it at 0.8″;
+`model_prior=(0.8, 0.15)` ties it softly (0.15 dex);
+`theta_range=(0.3, 2)` keeps it within limits.
+
+## Where the line is searched
 
 The centre and the width of every line are searched **within limits**,
 `v0_range` and `fwhm_range` (km/s, in the velocity of that line):
@@ -75,160 +153,130 @@ The centre and the width of every line are searched **within limits**,
 | centre | anywhere in the window | between the limits | fixed |
 | width | two channels to the window | between the limits | fixed |
 
-The fit stays exactly inside the limits. Give them when you know something:
-a redshift accurate to ±100 km/s, a width from another line of the same
-galaxies, a range of plausible widths. Narrower limits mean fewer chances for
-noise to look like a line: a lower threshold for the same significance.
+Give limits when you know something: a redshift good to ±100 km/s, a width
+from another line. Narrower limits leave fewer chances for noise to look
+like a line.
 
-**The significance** is the best S/N of the search, calibrated on the same
-search run on noise: `n_null` realisations (default 1000) with the measured
-noise and channel correlation, extrapolated with the number of effective
-trials (`p_value`, `significance_sigma`, `n_effective_trials`; with
-`n_null=0`, a Bonferroni bound). In a search the fit always finds a bump:
-`F / σ_F` is the precision of the flux, not the evidence that the line
-exists — that is `significance_sigma`. With the centre, the width and the
-size all fixed there is one template: the flux is a matched filter (linear,
-unbiased) and its S/N is the significance (`fixed_shape: true`). Two more
-checks: `snr_imaginary` (the imaginary part through the same filter, ≈ 0)
-and `p_value_phase_null` (the search on stacks with a random phase per
-source, which keeps the noise and scrambles the signal; it needs a few tens
-of sources).
+**S/N and significance are two numbers.**
 
-A free search is reliable from about 4σ; below that its flux follows noise
-peaks, and the results warn: fix the width from another tracer, narrow the
-limits, or quote the area flux.
+- The **S/N** is that of the best filter found by the search.
+- The **significance** answers "could noise do this?". The same search is
+  run on noise `n_null` times (default 1000), with the measured noise and
+  its correlation between channels. A search always finds a bump, so the
+  significance is a little lower than the S/N.
+
+With centre, width and size all fixed there is one filter: a matched filter,
+linear and unbiased, and its S/N is the significance.
+
+A free search is reliable from about 4σ. Below that the flux follows noise
+peaks, and the report warns: fix the width from another tracer, narrow the
+limits, or quote the flux in the window.
 
 ## Several lines
 
-With several rest frequencies (`v.stack(line_freq=[f1, f2, ...], line_window=[...])`,
-one window each) every line is searched in its own window — its own detection
-and significance. How the lines are then fitted follows from their windows,
-with no option to set:
+`v.stack(line_freq=[f1, f2, ...], line_window=[...])` lists them, each with
+its window. Every line is searched in its own window. How they are then
+fitted follows from the windows, with nothing to set:
 
-- **windows that overlap** (directly, or through another line: A with B and
-  B with C) — the lines are blended, and are fitted together: one Gaussian
-  each, with its own flux, centre and width, sharing the size, so the fit
-  splits the channels they share. Their area fluxes hold part of each
-  other, so `flux_measure="auto"` quotes the Gaussian ones.
-- **windows apart** — every line is measured on its own, as if it were alone:
-  on the channels within `fit_span` of it (1500 km/s) and outside the windows
-  of the other lines, with its own size and source model, its own bootstrap
-  and, with `continuum="fit"`, its own continuum.
+- **windows that overlap**: the lines blend, and are fitted **together**:
+  one Gaussian each, with its own flux, centre and width, and one size for
+  all. Their window fluxes hold part of each other, so the fit is quoted.
+- **windows apart**: every line is measured **on its own**, as if it were
+  alone, with its own size and source model.
 
-Windows that only touch at an edge are apart. The log says which lines went
-together (`lines 1 + 2 fitted together`), and so do the results
-(`line_groups`; `fitted_with_lines` in the block of every line, with the size
-of its fit). Every line has its block in `lines`; `line` is the first.
+```{image} ../_static/fig_two_lines.png
+:alt: Two blended lines fitted together
+:width: 70%
+:align: center
+```
 
-## Errors
+The report says which lines went together. `results["lines"]` has one entry
+per line. [Examples 9](../examples/09_two_lines_far_apart) and
+[10](../examples/10_two_lines_that_blend) show the two cases.
 
-Two errors are computed for every quantity:
+## The errors
 
-- **thermal**, from the fit with the measured noise and the channel
-  correlation;
-- **bootstrap** over the sources (`n_realisations`), which includes the
-  scatter of the population.
+Two errors are computed for every quantity, and the larger is quoted:
 
-The larger is quoted; their ratio is `bootstrap_over_thermal` (≈ 1 for a
-uniform population, > 1 when the sources differ). With few sources the
-bootstrap underestimates, and the thermal error covers it.
+- **thermal**: from the fit, with the measured noise and its correlation
+  between channels;
+- **bootstrap**: the fit repeated on samples of the galaxies drawn with
+  replacement (`n_bootstrap`, default 500). It includes how much the
+  galaxies differ from one another.
 
-## The size
+Their ratio is in the results (`bootstrap_over_thermal`): about 1 for
+galaxies that are alike, above 1 when they differ. With few sources the
+bootstrap is too small, and the thermal error covers it.
 
-With `model="auto"` (default) both a point and a Gaussian source are fitted,
-and the total flux (and the profile and the window fluxes) is their average
-with Akaike weights; the spread between the two enters the error. A weak or
-barely resolved stack does not tell its size, and its total flux depends on
-it: quoting the flux of whichever model was chosen gave errors up to five
-times too small in the simulations.
+## The noise
 
-- `size_test` gives `χ²(point) − χ²(Gaussian)` and both fluxes. The
-  Gaussian is called resolved (`size_test.adopted`) when it improves χ² by at
-  least 9 (a 3σ preference; the Δχ² is on the figures). The fits weight the cells
-  by their noise alone, so their χ² treats correlated channels as
-  independent: the difference is first divided by `correlation_factor`, the
-  factor by which the channel correlation inflates it (4–5 with Hanning
-  smoothing and a continuum subtraction; `delta_chi2_uncorrelated` is the raw
-  difference). Without it, noise made point sources look resolved.
-- The detection scan tries a point source and Gaussians of 0.5, 1 and 2 times
-  the size that halves the visibility at the median baseline: for a resolved
-  source a point template collects only part of the signal.
-- For a weak resolved line, a size from elsewhere makes the total flux
-  meaningful: `model_prior=(θ_ref, σ_dex)` ties it softly (e.g. to the
-  continuum size of the same sources), `model=θ` fixes it. The point-source flux, always given, is a
-  lower limit for an extended source.
-- `model="point"` when the source is known to be unresolved: the joint fit
-  then does not average in a Gaussian fitted to the noise.
+The noise is **measured**, not taken from the weights of the files.
 
-## Two fluxes for every line
+1. **From the scatter of the visibilities** inside each cell. This is the
+   noise used. It also gives `κ`, the factor by which the weights misjudge
+   the noise, for every dataset and every channel.
+2. From the weights: right only if the weights are absolute.
+3. From the **imaginary part** of the stack, which is zero for sources that
+   are centred and symmetric.
+4. From the **real part in the channels without line**, after a
+   subtraction.
 
-- The **profile** is the flux density at zero spacing in every channel: for a
-  point source the noise-weighted mean over the annuli, for a resolved one
-  each annulus corrected for the resolution first. It is the spectrum to show.
-- The **Gaussian flux** (`flux_gauss`) is the integral of the fitted
-  Gaussian: it uses every channel with the weight the line gives it, so it is
-  the most precise, and it is right if the line is a Gaussian.
-- The **area flux** (`flux_area`) is the sum of the profile over the window
-  of the line, times the channel width: no assumption on the shape, but the
-  noise of every channel of the window. Its error includes the correlation
-  between channels and, for a resolved source, the uncertainty of the size.
-  `flux_optimal` is the sum over 1.19 FWHM around the fitted centre (the best
-  S/N for a Gaussian, 84% of its flux, not corrected).
+3 and 4 must scatter like 1. If they scatter more, the report warns: a
+source off-centre, a phase error, continuum left, a line not listed.
 
-**Which one is quoted** (`flux`, `flux_error`, `flux_method`) is set by
-`flux_measure=`: `"gauss"`, `"area"`, or `"auto"` (default). `auto` compares the two:
-their difference has an error `σ_Δ` computed from the same data (both are
-linear in the cells to first order, so `σ_Δ² = (a_area − a_gauss)ᵀ C (a_area −
-a_gauss)`, with `a` how each moves with the data and `C` the noise of the
-cells; it is about `√(σ_area² − σ_gauss²)`). If `|Δ| > 2 σ_Δ` the line is not
-a Gaussian — a double horn, wings, an asymmetry — and the area flux is
-quoted, with a warning; otherwise the Gaussian one. The area is not used,
-whatever the difference, when the window holds less than 95% of the fitted
-Gaussian (too narrow for a flux without a shape) or overlaps the window of
-another line (only the joint fit separates them). Everything is in
-`shape_check`, and the profile figure shows both: the area of the Gaussian
-hatched, the window shaded. The test is in units of the noise: it also
-catches a width fixed too narrow (the area does not depend on it), and it
-fires wrongly when the noise is wrong (from the weights when they are off,
-or without the channel correlation).
+**Correlated channels.** Adjacent channels share noise, for two reasons: the
+spectral response and the rebinning, and the continuum subtraction, which
+takes the same noisy level from every channel of a row. The whole channel ×
+channel correlation is measured from the imaginary part and enters every
+error. On a narrow band it can double the error of a flux summed over the
+line.
 
-On simulated lines at S/N ≈ 10 the Gaussian flux was within 1% for a
-Gaussian line, 7% high for a double horn, 6% low with broad wings; the area
-over a window of four FWHM was within 2% in all three, with an error 1.3
-times larger. With the width free, a window of about 2.3 FWHM gives the area
-the same error as the Gaussian.
+```{image} ../_static/fig_noise.png
+:alt: The noise checks
+:width: 95%
+:align: center
+```
 
-## Residual continuum
+`result.plot("noise")`: the noise per channel from the scatter and from the
+weights; the stacked cells away from the line over their noise, against the
+bell curve; the search on noise (grey) and the S/N measured (red).
 
-After the fit, the profile outside every window (the channels of the
-continuum) is fitted with an offset and a slope, `a + b v`, with the channel
-correlation in their errors (`continuum_residual`). If either exceeds 3σ
-(`detected: true`) the log warns: after a subtraction, continuum is left (a
-slope fitted as a constant, wings of the line in the continuum channels, a
-line not listed); without a subtraction (`stack(..., continuum="none")`), there
-is continuum in the data and the line fluxes include it: subtract it, or fit
-it with the lines (`stack(..., continuum="fit")`, a constant with the
-size of the lines, in `continuum_fit`; the check then looks at what it
-leaves). The figure draws it.
+## Continuum left outside the window
 
-## The parameters
+After the fit, the spectrum outside the windows is fitted with an offset and
+a slope. If either is above 3σ the report warns, and the figure draws it
+(blue, dashed):
+
+- after a subtraction: continuum is left (a slope fitted as a constant, the
+  wings of the line in the continuum channels, a line not listed);
+- without a subtraction (`continuum="none"`): there is continuum in the
+  data, and the line flux includes it.
+
+[Continuum](../stacking/continuum) says what to do in each case.
+
+## The options, together
 
 ```python
 v.extract(v0_range=(-150, 150),        # km/s; (0, 0): fixed
           fwhm_range=(100, 600),       # km/s; (300, 300): fixed
-          model="auto",                # "point", "gauss", or a size in arcsec
+          model="auto",                # "point", "gauss", "continuum", or a size in arcsec
+          continuum_model="auto",      # "point", "gauss", "line", or a size in arcsec
           model_prior=None,            # (0.8, 0.15): soft size prior
           flux_measure="auto",         # "gauss" or "area"
           window=None,                 # window of the area flux; default the line window
+          measure=None,                # "line" or "continuum": only one of the two
           n_bootstrap=500, n_null=1000)
 ```
 
-The [Examples](../examples/index) go through them one step at a time on a
-simulated sample, against the expected values: how to read the measurement
-([4](../examples/04_the_measurement)), the window
-([5](../examples/05_refining_the_window)), the source model
-([6](../examples/06_the_source_model_the_wrong)), the errors
-([9](../examples/09_the_errors)), a line that is not a Gaussian
-([11](../examples/11_a_harder_case_a_line_that_is)), sources that are not
-Gaussians ([12](../examples/12_a_harder_case_sources_that)), two lines
-([13](../examples/13_a_harder_case_two_lines_in)).
+The [Examples](../examples/index) go through them one situation at a time
+on simulated samples, against the expected values: how to read the
+measurement ([2](../examples/02_the_basic_case_the_same)), the window, the
+normalisations and the noise ([3](../examples/03_the_window_the)), whose
+size the line and the continuum take
+([5](../examples/05_a_weak_continuum_under_a),
+[6](../examples/06_a_weak_line_on_a_strong)), the source model
+([8](../examples/08_point_sources_only_extended)), two lines
+([9](../examples/09_two_lines_far_apart),
+[10](../examples/10_two_lines_that_blend)), a line and a source that are
+not Gaussians ([11](../examples/11_a_line_that_is_not_a),
+[12](../examples/12_a_source_that_is_not_a)).

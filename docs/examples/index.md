@@ -1,34 +1,34 @@
 # Examples
 
-A worked example, **one step at a time**: simulated ALMA observations of
-twelve different galaxies at z = 2–3, stacked and measured with ViSta. Every
-step changes one thing, says why, and shows what happens, in the spectrum,
-in the uv plane and in images, against the answer that the simulation knows.
+Worked examples, **one situation at a time**: simulated ALMA observations
+stacked and measured with ViSta. Every chapter is one situation, on a
+simulation made for it, so that the right answer is known; every step does
+one thing, and the text says what and why.
 
 These pages are the notebook `examples/ViSta_tutorial.ipynb`, run once, with
 its results. To run it yourself:
 
 - **On Google Colab**: [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/martitors/ViSta-HPC/blob/extract_opt/examples/ViSta_tutorial.ipynb)
-  and *Runtime → Run all* (about 10 minutes on the CPU). It clones the
+  and *Runtime → Run all* (about 20 minutes on the CPU). It clones the
   repository, builds the kernel and installs what it needs.
 - **Locally**: Jupyter, with `VISTA_REPO` set to a built checkout.
 
 | | |
 |---|---|
 | [0. Setup](00_setup) | clone, build, imports |
-| [1. The simulator, and one galaxy](01_the_simulator_and_one_galaxy) | what is simulated; one galaxy without and with noise, image and spectrum |
-| [2. A sample of twelve galaxies](02_a_sample_of_twelve_galaxies) | a heterogeneous sample, the input list, the expected answer |
-| [3. The stack](03_the_stack) | `ViSta()`, `stack()`, `run()`; one galaxy and the stack in an image |
-| [4. The measurement](04_the_measurement) | `extract()`; how to read the report, the spectrum and the uv figure |
-| [5. Refining: the window](05_refining_the_window) | the area flux and its window |
-| [6. The source model](06_the_source_model_the_wrong) | a point source where it is wrong; a known size |
-| [7. The normalisations](07_the_normalisations) | the redshift and the primary beam, on and off |
-| [8. The weighting](08_the_weighting) | natural and democratic |
-| [9. The errors](09_the_errors) | the noise from the data and from the weights |
-| [10. The continuum](10_the_continuum) | subtracted, left in the data, fitted with the line |
-| [11. A line that is not a Gaussian](11_a_harder_case_a_line_that_is) | broad wings: the Gaussian and the area flux |
-| [12. Sources that are not Gaussians](12_a_harder_case_sources_that) | rings: what the image and the uv plane show |
-| [13. Two lines in the band](13_a_harder_case_two_lines_in) | one listed, then both, fitted together |
+| [1. One galaxy](01_one_galaxy) | what is simulated; one galaxy without and with noise, image and spectrum |
+| [2. The basic case](02_the_basic_case_the_same) | the same galaxy at twelve redshifts: the stack, the line, the continuum, `results` |
+| [3. The window, the normalisations, the noise](03_the_window_the) | the flux in the window, a narrower window, the redshift and primary-beam corrections, the noise |
+| [4. Not subtracting the continuum](04_not_subtracting_the) | fitted with the line, or left in the data |
+| [5. A weak continuum under a strong line](05_a_weak_continuum_under_a) | the continuum takes the size of the line |
+| [6. A weak line on a strong continuum](06_a_weak_line_on_a_strong) | the line takes the size of the continuum |
+| [7. A few galaxies that count much more](07_a_few_galaxies_that_count) | lensed galaxies: natural and democratic weighting, the flux normalisation |
+| [8. Point sources only, extended sources only](08_point_sources_only_extended) | which source model, and what the wrong one does |
+| [9. Two lines far apart](09_two_lines_far_apart) | measured each on its own |
+| [10. Two lines that blend](10_two_lines_that_blend) | fitted together |
+| [11. A line that is not a Gaussian](11_a_line_that_is_not_a) | broad wings: the flux in the window |
+| [12. A source that is not a Gaussian](12_a_source_that_is_not_a) | rings: what the image and the baselines show |
+| [13. The continuum alone](13_the_continuum_alone) | a stack without any line |
 | [14. The command line](14_the_command_line) | the same with `python -m vista` |
 | [15. On your own data](15_on_your_own_data) | the steps |
 

@@ -1,5 +1,10 @@
 # Repository structure
 
+**Where to look.** To *use* ViSta: `vista/api.py` (the `ViSta` class) and
+the examples. To follow *how the line is measured*:
+`vista/extract/measure.py`, whose `measure_line` is a list of steps, each a
+function of that file, in the order the documentation explains them.
+
 ```text
 ViSta-HPC/
 ├── vista/                   the Python package
@@ -15,6 +20,7 @@ ViSta-HPC/
 │   ├── polarization.py      the correlations of the inputs
 │   ├── ms_output.py         writing a Measurement Set (main table, subtables)
 │   ├── stackio.py           the stack on disk: Zarr writer, Zarr/MS reader, export_ms
+│   ├── quicklook.py         a quick image of the stack (dirty_image, plot_image)
 │   ├── common.py            log, lock, coordinates, small helpers
 │   └── extract/             the measurement
 │       ├── config.py        the lines and the options of every step (internal)
@@ -25,17 +31,15 @@ ViSta-HPC/
 │       ├── linefit.py       the joint fit of the channel × annulus cube, significance
 │       ├── measure.py       the measurement of the lines
 │       ├── sources.py       input list, source grouping, cosmology, normalisation
-│       ├── stack.py         weighting, combination, bootstrap, the continuum measurement
-│       ├── profiles.py      line shape and flux per annulus
+│       ├── stack.py         weighting, combination, bootstrap, the measurement of the continuum
 │       ├── uvfit.py         circular Gaussian / point-source model
-│       ├── plots.py         figures of the continuum
-│       └── plots_line.py    figures of the lines
+│       └── plots_line.py    the figures: line, continuum, noise, comparisons
 ├── src/                     the kernel (Python module ms_ops)
 │   ├── ms_ops.cpp           OpenMP kernel, Python bindings, GPU dispatch
 │   ├── ms_ops_cuda.cu       CUDA engine
 │   └── ms_ops_cuda.h        CPU/GPU interface, shared formulas
 ├── examples/
-│   ├── ViSta_tutorial.ipynb the worked example (Colab)
+│   ├── ViSta_tutorial.ipynb the worked examples, one situation at a time (Colab)
 │   ├── simulate.py          synthetic ALMA-like Measurement Sets
 │   ├── plot_line.py         the figures of the lines, in your own style
 │   ├── run_vista.py         a run in a script

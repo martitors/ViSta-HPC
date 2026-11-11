@@ -8,13 +8,13 @@
 **ViSta** is a visibility-domain stacking method that combines interferometric observations in the Fourier domain from radio to sub-millimeter wavelengths. It combines datasets of sources at different redshifts, observed with different telescopes, array configurations and spectral setups. By stacking visibilities directly and transforming them into the rest frame, ViSta enhances the signal and suppresses noise through extended uv-coverage, without requiring imaging reconstruction.
 
 ```{image} _static/stacked_line.png
-:alt: A stacked CO(3-2) line measured by ViSta on a simulated sample, with the true signal
+:alt: A stacked CO(3-2) line measured by ViSta on a simulated sample
 :width: 75%
 :align: center
 ```
 
-*A CO(3–2) line stacked from twelve simulated ALMA Band 3 observations at
-z = 2–3, none of which detects it alone (from the [Examples](examples/index)).*
+*A CO(3–2) line stacked from twelve simulated ALMA observations of the same
+galaxy at z = 2–3, none of which detects it alone (from the [Examples](examples/index)).*
 
 ```{list-table}
 :widths: 20 80
@@ -70,6 +70,13 @@ Fourier domain*, Proc. SPIE 14153, 141531X
   baselines at once, `F · φ(v) · g(b)`, with the noise measured from the
   data, the correlation between channels in every error, the size of the
   source and the significance of the detection.
+- **Line and continuum together**: the continuum is subtracted and measured
+  on its own, or fitted with the line; the sizes from the two are compared,
+  and a weak one takes the size of the other. A continuum without any line
+  can be stacked too.
+- **Results that explain themselves**: a report that says what was measured
+  and why each choice was made, one dictionary with every number, and
+  figures made to be read at a glance.
 - **Heterogeneous samples**: every dataset can have its own redshift,
   array, channel width, bandwidth, phase centre and spectral frame; the
   frequencies are always brought to the frame of the redshifts (LSRK by
@@ -97,9 +104,15 @@ result = v.run()                  # stack, subtract the continuum, compress, mea
 print(result)                     # the line (both fluxes), the continuum; files: stacked_*
 ```
 
-New here? Start from the [Quickstart](getting_started/quickstart), then follow
-the [Examples](examples/index), a complete worked example on simulated data
-that also runs on Google Colab.
+## Where to start
+
+| You want to | Go to |
+|---|---|
+| run it once, on your data | [Quickstart](getting_started/quickstart) |
+| learn it, one situation at a time, on simulated data (also on Colab) | [Examples](examples/index) |
+| understand what the stacking does to the data | [How the stacking works](stacking/index) |
+| understand how the line and the continuum are measured | [Measuring the stack](extraction/index) |
+| look up an option | [Parameters](reference/parameters) |
 
 ```{toctree}
 :maxdepth: 2
@@ -132,9 +145,9 @@ stacking/compression
 
 extraction/index
 extraction/measure_line
+extraction/extract_flux
 extraction/weighting
 extraction/outputs
-extraction/extract_flux
 extraction/validation
 ```
 
@@ -153,19 +166,19 @@ command_line
 
 examples/index
 examples/00_setup
-examples/01_the_simulator_and_one_galaxy
-examples/02_a_sample_of_twelve_galaxies
-examples/03_the_stack
-examples/04_the_measurement
-examples/05_refining_the_window
-examples/06_the_source_model_the_wrong
-examples/07_the_normalisations
-examples/08_the_weighting
-examples/09_the_errors
-examples/10_the_continuum
-examples/11_a_harder_case_a_line_that_is
-examples/12_a_harder_case_sources_that
-examples/13_a_harder_case_two_lines_in
+examples/01_one_galaxy
+examples/02_the_basic_case_the_same
+examples/03_the_window_the
+examples/04_not_subtracting_the
+examples/05_a_weak_continuum_under_a
+examples/06_a_weak_line_on_a_strong
+examples/07_a_few_galaxies_that_count
+examples/08_point_sources_only_extended
+examples/09_two_lines_far_apart
+examples/10_two_lines_that_blend
+examples/11_a_line_that_is_not_a
+examples/12_a_source_that_is_not_a
+examples/13_the_continuum_alone
 examples/14_the_command_line
 examples/15_on_your_own_data
 ```

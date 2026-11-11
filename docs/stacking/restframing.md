@@ -1,9 +1,11 @@
 # Rest frame
 
-The line of every source falls at a different observed frequency,
-`ν_obs = ν_rest / (1 + z)`. Bringing each dataset to the rest frame of its
-source puts all the lines at the same frequency, and all the channels on a
-common axis.
+**In one sentence.** The line of every galaxy is observed at a different
+frequency, `ν_obs = ν_rest / (1 + z)`; bringing each dataset to the rest
+frame of its galaxy puts all the lines at the same frequency.
+
+**Why it matters.** Only then do the channels of different datasets mean
+the same thing, and the lines add up instead of being spread over the band.
 
 ## What is done
 
@@ -16,25 +18,28 @@ For every dataset with redshift `z`:
 | baselines `(u, v, w)` in metres | `/ (1 + z)` | the baselines in wavelengths, `u ν / c`, are unchanged |
 | antenna positions, dish diameters | `/ (1 + z)` | same geometry, same primary beam at the rest frequency |
 
-Since the baselines in metres are divided by the factor by which the
-frequencies are multiplied, the uv coordinates in wavelengths — what the
-interferometer actually measures — do not change: an image of a dataset
-before and after the rest-framing is the same, only the frequency axis is
-relabelled. In the stack, the baseline length in kλ of every visibility is
-the observed one.
+**Nothing physical changes.** The baselines in metres are divided by the
+same factor the frequencies are multiplied by. So the baselines in
+wavelengths, which is what the interferometer measures, stay the same: an
+image of a dataset before and after is identical, only the frequency axis
+has new labels. In the stack, the baseline length in kλ of every visibility
+is the observed one.
 
 ## The frame of the redshifts
 
-`ν × (1 + z)` is right only if the frequencies of the input are in the frame
-in which `z` is defined. Check the frame of an MS with `listobs` (column
-*Frame*) or `MEAS_FREQ_REF` in its `SPECTRAL_WINDOW` table (1 LSRK, 3 BARY,
-5 TOPO).
+**The catch.** `ν × (1 + z)` is right only if the frequencies of the data
+are in the frame in which `z` is defined.
 
-ViSta always brings the input frequencies to the frame of the redshifts,
-`frame="LSRK"` by default. Give `frame="BARY"` (`--frame BARY`) when your
-redshifts are barycentric or heliocentric, as optical spectroscopic redshifts
-usually are; the two frames differ by up to ~20 km/s, depending on the
-direction of the source.
+**What ViSta does.** It always brings the input frequencies to the frame of
+the redshifts: `frame="LSRK"` by default.
+
+**What you have to say.** Give `frame="BARY"` (`--frame BARY`) when your
+redshifts are barycentric or heliocentric, as optical spectroscopic
+redshifts usually are. The two frames differ by up to ~20 km/s, depending
+on the direction of the source.
+
+**How to check the frame of an MS.** `listobs` (column *Frame*), or
+`MEAS_FREQ_REF` in its `SPECTRAL_WINDOW` table (1 LSRK, 3 BARY, 5 TOPO).
 
 | Input | Without the correction | What ViSta does |
 |---|---|---|
@@ -44,25 +49,29 @@ direction of the source.
 | NOEMA | already in LSR(K): NOEMA tracks the Doppler shift at the telescope | check that the MS is labelled LSRK; if it says TOPO, fix the label, or it is corrected twice |
 | REST | already rest frequencies | not accepted |
 
-For every row that needs it, the Doppler factor
-`k = ν_frame / ν_input` is computed from the time of the row, the position of
-the array and the direction of the source (python-casacore measures), and the
-kernel uses the frequencies `ν k` and the redshift `(1 + z) k − 1`. This is
-exact: the phase shift keeps the observed frequency, and the channels are
-rebinned once, with no extra resampling (unlike converting the inputs with
-`mstransform` first). On a simulated stack of four ALMA observations three
-months apart, the line comes back to its true width (60 km/s) and position,
-while without the correction it is 73 km/s wide and shifted by 13 km/s.
+## How the correction is made
 
-`k` is computed in the main process before the readers start, at knots every
-60 s around the data, and interpolated linearly for every row: the error is
-below 0.2 mm/s. Computed in a fixed order, it is the same bit for bit
-whatever the readers, the chunk size or the device.
+**The Doppler factor.** For every row that needs it, `k = ν_frame / ν_input`
+is computed from the time of the row, the position of the array and the
+direction of the source (python-casacore measures). The kernel then uses
+the frequencies `ν k` and the redshift `(1 + z) k − 1`.
 
-The conversion needs the measures data of casacore; without them a run on
-inputs in another frame stops with an error that says so, rather than
-stacking lines displaced by the Earth's motion.
+**It is exact.** The phase shift keeps the observed frequency, and the
+channels are rebinned once, with no extra resampling (unlike converting the
+inputs with `mstransform` first).
 
-The stack is labelled LSRK, so that `tclean` leaves its frequencies as they
-are (with a TOPO label it would convert every row with the time of its
-observation and the direction of the stack, broadening the line).
+**What it buys.** On a simulated stack of four ALMA observations three
+months apart, the line comes back to its true width (60 km/s) and position.
+Without the correction it is 73 km/s wide and shifted by 13 km/s.
+
+**Details.**
+
+- `k` is computed before the readers start, at knots every 60 s around the
+  data, and interpolated for every row: the error is below 0.2 mm/s. It is
+  the same bit for bit whatever the readers, the chunk size or the device.
+- The conversion needs the measures data of casacore. Without them, a run
+  on inputs in another frame stops with an error that says so, rather than
+  stacking lines displaced by the motion of the Earth.
+- The stack is labelled LSRK, so that `tclean` leaves its frequencies as
+  they are. With a TOPO label it would convert every row with the time of
+  its observation and the direction of the stack, and broaden the line.

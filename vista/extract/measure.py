@@ -48,7 +48,6 @@ from .linefit import (Cube, FitResult, FitSpec, Scan, Whitener, fit, flux_per_an
                       peak_flux_density, residual_continuum, window_flux, window_influence,
                       zero_spacing_spectrum)
 from .noise import build_noise_model, combine_variance
-from .profiles import line_free_mask
 from .stack import build_stack_input, combine, sources_per_bin, sources_per_channel
 from .statistics import SufficientStatistics
 
@@ -80,6 +79,7 @@ class LineResult:
     null_snr: np.ndarray = field(default_factory=lambda: np.zeros(0))
     null_snr_phase: np.ndarray = field(default_factory=lambda: np.zeros(0))
     channel_correlation: Optional[np.ndarray] = None    # (nchan, nchan), None: independent
+    annulus_flux_imaginary: Optional[np.ndarray] = None  # the same fit on the imaginary part
 
     def save(self, prefix: str) -> List[str]:
         written = []
@@ -95,8 +95,10 @@ class LineResult:
         written.append(f"{prefix}_profile.txt")
         np.savetxt(f"{prefix}_uvamp.txt", np.column_stack([
             self.baseline_klambda, self.annulus_flux, self.annulus_flux_error,
-            self.annulus_ok.astype(int), self.sources_per_annulus]),
-            header="b_klambda  line_flux  err_thermal  used  n_sources")
+            self.annulus_ok.astype(int), self.sources_per_annulus,
+            (self.annulus_flux_imaginary if self.annulus_flux_imaginary is not None
+             else np.full(len(self.annulus_flux), np.nan))]),
+            header="b_klambda  line_flux  err_thermal  used  n_sources  line_flux_imaginary")
         written.append(f"{prefix}_uvamp.txt")
         np.savetxt(f"{prefix}_noise.txt", np.column_stack([
             self.velocity_kms, self.noise_channel, self.noise_channel_weights]),
@@ -283,37 +285,14 @@ def _significance(best, scanner, n_null, seed, single):
     return global_significance(best["snr"], null), null
 
 
-def measure_line(statistics: Union[str, SufficientStatistics],
-                 input_list: Union[str, Sequence],
-                 line: Lines,
-                 weighting: WeightingConfig = WeightingConfig(),
-                 config: LineFitConfig = LineFitConfig(),
-                 bootstrap: BootstrapConfig = BootstrapConfig(),
-                 match_tol_arcsec: float = 2.0,
-                 output_prefix: Optional[str] = None,
-                 verbose: bool = True) -> LineResult:
-    """Measure the stacked lines: profile, fluxes, significance, noise.
-
-    Parameters
-    ----------
-    statistics, input_list, weighting, match_tol_arcsec
-        As in :func:`vista.extract.extract_flux`.
-    line
-        The lines (:class:`~vista.extract.config.Lines`): rest frequencies
-        and windows.  Lines whose windows overlap (directly or through
-        another line) are fitted together, sharing the size; every other
-        line is measured on its own, on the channels near it and outside the
-        windows of the others.  The first is the line of the stack.
-    config
-        See :class:`vista.extract.config.LineFitConfig`.
-    bootstrap
-        Resampling of the sources, for the population errors.
-    output_prefix
-        Write ``<prefix>_results.json``, ``_profile.txt``, ``_uvamp.txt`` and
-        ``_noise.txt``.
-    """
+def _stack_and_cells(job):
+    """The stack of the sources, its noise, the cells (channel x annulus) to fit,
+    and the groups of lines: those whose windows overlap are fitted together,
+    the others each on its own."""
+    cfg, input_list, line = job.cfg, job.input_list, job.line
+    match_tol_arcsec, statistics, verbose = job.match_tol_arcsec, job.statistics, job.verbose
+    weighting = job.weighting
     _reset_clock()
-    cfg = config
     data = build_stack_input(statistics, input_list, weighting,
                              match_tol_arcsec=match_tol_arcsec, verbose=verbose)
     sums, factors = data.sums, data.factors
@@ -339,7 +318,7 @@ def measure_line(statistics: Union[str, SufficientStatistics],
 
     # ---- nominal stack and its noise -------------------------------------
     real, imag, weight, mean_b = combine(sums, factors, renormalise=renorm)
-    line_free = line_free_mask(freq, line)
+    line_free = line.free_mask(freq)
     noise = build_noise_model(
         sums, var_src, data.variance_weights, factors, renorm, real, imag, line_free,
         contsub, data.kappa2_entries if use_scatter else {},
@@ -405,7 +384,24 @@ def measure_line(statistics: Union[str, SufficientStatistics],
             f"lines {' + '.join(str(k + 1) for k in m)} fitted together (their windows "
             f"overlap)" if len(m) > 1 else f"line {m[0] + 1} measured on its own"
             for m in groups), verbose)
+    job.G, job.baseline, job.bin_ok, job.contsub, job.corr = G, baseline, bin_ok, contsub, corr
+    job.data, job.dv, job.factors, job.freq, job.group_of = data, dv, factors, freq, group_of
+    job.groups, job.imag, job.line_free, job.mean_b = groups, imag, line_free, mean_b
+    job.meta, job.min_src, job.n_lines, job.n_src = meta, min_src, n_lines, n_src
+    job.noise, job.ok, job.per_annulus, job.per_channel = noise, ok, per_annulus, per_channel
+    job.ranges, job.real, job.renorm, job.sums, job.usable = ranges, real, renorm, sums, usable
+    job.var, job.var_src, job.vel_k, job.velocity = var, var_src, vel_k, velocity
+    job.weight, job.win_k = weight, win_k
 
+
+def _search(job):
+    """The search: every line is looked for over the allowed centres, widths and
+    source sizes with a matched filter; the best S/N and its significance,
+    from the same search on noise (and on stacks with random phases)."""
+    G, baseline, bootstrap, cfg, dv = job.G, job.baseline, job.bootstrap, job.cfg, job.dv
+    factors, group_of, imag, line = job.factors, job.group_of, job.imag, job.line
+    n_lines, n_src, ok, ranges, renorm = job.n_lines, job.n_src, job.ok, job.ranges, job.renorm
+    sums, var, vel_k, verbose = job.sums, job.var, job.vel_k, job.verbose
     # ---- the search, line by line, within the ranges ----------------------
     # source sizes of the scan: a point source, and Gaussians of 0.5, 1 and 2
     # times the size that halves the visibility at the median baseline
@@ -478,7 +474,15 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                 (1 + np.sum(nk >= bests[k]["snr"])) / (1 + nk.size))
             detections[k]["phase_null_snr_rms"] = float(np.sqrt(np.mean(nk ** 2)))
         null_phase = np.asarray(vals[0])
+    job.bests, job.detection, job.detections, job.null = bests, detection, detections, null
+    job.null_phase, job.th_min, job.theta_half = null_phase, th_min, theta_half
 
+
+def _fit_groups(job):
+    """The fit of every group of lines on all its cells at once: with a point
+    source and with a Gaussian one, and the choice between the two."""
+    G, bests, cfg, ranges, th_min = job.G, job.bests, job.cfg, job.ranges, job.th_min
+    theta_half = job.theta_half
     # ---- the fit of every group: point source, and a Gaussian if asked or
     # preferred ---------------------------------------------------------------
     if cfg.theta_prior_arcsec is not None and cfg.theta_fixed_arcsec is None:
@@ -529,6 +533,14 @@ def measure_line(statistics: Union[str, SufficientStatistics],
         gs.adopted, gs.result, gs.spec = adopted, result, spec
         gs.theta = float(result.params.get("theta", 0.0))
 
+
+def _bootstrap(job):
+    """The bootstrap over the sources: the fits repeated on resampled stacks,
+    for the errors that come from the differences among the galaxies."""
+    G, baseline, bootstrap, corr, data = job.G, job.baseline, job.bootstrap, job.corr, job.data
+    dv, factors, freq, line, n_lines = job.dv, job.factors, job.freq, job.line, job.n_lines
+    n_src, renorm, sums, var_src = job.n_src, job.renorm, job.sums, job.var_src
+    win_k = job.win_k
     # ---- bootstrap over the sources --------------------------------------
     rng = np.random.default_rng(bootstrap.seed)
     win_masks = [line.window_mask(freq, k, win_k[k]) for k in range(n_lines)]
@@ -590,7 +602,15 @@ def measure_line(statistics: Union[str, SufficientStatistics],
             if vals.size > 1:
                 gs.boot_err[k] = float(np.std(vals))
                 gs.boot_pct[k] = [float(x) for x in np.percentile(vals, [16, 50, 84])]
+    job.win_masks = win_masks
 
+
+def _profiles(job):
+    """The spectrum at zero spacing: every channel extrapolated to zero baseline
+    with the size of its group, with its noise, the model and the imaginary part."""
+    G, baseline, corr, dv, freq = job.G, job.baseline, job.corr, job.dv, job.freq
+    imag, line, noise, real, var = job.imag, job.line, job.noise, job.real, job.var
+    vel_k = job.vel_k
     # ---- profile, window fluxes, annuli ------------------------------------
     # every channel takes the profile of the group whose lines are nearest (a
     # resolved source: the zero-spacing profile depends on the size of its group)
@@ -660,7 +680,18 @@ def measure_line(statistics: Union[str, SufficientStatistics],
     model_profile = sum(parts["lines"]) + compose(parts["c"])
     prof_boot = compose(parts["boot"])
     prof_err_w = compose(parts["err_w"])
+    job.compose, job.model_profile, job.noise_th = compose, model_profile, noise_th
+    job.prof, job.prof_boot, job.prof_err = prof, prof_boot, prof_err
+    job.prof_err_w, job.prof_im = prof_err_w, prof_im
 
+
+def _fluxes(job):
+    """The two fluxes of every line, the area of the Gaussian and the area under
+    the spectrum in the window, the test that compares them and the one that
+    is quoted; the flux per annulus; the continuum fitted with the lines."""
+    G, cfg, corr, detections, dv = job.G, job.cfg, job.corr, job.detections, job.dv
+    group_of, imag, line, n_lines, ok = job.group_of, job.imag, job.line, job.n_lines, job.ok
+    vel_k, win_k, win_masks = job.vel_k, job.win_k, job.win_masks
     fitted = ok.any(axis=1)
 
     def windows(cube_g, res, sp, mask, opt_mask):
@@ -691,6 +722,10 @@ def measure_line(statistics: Union[str, SufficientStatistics],
         return float(fa), float(ea)
 
     ann_flux, ann_err = flux_per_annulus(G[0].cube, G[0].wh, dict(G[0].result.params))
+    # the same on the imaginary part: no signal for a centred source, a null test
+    ann_imag, _ = flux_per_annulus(
+        replace(G[0].cube, real=np.where(np.isfinite(imag), imag, 0.0)), G[0].wh,
+        dict(G[0].result.params))
 
     # ---- the continuum fitted with the lines (no subtraction) --------------
     for gs in G:
@@ -829,7 +864,18 @@ def measure_line(statistics: Union[str, SufficientStatistics],
             first_g = blocks[gs.members[0]]
             gs.size_test["flux_averaged"] = first_g["flux_gauss"]
             gs.size_test["flux_averaged_error_thermal"] = first_g["flux_gauss_error_thermal"]
+    job.ann_err, job.ann_flux, job.ann_imag, job.blocks = ann_err, ann_flux, ann_imag, blocks
+    job.continuum_fit, job.fitted = continuum_fit, fitted
+    job.flux_choice_notes = flux_choice_notes
 
+
+def _residual_continuum(job):
+    """What is left of the continuum outside the line windows (an offset and a
+    slope), and the standardised noise samples of the noise figure."""
+    G, baseline, blocks, cfg, compose = job.G, job.baseline, job.blocks, job.cfg, job.compose
+    contsub, corr, data, dv, imag = job.contsub, job.corr, job.data, job.dv, job.imag
+    line_free, real, usable, var = job.line_free, job.real, job.usable, job.var
+    velocity = job.velocity
     # ---- residual continuum: offset and slope outside the windows ---------
     cube_all = Cube(real=real, variance=var, baseline=baseline, velocity=velocity, dv=dv,
                     ok=usable, corr=corr, edges=data.bin_edges_lambda)
@@ -862,7 +908,22 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                          & np.isfinite(imag)]
         zf = ((real / sd)[line_free[:, None] & np.isfinite(var) & (var > 0)
                           & np.isfinite(real)] if contsub else np.zeros(0))
+    job.c_fitted, job.resid, job.zf, job.zi = c_fitted, resid, zf, zi
 
+
+def _result(job):
+    """The summary (every number) and the result."""
+    G, ann_err, ann_flux, ann_imag = job.G, job.ann_err, job.ann_flux, job.ann_imag
+    bin_ok, blocks, cfg, continuum_fit = job.bin_ok, job.blocks, job.cfg, job.continuum_fit
+    corr, data, detection, dv, fitted = job.corr, job.data, job.detection, job.dv, job.fitted
+    freq, groups, line, line_free = job.freq, job.groups, job.line, job.line_free
+    mean_b, meta, min_src, model_profile = job.mean_b, job.meta, job.min_src, job.model_profile
+    n_src, noise, noise_th, null = job.n_src, job.noise, job.noise_th, job.null
+    null_phase, ok, per_annulus = job.null_phase, job.ok, job.per_annulus
+    per_channel, prof, prof_boot = job.per_channel, job.prof, job.prof_boot
+    prof_err, prof_err_w, prof_im, resid = job.prof_err, job.prof_err_w, job.prof_im, job.resid
+    velocity, weight, weighting, zf = job.velocity, job.weight, job.weighting, job.zf
+    zi = job.zi
     # ---- summary -------------------------------------------------------------
     result, size_test, theta = G[0].result, G[0].size_test, G[0].theta
     boot_err, boot_pct = G[0].boot_err, G[0].boot_pct
@@ -923,10 +984,21 @@ def measure_line(statistics: Union[str, SufficientStatistics],
         baseline_klambda=np.nansum(mean_b * weight, axis=0)
         / np.maximum(np.nansum(weight, axis=0), 1e-300) / 1e3,
         annulus_flux=ann_flux, annulus_flux_error=ann_err, annulus_ok=bin_ok,
+        annulus_flux_imaginary=ann_imag,
         sources_per_annulus=per_annulus, noise_channel=noise_th,
         noise_channel_weights=prof_err_w, z_imaginary=zi, z_line_free=zf,
         null_snr=null, null_snr_phase=null_phase, channel_correlation=corr)
+    job.line_block, job.out, job.summary = line_block, out, summary
 
+
+def _report(job):
+    """The checks said aloud: the noise, a residual continuum, a line that is not
+    Gaussian, a weak line; the files; one line of log per line."""
+    G, blocks, c_fitted, cfg, contsub = job.G, job.blocks, job.c_fitted, job.cfg, job.contsub
+    detection, flux_choice_notes, group_of = job.detection, job.flux_choice_notes, job.group_of
+    line, line_block, n_lines, noise = job.line, job.line_block, job.n_lines, job.noise
+    out, output_prefix, resid, summary = job.out, job.output_prefix, job.resid, job.summary
+    verbose = job.verbose
     chk = noise.checks
     _say(f"  noise: scatter/weights kappa = {noise.kappa:.3f}; imaginary "
          f"{chk.get('imaginary_rms_over_noise', float('nan')):.3f}"
@@ -1003,7 +1075,58 @@ def measure_line(statistics: Union[str, SufficientStatistics],
                 + (f" {gs.theta:.2f}\"" if gs.theta > 0 else "")
                 + f"  chi2r = {gs.result.chi2_reduced:.2f}" if k == gs.members[0] else ""),
              verbose)
-    return out
+
+
+def measure_line(statistics: Union[str, SufficientStatistics],
+                 input_list: Union[str, Sequence],
+                 line: Lines,
+                 weighting: WeightingConfig = WeightingConfig(),
+                 config: LineFitConfig = LineFitConfig(),
+                 bootstrap: BootstrapConfig = BootstrapConfig(),
+                 match_tol_arcsec: float = 2.0,
+                 output_prefix: Optional[str] = None,
+                 verbose: bool = True) -> LineResult:
+    """Measure the stacked lines: profile, fluxes, significance, noise.
+
+    The measurement is a sequence of steps, each a function of this module
+    (``_stack_and_cells``, ``_search``, ``_fit_groups``, ``_bootstrap``,
+    ``_profiles``, ``_fluxes``, ``_residual_continuum``, ``_result``,
+    ``_report``): read them in that order to follow what is done.
+
+    Parameters
+    ----------
+    statistics, input_list, weighting, match_tol_arcsec
+        As in :func:`vista.extract.measure_continuum`.
+    line
+        The lines (:class:`~vista.extract.config.Lines`): rest frequencies
+        and windows.  Lines whose windows overlap (directly or through
+        another line) are fitted together, sharing the size; every other
+        line is measured on its own, on the channels near it and outside the
+        windows of the others.  The first is the line of the stack.
+    config
+        See :class:`vista.extract.config.LineFitConfig`.
+    bootstrap
+        Resampling of the sources, for the population errors.
+    output_prefix
+        Write ``<prefix>_results.json``, ``_profile.txt``, ``_uvamp.txt`` and
+        ``_noise.txt``.
+    """
+    # what the steps share: the inputs here, then what every step works out
+    job = SimpleNamespace(statistics=statistics, input_list=input_list, line=line,
+                          weighting=weighting, cfg=config, bootstrap=bootstrap,
+                          match_tol_arcsec=match_tol_arcsec, output_prefix=output_prefix,
+                          verbose=verbose)
+    # the steps, in order; each reads what the earlier ones left in ``job``
+    _stack_and_cells(job)       # the stack, its noise, the cells, the groups of lines
+    _search(job)                # every line searched: best S/N and its significance
+    _fit_groups(job)            # the fit: point and Gaussian source, and the choice
+    _bootstrap(job)             # the fits again on resampled stacks: population errors
+    _profiles(job)              # the spectrum at zero spacing, with its noise and model
+    _fluxes(job)                # the two fluxes of every line, and which one is quoted
+    _residual_continuum(job)    # what is left of the continuum outside the windows
+    _result(job)                # the summary and the result
+    _report(job)                # warnings, files, log
+    return job.out
 
 
 __all__ = ["measure_line", "LineResult"]

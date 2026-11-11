@@ -1,7 +1,8 @@
 # The input list
 
-Stacking and measurement read the same plain text file, with one dataset per
-line:
+**In one sentence.** One plain text file, one dataset per line, says which
+observations to stack, the redshift of each galaxy and where it is; the
+stacking and the measurement both read it.
 
 ```text
 # <ms_path>  <redshift>  <RA>  <Dec>  [FIELD_ID]  [SPW_IDS]  [NORM]
@@ -23,24 +24,27 @@ Text after `#` is a comment.
 
 ## One stack entry per line
 
-Every line of the list becomes one entry of the stack (one spectral window,
-one `DATA_DESC_ID`, in the order of the list), so the measurement finds each
-dataset again from the same file: there is no second file to keep in sync.
-An entry that gives no data keeps its place, with no rows. To remove a line
-by hand after the stacking, replace it with `# EXCLUDED`, so that the
-numbering does not shift.
+**What.** Every line of the list becomes one entry of the stack (one
+spectral window, in the order of the list).
 
-## The same source, observed more than once
+**Why.** The measurement finds each dataset again from the same file: there
+is no second file to keep in sync.
+
+**What to watch.** An entry that gives no data keeps its place, with no
+rows. To remove a line by hand after the stacking, replace it with
+`# EXCLUDED`, so that the numbering does not shift.
+
+## The same galaxy, observed more than once
 
 Lines with the same coordinates (within `match_tol_arcsec`, 2″ by default)
-are different observations of one source:
+are different observations of one galaxy:
 
 ```text
 /data/obs2.ms  2.561  00:32:07.60  -30:37:35.2  11  25,27  6.05e12
 /data/obs3.ms  2.561  00:32:07.60  -30:37:35.2  12  23,25  6.05e12
 ```
 
-The measurement adds their statistics before averaging the sources, so the
-repeated observations of a source are combined with their own weights, and
-in the democratic weighting each source counts once. Nothing else
-identifies a source: no name column, no separate coordinate file.
+The measurement adds their statistics before averaging the galaxies. So
+the repeated observations are combined with their own weights, and in the
+democratic weighting each galaxy counts once. Nothing else identifies a
+galaxy: no name column, no separate coordinate file.

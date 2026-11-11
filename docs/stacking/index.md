@@ -1,40 +1,40 @@
 # How the stacking works
 
-Stacking in the uv plane averages the visibilities of many sources as if
-they were one observation of one source. For that, every dataset is brought
-to the same reference: the same position, the same frame, the same
-channels. ViSta does it in `ViSta(...).run()`, which reads every dataset
-once and writes the stack:
+**In one sentence.** Stacking in the uv plane averages the visibilities of
+many galaxies as if they were one observation of one galaxy; for that,
+every dataset is first brought to the same position, the same frame and the
+same channels.
+
+**What `run()` does.** It reads every dataset once and writes the stack:
 
 ```text
 input list ──► for every dataset, chunk by chunk:
                  1. select the rows      the field and the target scans, the channels near the line
-                 2. re-centre            phase shift to the source            (Centring)
+                 2. re-centre            phase shift to the source              (Centring)
                  3. rest-frame           frequencies × (1+z), baselines / (1+z) (Rest frame)
-                 4. regrid               onto the common channel grid          (Spectral grid)
-                 5. subtract the continuum, row by row          (default)     (Continuum)
-                 6. compress into statistics per annulus                      (Compression)
-                 7. write                one spectral window per dataset       (The stack on disk)
+                 4. regrid               onto the common channel grid           (Spectral grid)
+                 5. subtract the continuum, row by row          (default)       (Continuum)
+                 6. compress into statistics per annulus                        (Compression)
+                 7. write                one spectral window per dataset        (The stack on disk)
 ```
 
-Steps 2–4 run in the compiled kernel (`ms_ops`, C++/OpenMP or CUDA), steps
-5–6 in the same pass, on each chunk. Nothing is averaged across datasets at this
-stage: the stack keeps every visibility with its weight, one spectral window
-per line of the input list. The average over the sources — with the
-weighting, the redshift rescaling and the primary-beam correction — is done
-when the stack is measured, on the statistics, so it can be changed at will
-([Measuring the stack](../extraction/index)).
+**What it does not do.** Nothing is averaged across the datasets here. The
+stack keeps every visibility with its weight, one spectral window per line
+of the input list. The average over the galaxies (with the weighting, the
+redshift correction, the primary beam) is taken when the stack is
+**measured**, on the statistics. So it can be changed at will, without
+stacking again ([Measuring the stack](../extraction/index)).
 
-The pages of this section follow the steps:
+## The pages
 
-| Step | Page | What it decides |
+| Step | Page | What you learn |
 |---|---|---|
-| 2 | [Centring](centring) | where the source is; what an offset or a wrong position does |
-| 3 | [Rest frame](restframing) | the frame of the redshifts; the Earth's motion in TOPO data |
+| 2 | [Centring](centring) | where the source is put; what a wrong position does |
+| 3 | [Rest frame](restframing) | the frame of the redshifts; the motion of the Earth |
 | 4 | [Spectral grid](spectral_grid) | the common channel width, the number of channels, the coverage |
-| 7 | [The stack on disk](combination) | Zarr or Measurement Set; parallelism, memory, the log |
-| 5 | [Continuum](continuum.md) | subtract it or not; the line-free channels; redoing it |
+| 5 | [Continuum](continuum.md) | subtract it, fit it with the line, or leave it; the continuum alone |
 | 6 | [Compression](compression) | the annuli of baseline length; what the statistics hold |
+| 7 | [The stack on disk](combination) | Zarr or Measurement Set; what is in it |
 
 ## The call
 
@@ -64,40 +64,51 @@ readers, writers, threads), `contsub_orders` and `statistics`.
 
 ## The engine
 
+Steps 2 to 4 run in a compiled kernel (`ms_ops`: C++ with OpenMP, or CUDA);
+steps 5 and 6 in the same pass, on each chunk.
+
 ```text
 readers (processes) ──► chunks ──► compute (main thread) ──► results ──► writers (threads)
 one MS each,            bounded     C++ kernel, GIL released  bounded     Zarr: n_writers in
 shared memory           queue       OpenMP or CUDA            queue       parallel; MS: one
 ```
 
-- **Readers** read each Measurement Set chunk by chunk with
-  python-casacore: only the rows of the requested field and of the target
-  scans, only the channels that fall in the output window. They are
-  processes (python-casacore holds the GIL while reading), and hand the data
-  over in shared memory, without copies.
-- **Compute** runs the kernel on each chunk with the GIL released, so
-  reading and writing go on meanwhile. On the GPU (`device="gpu"`) all the
-  chunks already read, up to `gpu_batch`, go in one launch.
-- **Writers** store each processed chunk at its place: in a Zarr store every
-  chunk is a file of its own, so several writers work at once; a Measurement
-  Set is written by one thread.
+- **Readers** read each Measurement Set chunk by chunk: only the rows of
+  the field and of the target scans, only the channels in the output
+  window. They are separate processes, and hand the data over in shared
+  memory, without copies.
+- **Compute** runs the kernel on each chunk. Reading and writing go on
+  meanwhile. On a GPU (`device="gpu"`) all the chunks already read, up to
+  `gpu_batch`, go in one launch.
+- **Writers** store each chunk at its place. In a Zarr store every chunk is
+  a file of its own, so several writers work at once; a Measurement Set is
+  written by one thread.
 
-The numbers of readers, writers and kernel threads come from the cores the
-process may use (`n_readers`, `n_writers`, `n_threads` to fix them; see
-[Performance](../reference/performance)). The queues between the stages are
-bounded, which bounds the memory; their sizes, the size of the chunks and
-whether the readers are processes or threads (when `/dev/shm` is too small)
-are chosen by the code. `verbose="debug"` shows them, and reports at the end
-how long each stage took and which one limited the run.
+**You do not have to tune it.** The numbers of readers, writers and threads
+come from the cores the process may use (`n_readers`, `n_writers`,
+`n_threads` fix them; see [Performance](../reference/performance)). The
+queues between the stages are bounded, which bounds the memory.
+`verbose="debug"` shows the choices, and reports at the end how long each
+stage took and which one limited the run.
 
 ## The log
 
-Every line carries the time since the start of the step; warnings are always
-shown. A run on four simulated ALMA observations (labelled TOPO, three
-months apart) on a 2-core machine, `v.stack(..., nchan=200)`, with
-`verbose="debug"` (its detail lines on the metadata and the grid of every
-dataset left out; `verbose=True` gives the same without the three timing
-lines):
+**What it is for.** The log tells you what was read from every dataset, and
+warns when something is off. Every line carries the time since the start of
+the step.
+
+| `verbose` | What is printed |
+|---|---|
+| `False` (default) | the warnings only |
+| `True` | the progress and the results |
+| `"debug"` | also the metadata and the grid of every dataset, the queues, the timing of the stages |
+
+`log_file` writes the same to a file. The measurement writes to the same
+log.
+
+An example: four simulated ALMA observations (labelled TOPO, three months
+apart) on a 2-core machine, `v.stack(..., nchan=200)`, with
+`verbose="debug"` (some detail lines left out):
 
 ```text
 [ViSta       0.0s] ViSta 3.0.0 · 4 MS from input_list.txt → stack.zarr (Zarr) · CPU · 2 cores: 1 reader, 1 kernel thread, 1 writer
@@ -118,16 +129,16 @@ lines):
 [ViSta       1.4s]   (Zarr store: vista.export_ms() writes it as a Measurement Set)
 ```
 
-For each dataset: the rows used (and how many the field and target-scan
-selection removed), the column read, the spectral windows and channels used,
-the fraction of the output grid it covers (the rest is flagged), the
-distance between its phase centre and the source, and the shift of its
-output window when it does not cover the window centred on the line.
-Warnings: source beyond half the primary beam, a missing `data_column`,
-spectral windows dropped, datasets skipped and why, a GPU error.
+**For each dataset** the log gives:
 
-`verbose=False` (the default) keeps the warnings only, `verbose=True` shows
-the progress and the results, `verbose="debug"` adds the metadata and grid of
-every dataset, the weight scale, the queues, the GPU buffers and the timing
-of the stages. The measurement writes to the same log; `log_file` writes it
-to a file as well.
+- the rows used (and how many the selection of field and scans removed);
+- the column read;
+- the spectral windows and the channels used;
+- the fraction of the output grid it covers (the rest is flagged);
+- the distance between its phase centre and the source (`offset`);
+- the shift of its window, when it does not cover the one centred on the
+  line.
+
+**Warnings** to act on: a source beyond half the primary beam, a missing
+`data_column`, spectral windows dropped, datasets skipped (and why), a GPU
+error.

@@ -280,7 +280,8 @@ def compress_visibilities(ms_path: str,
                           chunk_mb: float = 512.0,
                           resume: bool = True,
                           verbose: bool = True,
-                          n_io: int = 4) -> Dict[str, str]:
+                          n_io: int = 4,
+                          one_channel: bool = False) -> Dict[str, str]:
     """Compress a stack into sufficient statistics, descriptor by
     descriptor.
 
@@ -322,6 +323,9 @@ def compress_visibilities(ms_path: str,
         at a time and therefore the memory footprint.
     resume
         Reuse the data descriptors already present in the output files.
+    one_channel
+        Sum every data descriptor over its channels: the statistics of a
+        continuum stack, whose datasets need not share any rest frequency.
     n_io
         Threads reading a Zarr store at the same time (a Measurement Set is
         read by one thread).  The accumulation runs in the compiled kernel
@@ -345,14 +349,14 @@ def compress_visibilities(ms_path: str,
         return _compress(stack, ms_path, entries, line, binning, out_line,
                          out_continuum, line_column, continuum_column,
                          max_amplitude, chunk_mb, resume, verbose, n_io,
-                         kernel, t_start, process_pieces)
+                         kernel, t_start, process_pieces, one_channel)
     finally:
         stack.close()
 
 
 def _compress(stack, ms_path, entries, line, binning, out_line, out_continuum,
               line_column, continuum_column, max_amplitude, chunk_mb, resume,
-              verbose, n_io, kernel, t_start, process_pieces):
+              verbose, n_io, kernel, t_start, process_pieces, one_channel=False):
     import time
 
     dd_frequencies = stack.dd_frequencies()
@@ -412,7 +416,11 @@ def _compress(stack, ms_path, entries, line, binning, out_line, out_continuum,
          + (f", continuum from {continuum_column}" if do_continuum else "")
          + ("" if kernel else "  [NumPy: compiled kernel not found]"), verbose)
 
-    if "freq_grid" in stored["line"]:
+    if one_channel:
+        every = np.concatenate([np.asarray(f, float) for f in dd_frequencies.values()
+                                if len(f)] or [np.zeros(1)])
+        grid, f0, dnu = np.array([every.mean()]), 0.0, 1.0
+    elif "freq_grid" in stored["line"]:
         grid = np.asarray(stored["line"]["freq_grid"])
         f0, dnu = float(grid[0]), float(grid[1] - grid[0])
     else:
@@ -459,7 +467,8 @@ def _compress(stack, ms_path, entries, line, binning, out_line, out_continuum,
         if not pieces:
             _store_empty(dd, freq)
             continue
-        grid_index = np.rint((freq - f0) / dnu).astype(np.int64)
+        grid_index = (np.zeros(n_chan, np.int64) if one_channel
+                      else np.rint((freq - f0) / dnu).astype(np.int64))
         plan[dd] = {"entry": entry, "freq": freq, "grid_index": grid_index,
                     "grid_ok": (grid_index >= 0) & (grid_index < n_grid),
                     "left": len(pieces), "rows": 0, "rejected": 0,

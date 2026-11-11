@@ -157,23 +157,6 @@ class Lines:
     def v_window_kms(self) -> Tuple[float, float]:
         return self.windows_kms[0]
 
-    # the second line, for the template method of extract_flux (two at most)
-    @property
-    def second_rest_freq_ghz(self) -> Optional[float]:
-        return self.freqs_ghz[1] if self.n > 1 else None
-
-    @property
-    def second_rest_freq_hz(self) -> Optional[float]:
-        return self.freqs_ghz[1] * 1e9 if self.n > 1 else None
-
-    @property
-    def second_v_window_kms(self) -> Tuple[float, float]:
-        return self.windows_kms[1] if self.n > 1 else (-500.0, 500.0)
-
-    @property
-    def exclude_v_kms(self) -> Sequence[Tuple[float, float]]:
-        return ()
-
     def freq_hz(self, k: int = 0) -> float:
         return self.freqs_ghz[k] * 1e9
 
@@ -345,71 +328,6 @@ class WeightingConfig:
     def renormalise(self) -> bool:
         """True when the per-source weights must be renormalised to 1."""
         return self.scheme == "democratic"
-
-
-# ---------------------------------------------------------------------------
-# how the flux per annulus is measured  (Sec. 5.3.2)
-# ---------------------------------------------------------------------------
-@dataclass
-class ProfileConfig:
-    """Line profile handling and per-annulus flux measurement.
-
-    Parameters
-    ----------
-    method
-        ``'template'`` (default) fit the line shape once on the spatially
-        integrated spectrum, freeze centroid and width, and fit only the
-        amplitude in each annulus by weighted linear least squares.  The
-        flux then follows analytically as ``F = A * sigma * sqrt(2 pi)``:
-        no truncation of the wings, no contamination between blended
-        components.
-
-        ``'window'`` plain boxcar integration over the window of the line.
-        Simpler and assumption-free, but it truncates the wings and mixes
-        blended lines.
-
-        ``'continuum'`` no line at all: the flux per annulus is the weighted
-        average of the line-free channels (use it on the continuum column).
-    fit_span_kms
-        Half-width, in km/s, of the region around each line used both for
-        the shape fit and for the amplitude least squares.
-    shape_tie
-        Constraints of the two-component shape fit for a blend:
-        ``'free'`` (6 parameters), ``'centroid'`` (common centroid),
-        ``'centroid+width'`` (common centroid and width).
-    fixed_shape_kms
-        ``(centroid, sigma)`` in km/s.  When given, the shape fit is skipped
-        and this shape is imposed on both components.
-    joint_continuum
-        Fit the line **on top of** a continuum instead of assuming it was
-        already removed: a constant term is added both to the shape fit on
-        the integrated spectrum and to the per-annulus least squares.  The
-        amplitude of that term is the continuum flux density of the annulus,
-        so the continuum gets its own profile and its own uv fit, measured
-        jointly with the line and on the same data.
-
-        Switch it on when the stack was **not** continuum-subtracted.  It is
-        also worth running on a subtracted stack as a robustness test: if the
-        flux or the size move, the fit was absorbing residual continuum.
-    continuum_overlap_frac
-        In ``'continuum'`` mode, use only the channels covered by at least
-        this fraction of the sources (1.0 = all of them).
-    """
-
-    method: str = "template"            # 'template' | 'window' | 'continuum'
-    fit_span_kms: float = 1500.0
-    shape_tie: str = "free"             # 'free' | 'centroid' | 'centroid+width'
-    fixed_shape_kms: Optional[Tuple[float, float]] = None
-    joint_continuum: bool = False
-    continuum_overlap_frac: float = 1.0
-
-    def __post_init__(self):
-        if self.method not in ("template", "window", "continuum"):
-            raise ValueError("method must be 'template', 'window' or "
-                             f"'continuum', got {self.method!r}")
-        if self.shape_tie not in ("free", "centroid", "centroid+width"):
-            raise ValueError("shape_tie must be 'free', 'centroid' or "
-                             f"'centroid+width', got {self.shape_tie!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -598,11 +516,6 @@ class UVFitConfig:
         Floor on the per-annulus bootstrap errors, as a fraction of their
         median: with few sources the bootstrap can underestimate them and a
         single annulus would then dominate the chi square.
-    second_line_theta_tie_dex
-        Soft tie, in dex, of the size of the second line to the size of the
-        target line measured on the same bootstrap realisation.  ``None``
-        fits it freely.  The default is permissive: it stabilises poorly
-        constrained fits without imposing equality.
     """
 
     model: str = "gauss"                # 'gauss' | 'point' | 'gauss2'
@@ -613,8 +526,6 @@ class UVFitConfig:
     b_max_klambda: Optional[float] = None
     min_sources_per_bin: int = 2
     error_floor_frac: float = 0.1
-    second_line_theta_tie_dex: Optional[float] = 0.2
-    continuum_theta_tie_dex: Optional[float] = None
 
     def __post_init__(self):
         if self.model not in ("gauss", "point", "gauss2"):
@@ -706,7 +617,7 @@ class ContinuumConfig:
             raise ValueError(f"order must be 0, 1 or -1, got {self.order}")
 
 
-__all__ = ["Lines", "per_line", "ranges_per_line", "BinningConfig", "WeightingConfig", "ProfileConfig",
+__all__ = ["Lines", "per_line", "ranges_per_line", "BinningConfig", "WeightingConfig",
            "LineFitConfig",
            "UVFitConfig", "BootstrapConfig", "ContinuumConfig",
            "C_KMS", "C_MS", "ARCSEC_PER_RAD"]

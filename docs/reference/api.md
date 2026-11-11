@@ -12,7 +12,7 @@ The options are listed in [Parameters](parameters).
    :members: stack, extract, run, help, files
 
 .. autoclass:: vista.RunResult
-   :members: plot, report
+   :members: plot, results, report
 
 .. autofunction:: vista.compare
 
@@ -37,12 +37,17 @@ The options are listed in [Parameters](parameters).
 .. autoclass:: vista.extract.LineResult
    :members: save
 
-.. autoclass:: vista.extract.ExtractionResult
+.. autoclass:: vista.extract.ContinuumResult
+   :members: save
 ```
 
 ## Figures
 
 ```{eval-rst}
+.. autofunction:: vista.extract.plots_line.plot_profile
+
+.. autofunction:: vista.extract.plots_line.plot_uv
+
 .. autofunction:: vista.extract.plots_line.plot_line_result
 ```
 

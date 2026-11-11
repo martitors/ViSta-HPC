@@ -1,17 +1,32 @@
 # Validation
 
-How well the measurement works, on simulations where the true line is known.
-The [Examples](../examples/index) show the same on a complete simulated
-sample, one option at a time, against the true values of the simulation.
+**In one sentence.** On simulations where the true line is known, the joint
+fit recovers the flux of point and extended sources within a few per cent,
+with errors that mean what they say; a point-source model, or a peak in an
+image, loses more than half of the flux of an extended source.
+
+The [Examples](../examples/index) show the same on complete simulated
+samples, one situation at a time. This page has the numbers over many
+noise realisations.
+
+**How to read the tables.**
+
+- *joint*: the measurement of ViSta, all channels and baselines in one fit
+  ([Measuring the line](measure_line));
+- *window* and *template*: the two earlier methods (the spectrum summed
+  over a window; a spectral template fitted baseline by baseline). They are
+  no longer in the code, and are kept here as a comparison;
+- *bias*: mean of measured over true flux, minus one;
+- *scatter*: the rms of the flux over the true flux;
+- *coverage*: the fraction of realisations whose quoted ±1σ holds the
+  truth (ideal 0.68).
 
 ## Point and resolved sources
 
 Synthetic statistics built cell by cell as the compression builds them: 20
 sources, weights wrong by κ = 1.3, channel correlation 0.3; 50–100
-realisations per case. *Scatter* is the rms of the flux over the true flux,
-*coverage* the fraction of realisations whose quoted ±1σ contains the truth
-(ideal 0.68), *noise > 2σ* the fraction of pure-noise stacks with F/σ > 2
-(ideal 0.023).
+realisations per case. *noise > 2σ* is the fraction of pure-noise stacks
+with F/σ > 2 (ideal 0.023).
 
 | Method | noise > 2σ | weak (S/N ≈ 3): bias, scatter, coverage | medium (S/N ≈ 6): scatter, coverage | resolved (θ = 1″): bias |
 |---|---|---|---|---|
@@ -109,7 +124,8 @@ about ±30%):
   has no aperture to choose and half the scatter of the best image method.
 - **Weak resolved source**: every total flux is uncertain because the size
   is; the uv fit gives the honest error, `imfit` fails or runs away. A size
-  from elsewhere (`theta_prior_arcsec`) is the way to tighten it.
+  from elsewhere (`model_prior`, or the size of the continuum with
+  `model="continuum"`) is the way to tighten it.
 
 This agrees with Lindroos et al. (2015, MNRAS 446, 3502), who find
 uv stacking more robust than image stacking, with better size estimates.

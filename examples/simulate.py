@@ -44,6 +44,9 @@ import warnings
 import numpy as np
 
 C = 299792458.0
+# sizes of the figures: large enough to read in a notebook
+FONTS = {"font.size": 14, "axes.labelsize": 15, "axes.titlesize": 14, "legend.fontsize": 12,
+         "xtick.labelsize": 13, "ytick.labelsize": 13}
 C_KMS = 299792.458
 ALMA_SITE = np.array([2225061.0, -5440057.0, -2481681.0])     # ITRF [m]
 LAT, LON = math.radians(-23.0229), math.radians(-67.7552)
@@ -400,29 +403,32 @@ def plot_galaxy(clean, noisy, unit_factor=1e3):
     part of it)."""
     import matplotlib.pyplot as plt
     from vista.quicklook import plot_image
-    fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.2), gridspec_kw={"height_ratios": [1.25, 1]})
+    plt.rcParams.update(FONTS)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 10.5), gridspec_kw={"height_ratios": [1.25, 1]})
     images = [channel_image(clean), channel_image(noisy)]
     top = max(float(images[0].data.max()), 4 * images[1].rms)
     for j, (rec, name, img) in enumerate(zip((clean, noisy), ("without noise", "with noise"),
                                              images)):
         if j == 0:
             img.rms = images[1].rms               # the same colours and contours as the noisy one
-        plot_image(img, axes[0, j], title=f"{name}: channel at the line centre", vmax=top)
+        plot_image(img, axes[0, j], title=f"One galaxy, {name}", vmax=top)
+        if j == 0:                                # no noise: no rms to quote
+            axes[0, j].set_title(f"One galaxy, {name}", fontsize=14)
         sp = spectrum_at(rec)
         ax = axes[1, j]
         o = np.argsort(sp["v"])
-        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=1,
-                label="observed (average of all baselines)")
-        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=1.8,
-                label="true signal on these baselines")
-        ax.plot(sp["v"][o], sp["total"][o] * unit_factor, color="#1e8449", lw=1.0, ls="--",
-                label="true total flux (zero baseline)")
+        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=1.2,
+                label="Observed")
+        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=2.4,
+                label="True, these baselines")
+        ax.plot(sp["v"][o], sp["total"][o] * unit_factor, color="#1e8449", lw=1.6, ls="--",
+                label="True, total flux")
         ax.axhline(0, color="0.4", lw=0.6)
         ax.set_xlabel("velocity [km/s]")
-        ax.set_ylabel("flux density [mJy]")
-        ax.legend(fontsize=7.5, frameon=False, loc="upper left")
+        ax.set_ylabel("Re flux density [mJy]")
+        ax.legend(frameon=False, loc="upper left")
     lo = min(a.get_ylim()[0] for a in axes[1])
-    hi = max(a.get_ylim()[1] for a in axes[1]) * 1.25
+    hi = max(a.get_ylim()[1] for a in axes[1]) * 1.45
     axes[1, 0].set_ylim(lo, hi)
     axes[1, 1].set_ylim(lo, hi)
     fig.tight_layout()
@@ -432,25 +438,71 @@ def plot_sample(truth, unit_factor=1e3, ncols=4):
     """The spectrum of every galaxy of a sample at its position (black) and
     its true line (green): what each observation sees on its own."""
     import matplotlib.pyplot as plt
+    plt.rcParams.update(FONTS)
     recs = truth["sources"]
     nrows = -(-len(recs) // ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.0 * nrows), sharex=True,
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.0 * ncols, 2.8 * nrows), sharex=True,
                              sharey=True, squeeze=False)
     for ax, rec in zip(axes.ravel(), recs):
         sp = spectrum_at(rec)
         o = np.argsort(sp["v"])
-        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=0.8)
-        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=1.5)
+        ax.step(sp["v"][o], sp["mean"][o] * unit_factor, where="mid", color="k", lw=0.9)
+        ax.plot(sp["v"][o], sp["expected"][o] * unit_factor, color="#1e8449", lw=2.2)
         ax.axhline(0, color="0.4", lw=0.5)
-        ax.set_title(f"z = {rec['z']:.2f}, {rec['size_arcsec']:.1f}\", "
-                     f"noise {rec['noise'] * rec['kappa']:.2f} Jy", fontsize=8)
+        ax.set_title(f"z = {rec['z']:.2f},  "
+                     + (f"{rec['size_arcsec']:.1f}\"" if rec["size_arcsec"] else "point"))
     for ax in axes.ravel()[len(recs):]:
         ax.axis("off")
     for ax in axes[-1]:
         ax.set_xlabel("velocity [km/s]")
     for ax in axes[:, 0]:
-        ax.set_ylabel("mJy")
+        ax.set_ylabel("Re [mJy]")
     fig.tight_layout()
+
+
+def plot_redshift_correction(truth, unit_factor=1e3):
+    """The true line of every galaxy of a sample (no noise), coloured by its
+    redshift: as observed (left), and brought to ``z_ref`` as the extraction
+    does (right).  For a sample of the same galaxy at different redshifts the
+    lines on the right are one and the same."""
+    import matplotlib.pyplot as plt
+    plt.rcParams.update(FONTS)
+    recs = truth["sources"]
+    zs = np.array([r["z"] for r in recs])
+    v = np.linspace(-700, 700, 400)
+    cmap, norm = plt.get_cmap("viridis"), plt.Normalize(zs.min(), zs.max())
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), sharey=True, layout="constrained")
+    for r in recs:
+        sig = r["fwhm_kms"] / 2.3548200450309493
+        prof = r["line_flux"] * np.exp(-0.5 * ((v - r["v0_kms"]) / sig) ** 2) \
+            / (sig * math.sqrt(2 * math.pi)) * unit_factor
+        axes[0].plot(v, prof, color=cmap(norm(r["z"])), lw=2)
+        axes[1].plot(v, prof * alpha_factor(r["z"], truth["z_ref"]), color=cmap(norm(r["z"])),
+                     lw=2)
+    axes[0].set_title("As observed")
+    axes[1].set_title(f"Brought to z_ref = {truth['z_ref']:.2f}")
+    axes[0].set_ylabel("flux density [mJy]")
+    for ax in axes:
+        ax.set_xlabel("velocity [km/s]")
+    fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axes, label="redshift")
+
+
+def write_list(path, sources, z_ref=None, norm=None):
+    """Write a ViSta input list with these galaxies (records of
+    :func:`make_sample`, from one sample or several) and return what the
+    other functions take as a sample: ``{"input_list", "z_ref", "sources"}``.
+    ``z_ref``: the redshift the fluxes refer to (default: the median).
+    ``norm``: one value per galaxy for the NORM column (``flux_norm=True``
+    divides every galaxy by it), e.g. the magnification of a lens."""
+    sources = list(sources)
+    rows = ["# <ms_path>  <redshift>  <RA>  <Dec>" + ("  norm=<NORM>" if norm is not None else "")]
+    for k, r in enumerate(sources):
+        rows.append(f"{r['path']}  {r['z']:.6f}  {fmt_ra(r['ra_deg'])}  {fmt_dec(r['dec_deg'])}"
+                    + (f"  norm={norm[k]:g}" if norm is not None else ""))
+    with open(path, "w") as fh:
+        fh.write("\n".join(rows) + "\n")
+    z = float(np.median([r["z"] for r in sources])) if z_ref is None else float(z_ref)
+    return {"input_list": path, "z_ref": z, "sources": sources}
 
 
 def describe(truth):
@@ -638,7 +690,8 @@ def alpha_factor(z, z_ref, H0=67.4, Om0=0.315):
 
 def make_sample(directory, n_sources=12, z_range=(0.4, 0.6), line_flux=0.25,
                 same_luminosity=True, z_ref=None, v_jitter_kms=0.0, flux_scatter_dex=0.0,
-                depth_spread_dex=0.0, seed=0, input_list="input_list.txt", **kwargs):
+                depth_spread_dex=0.0, seed=0, input_list="input_list.txt",
+                observed_freq_ghz=None, **kwargs):
     """Write ``n_sources`` Measurement Sets and the ViSta input list.
 
     The redshifts are uniform in ``z_range``.  With ``same_luminosity`` every
@@ -649,7 +702,9 @@ def make_sample(directory, n_sources=12, z_range=(0.4, 0.6), line_flux=0.25,
     the luminosities (log-normal), ``v_jitter_kms`` the line centres
     (redshift errors), ``depth_spread_dex`` the noise of the datasets
     (observations of different depth: natural and democratic weighting then
-    differ).  Other keywords go to :func:`make_ms` (``size_arcsec``,
+    differ).  ``observed_freq_ghz``: every galaxy is observed in the same
+    band, centred here, whatever its redshift (a continuum survey: no line
+    in common, ``line_flux=0``).  Other keywords go to :func:`make_ms` (``size_arcsec``,
     ``noise``, ``fwhm_kms``, ...); a callable is evaluated for every source
     with a random generator, e.g. ``size_arcsec=lambda rng: rng.uniform(0.5, 1.5)``.
 
@@ -670,6 +725,8 @@ def make_sample(directory, n_sources=12, z_range=(0.4, 0.6), line_flux=0.25,
         kw["cont_flux"] = kw.get("cont_flux", 0.0) * scale
         kw["v0_kms"] = kw.get("v0_kms", 0.0) + v_jitter_kms * rng.standard_normal()
         kw["noise"] = kw.get("noise", 0.05) * 10 ** (depth_spread_dex * rng.uniform(-1, 1))
+        if observed_freq_ghz is not None:
+            kw["rest_freq_ghz"] = observed_freq_ghz * (1.0 + float(z))
         centre = (150.0 + 0.5 * k, 2.0 + 0.1 * k)       # a different field for every galaxy
         path = os.path.join(directory, f"galaxy_{k:02d}.ms")
         rec = make_ms(path, float(z), line_flux=line_flux * scale, phase_centre=centre,

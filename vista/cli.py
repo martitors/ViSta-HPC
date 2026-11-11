@@ -83,7 +83,7 @@ def _fit_span(text):
 
 
 def _size(text):
-    if text in ("auto", "point", "gauss"):
+    if text in ("auto", "point", "gauss", "continuum", "line"):
         return text
     try:
         return float(text)
@@ -122,10 +122,11 @@ def build_parser():
     g.add_argument("--tag", default=None, help="name of the measurement: files <name>_<tag>_*")
 
     s = p.add_argument_group("the stacking (stack)")
-    s.add_argument("--line-freq", type=_freq, nargs="+", required=True, metavar="FREQ",
-                   help="rest frequency of the line (required): GHz, or with its unit "
+    s.add_argument("--line-freq", type=_freq, nargs="+", default=None, metavar="FREQ",
+                   help="rest frequency of the line: GHz, or with its unit "
                         "(345.796GHz, 345796MHz); several for several lines, the first is "
-                        "the one of the stack")
+                        "the one of the stack.  Without it: no line, the stack of the "
+                        "continuum")
     s.add_argument("--line-window", type=_pair, nargs="+", default=[600.0], metavar="W",
                    help="window of every line, km/s: 500 (= -500..500) or lo:hi; one per "
                         "line or one for all (default 600); lines whose windows overlap "
@@ -164,7 +165,13 @@ def build_parser():
     m.add_argument("--fwhm-range", type=_pair, nargs="+", default=None, metavar="LO:HI",
                    help="allowed FWHM, km/s; as above")
     m.add_argument("--model", type=_size, default="auto",
-                   help="auto, point, gauss or a fixed FWHM in arcsec (default auto)")
+                   help="the source of the lines: auto, point, gauss, continuum (the one "
+                        "measured on the continuum) or a fixed FWHM in arcsec (default auto)")
+    m.add_argument("--continuum-model", type=_size, default="auto",
+                   help="the source of the continuum: auto, point, gauss, line (the one "
+                        "measured on the line) or a fixed FWHM in arcsec (default auto)")
+    m.add_argument("--measure", choices=["line", "continuum"], default=None,
+                   help="measure only the lines or only the continuum (default: both)")
     m.add_argument("--model-prior", type=float, nargs=2, default=None,
                    metavar=("ARCSEC", "DEX"), help="soft tie of the size")
     m.add_argument("--theta-range", type=_pair, default=None, metavar="MIN:MAX",
@@ -229,6 +236,7 @@ def main(argv=None):
                       flux_norm=args.flux_norm, flux_ref=args.flux_ref,
                       v0_range=_range_arg(args.v0_range),
                       fwhm_range=_range_arg(args.fwhm_range), model=args.model,
+                      continuum_model=args.continuum_model, measure=args.measure,
                       model_prior=args.model_prior,
                       theta_range=(args.theta_range if isinstance(args.theta_range, tuple)
                                    else (0.0, args.theta_range or 15.0)),

@@ -148,14 +148,14 @@ def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None
 def plot_image(image, ax=None, unit: Optional[str] = "Jy", title=None, vmax=None,
                colorbar=True):
     """Draw a :class:`DirtyImage` (north up, east left), with the contours at
-    3, 5, 7... times its rms and the resolution in the corner.  Returns the
-    axes."""
+    3, 5, 7... times its rms (in the title) and the resolution in the corner.
+    Returns the axes."""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Circle
 
     f, ulabel = (1e3, "mJy") if unit and unit.lower() == "jy" else (1.0, unit or "data units")
     if ax is None:
-        _, ax = plt.subplots(figsize=(4.6, 4.0))
+        _, ax = plt.subplots(figsize=(6.4, 5.4))
     lo, hi = image.extent[0], image.extent[1]
     top = vmax * f if vmax is not None else max(np.nanmax(image.data) * f, 5 * image.rms * f)
     im = ax.imshow(image.data * f, origin="lower", extent=(lo, hi, lo, hi), cmap="inferno",
@@ -164,20 +164,20 @@ def plot_image(image, ax=None, unit: Optional[str] = "Jy", title=None, vmax=None
         levels = [k * image.rms * f for k in (3, 5, 7, 10, 15, 20, 30)
                   if k * image.rms < np.nanmax(image.data)]
         if levels:
-            ax.contour(image.data * f, levels=levels, colors="w", linewidths=0.6,
+            ax.contour(image.data * f, levels=levels, colors="w", linewidths=0.8,
                        extent=(lo, hi, lo, hi), origin="lower")
     ax.set_xlim(hi, lo)                                  # east on the left
     ax.add_patch(Circle((hi - 0.12 * (hi - lo), lo + 0.12 * (hi - lo)), image.beam_arcsec / 2,
-                        fc="none", ec="w", lw=1.0))
-    ax.set_xlabel("east offset [arcsec]")
-    ax.set_ylabel("north offset [arcsec]")
-    peak = float(image.data[image.data.shape[0] // 2 - 2:image.data.shape[0] // 2 + 3,
-                            image.data.shape[1] // 2 - 2:image.data.shape[1] // 2 + 3].max())
-    ax.set_title((title + "\n" if title else "")
-                 + f"centre {peak * f:.2g}, rms {image.rms * f:.2g} {ulabel}/beam "
-                 f"(S/N {peak / image.rms:.1f})", fontsize=9)
+                        fc="none", ec="w", lw=1.2))
+    ax.set_xlabel("east offset [arcsec]", fontsize=14)
+    ax.set_ylabel("north offset [arcsec]", fontsize=14)
+    ax.tick_params(labelsize=13)
+    ax.set_title((title + "\n" if title else "") + f"rms {image.rms * f:.2g} {ulabel}/beam",
+                 fontsize=14)
     if colorbar:
-        ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.03, label=f"{ulabel} / beam")
+        bar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+        bar.set_label(f"{ulabel} / beam", fontsize=14)
+        bar.ax.tick_params(labelsize=13)
     return ax
 
 

@@ -41,9 +41,9 @@ repeated cheaply (``ViSta.run(only="measure")``).
 from .measure import LineResult, measure_line
 from .plots_line import plot_line_result
 from .sources import Entry, read_input_list
-from .stack import ExtractionResult, extract_flux
+from .stack import ContinuumResult, measure_continuum
 from .statistics import compress_visibilities
 from .contsub import subtract_continuum
 
-__all__ = ["LineResult", "ExtractionResult", "plot_line_result", "Entry", "read_input_list",
-           "measure_line", "extract_flux", "compress_visibilities", "subtract_continuum"]
+__all__ = ["LineResult", "ContinuumResult", "plot_line_result", "Entry", "read_input_list",
+           "measure_line", "measure_continuum", "compress_visibilities", "subtract_continuum"]

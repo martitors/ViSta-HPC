@@ -1,18 +1,18 @@
-# 1. The simulator, and one galaxy
+# 1. One galaxy
 
 `examples/simulate.py` writes Measurement Sets like those of a real
 observation, so that ViSta reads them as it would read yours. For every
 galaxy it makes:
 
 * **the telescope**: an ALMA-like array of 43 antennas within `rmax` metres
-  of its centre, observing for 20 minutes; the baselines rotate with the
-  Earth, and the longer they are the finer the details they see;
+  of its centre, observing for 20 minutes; the longer a baseline, the finer
+  the details it sees;
 * **the line**: a Gaussian in velocity, with integrated flux `line_flux`
   [Jy km/s] and width `fwhm_kms`, at the frequency where the redshift `z`
   puts it;
 * **the continuum**: `cont_flux` [Jy], the dust emission under the line;
-* **the shape**: a round Gaussian `size_arcsec` across (FWHM). An extended
-  source is fainter on the long baselines;
+* **the shape**: a round Gaussian `size_arcsec` across (FWHM), or a point
+  (`size_arcsec=0`). An extended source is fainter on the long baselines;
 * **the position**: `offset_arcsec` from the centre of the field, where the
   antennas are less sensitive (the *primary beam*);
 * **the noise**: `noise` [Jy] on every visibility, correlated between
@@ -35,21 +35,19 @@ clean = simulate.make_ms("one_clean.ms", noiseless=True, **galaxy)     # without
 noisy = simulate.make_ms("one_noisy.ms", **galaxy)                     # as observed
 ```
 
-`simulate.plot_galaxy` shows them side by side. **Top**: the image of the
-channel at the centre of the line (a *dirty* image: the Fourier transform of
-the visibilities as they are; the circle is the resolution). **Bottom**: the
-spectrum at the position of the galaxy (black), the average of all the
-baselines.
+**Top**: the image of the channel at the centre of the line (the circle is
+the resolution). **Bottom**: the spectrum at the position of the galaxy, the
+real part (Re) of the visibilities averaged over all the baselines.
 
-Two green curves give the true signal. The **solid** one is what these
+The two green curves are the true signal. The **solid** one is what these
 baselines should see: without noise the black spectrum lies exactly on it.
 The **dashed** one is the total flux of the galaxy, higher: the source is
-extended (0.8″), and the long baselines see only part of it. The total flux
-is what a baseline of zero length would measure, and what ViSta estimates by
-fitting how the flux falls with the baseline length (§4).
+extended (0.8″) and the long baselines see only part of it. The total flux
+is what a baseline of zero length would measure, and what ViSta estimates
+by fitting how the flux falls with the baseline length.
 
 With the noise of a real observation neither the image nor the spectrum
-show the galaxy clearly: this is the galaxy that stacking is for.
+show the galaxy: this is the galaxy that stacking is for.
 
 ```python
 simulate.plot_galaxy(clean, noisy)

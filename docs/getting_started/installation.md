@@ -1,8 +1,13 @@
 # Installation
 
-ViSta is a Python package with a compiled kernel, `ms_ops` (C++/OpenMP,
-optionally CUDA). It is installed from the repository: clone it, install the
-Python dependencies, build the kernel.
+**In one sentence.** ViSta is a Python package with a compiled kernel
+(`ms_ops`: C++ with OpenMP, optionally CUDA); it is installed from the
+repository in three steps: clone, install the Python dependencies, build
+the kernel.
+
+**To try it without installing anything**, open the
+[example notebook](../examples/index) in Google Colab: it does the three
+steps by itself.
 
 ## Requirements
 
@@ -59,13 +64,15 @@ cmake --build build -j
 cmake --install build
 ```
 
-`cmake --install` puts the module (`ms_ops*.so`) in the `vista/` directory.
-Set `CMAKE_CUDA_ARCHITECTURES` to the compute capability of the GPU: 70 V100,
-80 A100 (the default), 86 RTX 30xx, 89 L40, 90 H100. The CUDA runtime is
-linked statically, so the module runs on compute nodes without
-`LD_LIBRARY_PATH` settings, and a CUDA build also runs on machines without a
-GPU (`device="cpu"`). Build on the kind of machine that will run the stacking
-(same CPU and GPU).
+- `cmake --install` puts the module (`ms_ops*.so`) in the `vista/`
+  directory.
+- Set `CMAKE_CUDA_ARCHITECTURES` to the compute capability of the GPU:
+  70 V100, 80 A100 (the default), 86 RTX 30xx, 89 L40, 90 H100.
+- The CUDA runtime is linked statically: the module runs on compute nodes
+  without `LD_LIBRARY_PATH` settings, and a CUDA build also runs on
+  machines without a GPU (`device="cpu"`).
+- Build on the kind of machine that will run the stacking (same CPU and
+  GPU).
 
 ## 4. Check
 
@@ -77,9 +84,9 @@ python -c "import vista; from vista import ms_ops; print(vista.__version__, ms_o
 Use the package from the repository directory, or put it on the path:
 `export PYTHONPATH=/path/to/ViSta-HPC:$PYTHONPATH` (or `pip install -e .`).
 
-Without the kernel, the stacking does not run; the continuum subtraction and
-the compression fall back to NumPy (much slower), and the measurement needs
-only NumPy and SciPy.
+**Without the kernel** the stacking does not run. The continuum subtraction
+and the compression fall back to NumPy (much slower). The measurement needs
+only NumPy and SciPy, so it can be repeated on a laptop from the statistics.
 
 ## On Google Colab
 

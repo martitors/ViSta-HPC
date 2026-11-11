@@ -1,11 +1,18 @@
 # Command line
 
-`run_vista.sh` (or `python -m vista`) is the command line of
-{class}`vista.ViSta`: every option of `ViSta()`, `stack()` and `extract()` is
-one flag, with the same default. As in Python, without `--extract` only the
-stack is written. The package must be importable (run it from the
-repository, or set `PYTHONPATH`); after `pip install -e .` the same command
-is also called `vista`.
+**In one sentence.** `run_vista.sh` (or `python -m vista`) does from a
+shell what {class}`vista.ViSta` does from Python: every option of
+`ViSta()`, `stack()` and `extract()` is one flag, with the same default.
+
+- Without `--extract` only the stack is written, as in Python.
+- The package must be importable: run it from the repository, or set
+  `PYTHONPATH`. After `pip install -e .` the same command is also called
+  `vista`.
+- At the end it prints what it did (the stack, the lines with `z_ref`, the
+  continuum) and the files it wrote. `--help` lists every option; what each
+  means is in [Parameters](reference/parameters).
+
+## Examples
 
 ```bash
 # everything: stack, subtract the continuum, compress, measure
@@ -26,6 +33,13 @@ is also called `vista`.
 # the continuum left in the data and fitted with the line
 ./run_vista.sh --input input_list.txt --line-freq 345.79599 --continuum fit --extract
 
+# no line: the stack of the continuum, and its flux density and size
+./run_vista.sh --input input_list.txt --output-name dust --extract
+
+# only the continuum again, with the size measured on the line
+./run_vista.sh --input input_list.txt --output-name co32 --line-freq 345.79599 --line-window 500 \
+               --only measure --extract --measure continuum --continuum-model line
+
 # the stack as a Measurement Set
 ./run_vista.sh export co32.zarr co32.ms
 ```
@@ -35,10 +49,6 @@ a pair is `lo:hi` (or `"lo hi"` in quotes). With several lines give one per
 line, in the order of `--line-freq`, or one for all of them. A pair whose low
 end is negative needs the `=` form or the quotes: `--v0-range=-200:200`,
 `--v0-range "-200 200"`.
-
-At the end the command prints what it did (the stack, the measured lines with
-`z_ref`, the continuum) and the files it wrote. `--help` lists every option;
-the meaning of each is in [Parameters](reference/parameters).
 
 ## Input, output, how it runs (`ViSta`)
 
@@ -60,7 +70,7 @@ the meaning of each is in [Parameters](reference/parameters).
 
 | Option | Default | |
 |---|---|---|
-| `--line-freq FREQ [FREQ ...]` | | rest frequency of the line, or of several lines: GHz, or with the unit attached (`345.796GHz`, `345796MHz`); the first is the line of the stack (required) |
+| `--line-freq FREQ [FREQ ...]` | | rest frequency of the line, or of several lines: GHz, or with the unit attached (`345.796GHz`, `345796MHz`); the first is the line of the stack. Without it: no line, the stack of the continuum |
 | `--line-window W [W ...]` | 600 | window of every line, km/s; lines whose windows overlap are fitted together |
 | `--velocity-range KMS` | the widest band of one dataset | band of the stack around the first line, −KMS..+KMS ([Spectral grid](stacking/spectral_grid)) |
 | `--nchan N` | | a number of channels instead |
@@ -85,7 +95,9 @@ The options below need `--extract` (without it the command stops and says so).
 | `--flux-norm`, `--flux-ref X` | off, median | divide by the last column of the input list |
 | `--v0-range LO:HI [...]` | the window | allowed centres, km/s; `lo = hi` fixes it ([Measuring the line](extraction/measure_line)) |
 | `--fwhm-range LO:HI [...]` | two channels to the window | allowed FWHM; `lo = hi` fixes it |
-| `--model {auto,point,gauss,ARCSEC}` | `auto` | the source model, or a fixed size |
+| `--model {auto,point,gauss,continuum,ARCSEC}` | `auto` | the source model of the lines, or a fixed size; `continuum`: the one measured on the continuum |
+| `--continuum-model {auto,point,gauss,line,ARCSEC}` | `auto` | the source model of the continuum; `line`: the size measured on the line |
+| `--measure {line,continuum}` | both | measure only one of the two |
 | `--model-prior ARCSEC DEX` | | soft tie of the size |
 | `--theta-range MIN:MAX` | 0:15 | allowed size of the Gaussian, arcsec; a minimum above 0 leaves the point source out |
 | `--flux-measure {auto,gauss,area}` | `auto` | the flux quoted (both are always given) |

@@ -119,6 +119,7 @@ UVAMP_COLUMNS = [
     "err_thermal",    # its error
     "used",           # 1: annulus used in the fit
     "n_sources",      # sources with data in the annulus
+    "line_flux_imaginary",  # the same from the imaginary part: noise only
 ]
 # How flux_density is computed: in every channel the visibilities of each
 # annulus are averaged (real part, phase centre on the sources), then the
