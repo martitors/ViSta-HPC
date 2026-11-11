@@ -23,6 +23,19 @@ if REPO is None:
             except Exception:
                 pass
         subprocess.run(["git", "clone", "-q", "-b", BRANCH, url, REPO], check=True)
+    else:                                        # a clone of an earlier session: update it
+        head = lambda: subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
+                                      capture_output=True, text=True).stdout
+        before = head()
+        subprocess.run(["git", "-C", REPO, "pull", "-q", "origin", BRANCH])
+        if head() != before:                     # new code: build the kernel again, and
+            for so in glob.glob(f"{REPO}/vista/ms_ops*.so"):     # forget what was imported
+                os.remove(so)
+            for name in [m for m in sys.modules if m.split(".")[0] in ("vista", "simulate")]:
+                del sys.modules[name]
+            if "ms_ops" in sys.modules:
+                print("The code was updated: after this cell, Runtime > Restart session, "
+                      "then Run all")
 
 if IN_COLAB:
     subprocess.run(f"pip install -q -r {REPO}/requirements.txt pybind11", shell=True, check=True)
