@@ -134,6 +134,7 @@ stacking/centring
 stacking/restframing
 stacking/spectral_grid
 stacking/combination
+stacking/companions
 stacking/continuum
 stacking/compression
 ```
@@ -179,8 +180,9 @@ examples/10_two_lines_that_blend
 examples/11_a_line_that_is_not_a
 examples/12_a_source_that_is_not_a
 examples/13_the_continuum_alone
-examples/14_the_command_line
-examples/15_on_your_own_data
+examples/14_a_companion_in_the_field
+examples/15_the_command_line
+examples/16_on_your_own_data
 ```
 
 ```{toctree}

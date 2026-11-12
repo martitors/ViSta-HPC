@@ -487,6 +487,53 @@ def plot_redshift_correction(truth, unit_factor=1e3):
     fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axes, label="redshift")
 
 
+def add_companion(rec, offset_arcsec=(6.0, 3.0), z=None, line_flux=0.0, fwhm_kms=250.0,
+                  cont_flux=0.0, cont_index=3.0):
+    """Add a second source, a point, to a dataset written by :func:`make_ms`
+    (``rec``: its record): a companion of the galaxy, ``offset_arcsec``
+    (east, north) from it.  ``z``: its redshift, for a companion with the
+    line (``line_flux``, ``fwhm_kms``); None: the continuum only
+    (``cont_flux``, at the frequency of the line of the galaxy).  Fluxes as
+    in :func:`make_ms`, before the primary beam.  Returns the record of the
+    companion (``ra_deg``, ``dec_deg``, ``z``, ...), for
+    :func:`write_companions`."""
+    from casacore import tables as ct
+
+    t = ct.table(rec["path"], readonly=False, ack=False)
+    uvw, data = t.getcol("UVW"), t.getcol("DATA")
+    freq = ct.table(rec["path"] + "/SPECTRAL_WINDOW", ack=False).getcell("CHAN_FREQ", 0)
+    ra0, dec0 = ct.table(rec["path"] + "/FIELD", ack=False).getcell("PHASE_DIR", 0)[0]
+    dec_s = math.radians(rec["dec_deg"] + offset_arcsec[1] / 3600.0)
+    ra_s = math.radians(rec["ra_deg"] + offset_arcsec[0] / 3600.0 / math.cos(dec_s))
+    l, m, n = _basis(ra0, dec0) @ _basis(ra_s, dec_s)[2]
+    from_centre = math.degrees(math.hypot(l, m)) * 3600.0
+    pb = primary_beam(from_centre, rec["nu_obs_ghz"] * 1e9)
+    line, cont = source_spectrum(freq, rec["z"] if z is None else z, rec["rest_freq_ghz"],
+                                 line_flux if z is not None else 0.0, fwhm_kms, 0.0,
+                                 cont_flux, cont_index)
+    phase = 2 * math.pi * (uvw[:, 0:1] * l + uvw[:, 1:2] * m + uvw[:, 2:3] * (n - 1)) \
+        * freq[None, :] / C
+    vis = pb * (line + cont)[None, :] * np.exp(1j * phase)
+    t.putcol("DATA", (data + vis[:, :, None]).astype(data.dtype))
+    t.close()
+    return {"path": rec["path"], "ra_deg": math.degrees(ra_s), "dec_deg": math.degrees(dec_s),
+            "z": z, "line_flux": line_flux if z is not None else 0.0, "fwhm_kms": fwhm_kms,
+            "cont_flux": cont_flux, "primary_beam": pb,
+            "separation_arcsec": math.hypot(*offset_arcsec)}
+
+
+def write_companions(path, companions):
+    """Write the file of the companions (records of :func:`add_companion`):
+    ``<ms_path> <RA> <Dec> [redshift]``, for ``v.stack(companions=path)``."""
+    rows = ["# <ms_path>  <RA>  <Dec>  [redshift]"]
+    for c in companions:
+        rows.append(f"{c['path']}  {fmt_ra(c['ra_deg'])}  {fmt_dec(c['dec_deg'])}"
+                    + (f"  {c['z']:.6f}" if c["z"] is not None else ""))
+    with open(path, "w") as fh:
+        fh.write("\n".join(rows) + "\n")
+    return path
+
+
 def write_list(path, sources, z_ref=None, norm=None):
     """Write a ViSta input list with these galaxies (records of
     :func:`make_sample`, from one sample or several) and return what the

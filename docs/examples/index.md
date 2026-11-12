@@ -17,7 +17,7 @@ its results. To run it yourself:
 |---|---|
 | [0. Setup](00_setup) | clone, build, imports |
 | [1. One galaxy](01_one_galaxy) | what is simulated; one galaxy without and with noise, image and spectrum |
-| [2. The basic case](02_the_basic_case_the_same) | the same galaxy at twelve redshifts: the stack, the line, the continuum, `results` |
+| [2. The basic case](02_the_basic_case_the_same) | the same galaxy at twelve redshifts: the stack, the line, the continuum, the numbers |
 | [3. The window, the normalisations, the noise](03_the_window_the) | the flux in the window, a narrower window, the redshift and primary-beam corrections, the noise |
 | [4. Not subtracting the continuum](04_not_subtracting_the) | fitted with the line, or left in the data |
 | [5. A weak continuum under a strong line](05_a_weak_continuum_under_a) | the continuum takes the size of the line |
@@ -29,8 +29,9 @@ its results. To run it yourself:
 | [11. A line that is not a Gaussian](11_a_line_that_is_not_a) | broad wings: the flux in the window |
 | [12. A source that is not a Gaussian](12_a_source_that_is_not_a) | rings: what the image and the baselines show |
 | [13. The continuum alone](13_the_continuum_alone) | a stack without any line |
-| [14. The command line](14_the_command_line) | the same with `python -m vista` |
-| [15. On your own data](15_on_your_own_data) | the steps |
+| [14. A companion in the field](14_a_companion_in_the_field) | a second source next to a galaxy: what it does, how it is removed |
+| [15. The command line](15_the_command_line) | the same with `python -m vista` |
+| [16. On your own data](16_on_your_own_data) | the steps |
 
 The pages are generated from an executed copy of the notebook with
 `docs/_tools/notebook_to_pages.py`.

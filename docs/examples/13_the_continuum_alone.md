@@ -27,7 +27,7 @@ print(cont)
 ```
 
 ```text
-[ViSta       0.9s] z_ref = 2.6663 (median of the sample)
+[ViSta       1.0s] z_ref = 2.6663 (median of the sample)
 ```
 
 ```text
@@ -54,8 +54,5 @@ print("expected:", f"{simulate.expected(truth_cont)['continuum'] * 1e3:.3f} mJy"
 ```text
 measured: 0.310 ± 0.019 mJy
 size:     {'value': 0.6000756525377018, 'unit': 'arcsec', 'error': 0.05968234171282386}
-```
-
-```text
 expected: 0.300 mJy
 ```

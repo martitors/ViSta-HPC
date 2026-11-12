@@ -19,11 +19,11 @@ print(weak)
 ```
 
 ```text
-[ViSta       9.4s] z_ref = 2.5073 (median of the sample)
+[ViSta      10.9s] z_ref = 2.5073 (median of the sample)
 ```
 
 ```text
-Stack      weak.zarr: 433,440 rows, 90 channels, 8 s
+Stack      weak.zarr: 433,440 rows, 90 channels, 6 s
 Line       345.796 GHz, 12 sources: detected at 4.9 sigma (S/N 5.6, searched over centre and width)
   flux     0.2023 ± 0.061 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (+0.0 sigma)

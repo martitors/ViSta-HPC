@@ -48,3 +48,10 @@ The measurement adds their statistics before averaging the galaxies. So
 the repeated observations are combined with their own weights, and in the
 democratic weighting each galaxy counts once. Nothing else identifies a
 galaxy: no name column, no separate coordinate file.
+
+## Other sources in the field
+
+If the field of a galaxy holds a second source, list it in a second file,
+`<ms_path> <RA> <Dec> [redshift]`, and give it to
+`v.stack(companions=...)`: it is fitted together with the galaxy and
+removed from the stack ([Companions](../stacking/companions)).

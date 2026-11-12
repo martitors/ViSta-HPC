@@ -1,4 +1,4 @@
-# 15. On your own data
+# 16. On your own data
 
 1. Write the input list, one line per dataset:
    `<ms_path> <redshift> <RA> <Dec> [FIELD_ID] [SPW_IDS] [NORM]`, with the
@@ -12,7 +12,9 @@
    line and the continuum, spectrum and baselines; `r.plot("noise")`,
    `r.plot("image")`): residuals around zero, nothing left of the
    continuum, the model on the points, the two sizes in agreement.
-5. Change one option at a time, with `run(only="measure")`, as in chapters
+5. Other sources in the fields of your galaxies: list them in a file and
+   give it to `v.stack(companions=...)`, as in chapter 14.
+6. Change one option at a time, with `run(only="measure")`, as in chapters
    3 to 8. `v.help()` lists every option with its value and what it can be.
 
 The documentation, <https://vista-hpc.readthedocs.io>, explains every option.

@@ -12,5 +12,6 @@
 11_a_line_that_is_not_a
 12_a_source_that_is_not_a
 13_the_continuum_alone
-14_the_command_line
-15_on_your_own_data
+14_a_companion_in_the_field
+15_the_command_line
+16_on_your_own_data

@@ -19,6 +19,7 @@ ViSta-HPC/
 │   ├── frames.py            spectral frame of the inputs, Doppler factor per row
 │   ├── polarization.py      the correlations of the inputs
 │   ├── ms_output.py         writing a Measurement Set (main table, subtables)
+│   ├── companions.py        other sources in the fields: fitted with the target, subtracted
 │   ├── stackio.py           the stack on disk: Zarr writer, Zarr/MS reader, export_ms
 │   ├── quicklook.py         a quick image of the stack (dirty_image, plot_image)
 │   ├── common.py            log, lock, coordinates, small helpers

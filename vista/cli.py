@@ -147,6 +147,9 @@ def build_parser():
                    help="subtract: constant, straight line, or chosen by the BIC (default 0)")
     s.add_argument("--exclude-between", action="store_true",
                    help="also leave out of the continuum fit the channels between the lines")
+    s.add_argument("--companions", metavar="FILE",
+                   help="other sources in the fields, '<ms> <RA> <Dec> [redshift]' per line: "
+                        "fitted with the target and subtracted from the stack")
 
     m = p.add_argument_group("the measurement (extract): only with --extract")
     m.add_argument("--extract", action="store_true",
@@ -228,7 +231,7 @@ def main(argv=None):
                 data_column=args.data_column, continuum=args.continuum,
                 continuum_order="bic" if args.continuum_order == "bic"
                 else int(args.continuum_order),
-                exclude_between=args.exclude_between)
+                exclude_between=args.exclude_between, companions=args.companions)
         if args.extract:
             v.extract(annuli=tuple(args.annuli) if args.annuli else (3.0, 3000.0, 18),
                       weighting_scheme=args.weighting_scheme, z_norm=not args.no_z_norm,

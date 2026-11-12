@@ -21,11 +21,11 @@ print(far)
 ```
 
 ```text
-[ViSta       0.4s] z_ref = 2.2867 (median of the sample)
+[ViSta       0.6s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text
-Stack      far.zarr: 433,440 rows, 144 channels, 11 s
+Stack      far.zarr: 433,440 rows, 144 channels, 9 s
 Line 1     345.796 GHz, 12 sources: detected at 39.3 sigma (S/N 39.4, searched over centre and width)
   flux     0.3955 ± 0.015 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (-0.1 sigma)

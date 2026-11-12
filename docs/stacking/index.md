@@ -32,6 +32,7 @@ stacking again ([Measuring the stack](../extraction/index)).
 | 2 | [Centring](centring) | where the source is put; what a wrong position does |
 | 3 | [Rest frame](restframing) | the frame of the redshifts; the motion of the Earth |
 | 4 | [Spectral grid](spectral_grid) | the common channel width, the number of channels, the coverage |
+|  | [Companions](companions.md) | other sources in the fields of your galaxies: how they are removed |
 | 5 | [Continuum](continuum.md) | subtract it, fit it with the line, or leave it; the continuum alone |
 | 6 | [Compression](compression) | the annuli of baseline length; what the statistics hold |
 | 7 | [The stack on disk](combination) | Zarr or Measurement Set; what is in it |

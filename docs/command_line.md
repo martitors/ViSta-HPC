@@ -80,6 +80,7 @@ end is negative needs the `=` form or the quotes: `--v0-range=-200:200`,
 | `--continuum {subtract,fit,none}` | `subtract` | subtracted while stacking, fitted with the lines, or left as it is ([Continuum](stacking/continuum)) |
 | `--continuum-order {0,1,bic}` | 0 | with `subtract`: constant, straight line, or chosen by the BIC |
 | `--exclude-between` | | also leave out of the continuum fit the channels between the lines |
+| `--companions FILE` | | other sources in the fields, `<ms_path> <RA> <Dec> [redshift]` per line: fitted with the target and subtracted ([Companions](stacking/companions)) |
 
 ## What is measured (`extract`)
 

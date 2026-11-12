@@ -126,6 +126,8 @@ _HELP = {
                                              "the BIC per spectral window"),
         ("exclude_between", "True | False", "several lines: also keep the channels between "
                                             "them out of the continuum fit"),
+        ("companions", "file | None", "other sources in the fields: '<ms> <RA> <Dec> [z]', "
+                                      "fitted with the target and subtracted"),
     ],
     "extract": [
         ("annuli", "(kλ min, kλ max, n)", "annuli of baseline length, logarithmic"),
@@ -202,6 +204,9 @@ class RunResult:
         The continuum, when it was subtracted and measured.
     stack : dict or None
         Summary of the stacking (when it ran).
+    companions : list or None
+        The companions removed from the stack (``stack(companions=...)``):
+        one dict each, with what was fitted and what was subtracted.
     files : dict
         The files of the run, by kind.
 
@@ -214,6 +219,7 @@ class RunResult:
     stack: Optional[dict] = None
     files: dict = field(default_factory=dict)
     unit: Optional[str] = None
+    companions: Optional[list] = None
 
     def plot(self, what=None, unit=None, rebin=1, v_limits=None, save=None, show=True):
         """The figures of the measurement, the same as the files of the run.
@@ -335,6 +341,7 @@ class RunResult:
             result["noise"]           # per channel
             result["continuum"]       # flux density, size, model, how it was treated
             result["sizes"]           # line and continuum, each on its own, and their agreement
+            result["companions"]      # with stack(companions=...): what was removed
             result["summary"]         # all of it in words (the same as print(result))
 
         With several lines these are of the first; ``result["lines"]`` has the
@@ -428,6 +435,8 @@ class RunResult:
         sizes = self._sizes()
         res["sizes"] = {k: (q(v[0], v[1], "arcsec") if isinstance(v, tuple) else v)
                         for k, v in sizes.items()}
+        if self.companions is not None:
+            res["companions"] = self.companions
         res["n_sources"] = sm["n_sources"]
         res["weighting"] = sm["weighting_scheme"]
         res["z_ref"] = sm.get("z_ref")
@@ -576,6 +585,10 @@ class RunResult:
                 ref.append(f"normalised to flux_ref = {sm['flux_ref']:.4g} "
                            f"({'given' if sm.get('flux_ref_given') else 'median'})")
             rows.append("Reference  " + ", ".join(ref))
+        if self.companions:
+            from .companions import describe
+            rows += [("Companions " if k == 0 else " " * 11) + describe(c, u)
+                     for k, c in enumerate(self.companions)]
         return "\n".join(rows or ["nothing run"])
 
     def __repr__(self):
@@ -674,6 +687,7 @@ class ViSta:
         self.verbose = verbose
         self.log_file = log_file
         self.lines = None
+        self.companions = None
         self._reported = None                 # z_ref and flux_ref, as last said
         self.stack_options = None
         self.extract_options = None
@@ -681,7 +695,7 @@ class ViSta:
     # ---- the stacking -------------------------------------------------------
     def stack(self, *, line_freq=None, line_window=600.0, velocity_range=None, nchan=None,
               channel_width=None, frame="LSRK", data_column="auto", continuum="subtract",
-              continuum_order=0, exclude_between=False):
+              continuum_order=0, exclude_between=False, companions=None):
         """What makes the stack.  Every option is given by name:
         ``v.stack(line_freq=345.796, line_window=500)``.
 
@@ -730,7 +744,15 @@ class ViSta:
         exclude_between : bool, default False
             With several lines, also keep the channels between them out of
             the continuum fit.
+        companions : str or None, default None
+            File of the other sources in the fields of the targets, one per
+            line: ``<ms_path> <RA> <Dec> [redshift]``.  They are fitted
+            together with the target of that dataset, as point sources at
+            their positions, and subtracted from the stack before the
+            continuum subtraction: their continuum, and, for those with a
+            redshift, their line (see :mod:`vista.companions`).
         """
+        from .companions import match_companions, read_companions
         from .extract.config import Lines
         from .frames import TARGET_FRAMES
 
@@ -769,6 +791,9 @@ class ViSta:
                         f"km/s): widen velocity_range")
         if channel_width is not None and not float(channel_width) > 0:
             raise ValueError("channel_width must be > 0 Hz")
+        if companions is not None:             # read now: a mistake stops here
+            match_companions(read_companions(companions), self._entries)
+        self.companions = companions
         self.lines = lines
         self.stack_options = dict(
             velocity_range_kms=velocity_range, nchan_out=nchan, channel_width_hz=channel_width,
@@ -1035,14 +1060,14 @@ class ViSta:
                 return {"line_freq": None, "velocity_range": o["velocity_range_kms"],
                         "nchan": o["nchan_out"], "channel_width": o["channel_width_hz"],
                         "frame": o["frame"], "data_column": o["data_column"],
-                        "continuum": "(the continuum only)"}
+                        "continuum": "(the continuum only)", "companions": self.companions}
             return {"line_freq": ln.freqs_ghz[0] if ln.n == 1 else ln.freqs_ghz,
                     "line_window": ln.windows_kms[0] if ln.n == 1 else ln.windows_kms,
                     "velocity_range": o["velocity_range_kms"], "nchan": o["nchan_out"],
                     "channel_width": o["channel_width_hz"], "frame": o["frame"],
                     "data_column": o["data_column"], "continuum": o["continuum"],
                     "continuum_order": "bic" if order == -1 else order,
-                    "exclude_between": ln.exclude_between}
+                    "exclude_between": ln.exclude_between, "companions": self.companions}
         if step == "extract":
             if self.extract_options is None:
                 return {"annuli": "(not set: run() only stacks)"}
@@ -1164,6 +1189,7 @@ class ViSta:
             self._continuum_again()
         if "measure" in steps:
             out.line, out.continuum = self._measure(tag)
+        out.companions = self._companions_removed()
         subtract = self.stack_options["continuum"] in ("subtract", "only")
         if out.continuum is None:
             out.files.pop("continuum_results", None)
@@ -1186,6 +1212,26 @@ class ViSta:
         ex = self.extract_options
         f = self.files
         subtract = cont == "subtract"
+        if self.companions is not None:
+            # the companions are fitted on the whole of a dataset: the stack
+            # is written first, then they are removed from it, then the
+            # continuum is subtracted and the stack compressed
+            from .companions import subtract_companions
+            from .extract.contsub import subtract_continuum
+
+            centre = (self._continuum_frequency() if self.lines is None
+                      else self.lines.rest_freq_hz)
+            out = Stacker(self.input_list, verbose=self.verbose).run(
+                output=f["stack"], central_freq=centre, output_format=self.output_format,
+                **o, **self.run_options)
+            subtract_companions(f["stack"], self.input_list, self.companions, self.lines,
+                                verbose=bool(self.verbose))
+            if self.lines is not None and subtract:
+                subtract_continuum(f["stack"], self.lines, ContinuumConfig(order=order),
+                                   verbose=bool(self.verbose))
+            if ex is not None:
+                self._compress()
+            return out
         if self.lines is None:
             # the continuum only: every channel of every dataset, around the
             # rest frequency at the middle of the sample (each dataset keeps
@@ -1249,6 +1295,15 @@ class ViSta:
                            verbose=bool(self.verbose))
         if self.extract_options is not None:
             self._compress()
+
+    def _companions_removed(self):
+        """What the stack says of its companions (None: none were given)."""
+        from .stackio import open_stack
+        try:
+            record = open_stack(self.files["stack"]).get_record("companions")
+        except Exception:
+            return None
+        return record["companions"] if record else None
 
     def _stack_has(self, column):
         from .stackio import open_stack

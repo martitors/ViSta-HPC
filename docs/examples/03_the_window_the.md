@@ -47,7 +47,7 @@ w150.plot("line")
 ```
 
 ```text
-[ViSta      13.6s] WARNING: measure: the line: the area flux differs from the Gaussian by -2.9 sigma, but the window holds only 77% of the fitted line: widen the window (the Gaussian flux is quoted)
+[ViSta      13.2s] WARNING: measure: the line: the area flux differs from the Gaussian by -2.9 sigma, but the window holds only 77% of the fitted line: widen the window (the Gaussian flux is quoted)
 ```
 
 ```{image} figures/03_03.png

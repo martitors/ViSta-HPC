@@ -56,6 +56,7 @@ The options are listed in [Parameters](parameters).
 
 `ViSta.run()` calls these; they are documented in their modules for whoever
 needs a step on its own: {mod}`vista.pipeline` (the stacking),
+{mod}`vista.companions` (the companions),
 {mod}`vista.extract.contsub` (the continuum subtraction),
 {mod}`vista.extract.statistics` (the compression), {mod}`vista.extract.measure`
 (the lines), {mod}`vista.extract.stack` (the continuum measurement) and

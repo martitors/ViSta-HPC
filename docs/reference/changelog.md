@@ -26,6 +26,12 @@ for it (Δχ² ≥ 9), otherwise the size of the line if the line is extended,
 otherwise a point. `v.stack()` without `line_freq` stacks the continuum
 alone, of datasets that share no line.
 
+**Companions.** `v.stack(companions="companions.txt")` removes the other
+sources in the fields of the targets: fitted together with the target, as
+point sources at their positions, and subtracted before the continuum
+subtraction; their continuum, and their line when they have a redshift
+([Companions](../stacking/companions)).
+
 **Errors.** For the line and for the continuum, the larger of the thermal
 error (from the scatter of the visibilities) and the bootstrap over the
 sources; they hold from 5 sources on (see

@@ -19,7 +19,7 @@ print(blend)
 ```
 
 ```text
-[ViSta      16.5s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.3 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
+[ViSta      17.9s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.3 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
 ```
 
 ```text
@@ -27,7 +27,7 @@ print(blend)
 ```
 
 ```text
-Stack      blend.zarr: 433,440 rows, 110 channels, 10 s
+Stack      blend.zarr: 433,440 rows, 110 channels, 7 s
 Line 1     345.796 GHz, 12 sources: detected at 35.4 sigma (S/N 35.5, searched over centre and width)
   flux     0.4076 ± 0.023 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (+1.9 sigma)

@@ -56,6 +56,7 @@ shows them.
 | `continuum` | `"subtract"` | `"subtract"`: fitted row by row on the channels outside the line windows and subtracted while the stack is written (`MODEL_DATA` the fit, `CORRECTED_DATA` the line, `DATA` kept), then measured on its own. `"fit"`: left in the data and fitted together with the lines (a constant at zero spacing with their size; its flux density in `continuum_fit`, the area fluxes are the sums minus it). `"none"`: left as it is (data already subtracted, or no continuum); a continuum still present is flagged by the measurement ([Continuum](../stacking/continuum)) |
 | `continuum_order` | `0` | With `"subtract"`: `0` a constant, `1` a straight line, `"bic"` the one of the two the BIC prefers in every spectral window |
 | `exclude_between` | `False` | With several lines, also keep the channels between them out of the continuum fit |
+| `companions` | `None` | File of the other sources in the fields of the targets, `<ms_path> <RA> <Dec> [redshift]` per line: fitted together with the target of that dataset and subtracted from the stack, their continuum and (with a redshift) their line ([Companions](../stacking/companions)) |
 
 ## extract(): what is measured
 

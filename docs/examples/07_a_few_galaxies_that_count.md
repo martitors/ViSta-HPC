@@ -53,7 +53,7 @@ two.plot("line")
 ```
 
 ```text
-[ViSta       0.8s] z_ref = 2.6596 (given)
+[ViSta       0.9s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/07_01.png
@@ -73,7 +73,7 @@ natural.plot("line")
 ```
 
 ```text
-[ViSta       1.2s] z_ref = 2.6596 (given)
+[ViSta       1.6s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/07_02.png
@@ -118,10 +118,10 @@ print("fourteen, democratic: ", flux(democratic),
 
 ```text
 two lensed alone:      1.999 ± 0.016 Jy km/s
-fourteen, natural:     1.616 ± 0.411 Jy km/s   expected 1.609
 ```
 
 ```text
+fourteen, natural:     1.616 ± 0.411 Jy km/s   expected 1.609
 fourteen, democratic:  0.653 ± 0.144 Jy km/s   expected 0.629
 ```
 
@@ -139,7 +139,7 @@ delensed.plot("line")
 ```
 
 ```text
-[ViSta       1.4s] z_ref = 2.6596 (given); flux_ref = 1 (given)
+[ViSta       1.9s] z_ref = 2.6596 (given); flux_ref = 1 (given)
 ```
 
 ```{image} figures/07_05.png

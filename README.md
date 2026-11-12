@@ -28,6 +28,8 @@ example, the parameters and the API.
   parallel writers; 15–30× faster than the CASA implementation on the same data
 - **Measured in the uv plane**: one fit of all channels and baselines, with the
   noise measured from the data, the size of the source and the significance
+- **Companions**: other sources in the fields are fitted with the target and
+  removed, with their line when their redshift is known
 - **Zarr or Measurement Set** output; `export_ms` for imaging tools
 - Any telescope that writes **Measurement Sets** (ALMA, VLA, NOEMA, MeerKAT, ...)
 

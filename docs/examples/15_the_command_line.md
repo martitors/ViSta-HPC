@@ -1,4 +1,4 @@
-# 14. The command line
+# 15. The command line
 
 `python -m vista` (or `run_vista.sh`) has the same options as `ViSta()`,
 `stack()` and `extract()`, one flag each; `--extract` asks for the
@@ -16,7 +16,7 @@ PYTHONPATH={REPO} python -m vista --input sample/input_list.txt --output-name cl
 ```
 
 ```text
-Stack      cli/stack.zarr: 433,440 rows, 90 channels, 14 s
+Stack      cli/stack.zarr: 433,440 rows, 90 channels, 10 s
 Line       345.796 GHz, 12 sources: detected at 13.8 sigma (S/N 14.1, searched over centre and width)
   flux     0.4314 ± 0.052 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (-0.0 sigma)
