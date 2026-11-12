@@ -185,7 +185,10 @@ __global__ void full_pipeline_kernel(
     // channel spacing restricts the k loop to the channels that can overlap
     // with output channel j, avoiding unnecessary iterations.
     // -----------------------------------------------------------------------
+    // The narrowing assumes equal, increasing input channels; with any other
+    // axis (decreasing, or spectral windows with a gap) every channel is tried.
     double df_approx = (nchan_old > 1) ? fabs(freq_old_rf[1] - freq_old_rf[0]) : 1.0;
+    const bool narrow = equispaced && nchan_old > 1 && freq_old_rf[1] > freq_old_rf[0];
 
     for (int c = 0; c < ncorr; ++c) {
         for (int j = 0; j < nchan_new; ++j) {
@@ -195,8 +198,11 @@ __global__ void full_pipeline_kernel(
             double hi_out = freq_new[j] + df_new * 0.5;
 
             // Coarse k-range: restrict to channels that can overlap with [lo_out, hi_out]
-            int k0 = max(0,           (int)floor((lo_out - freq_old_rf[0] - df_approx * 0.5) / df_approx) - 1);
-            int k1 = min(nchan_old-1, (int)floor((hi_out - freq_old_rf[0] + df_approx * 0.5) / df_approx) + 1);
+            int k0 = 0, k1 = nchan_old - 1;
+            if (narrow) {
+                k0 = max(0,           (int)floor((lo_out - freq_old_rf[0] - df_approx * 0.5) / df_approx) - 1);
+                k1 = min(nchan_old-1, (int)floor((hi_out - freq_old_rf[0] + df_approx * 0.5) / df_approx) + 1);
+            }
 
             for (int k = k0; k <= k1; ++k) {
                 if (flag_in[(i * nchan_old + k) * ncorr + c]) continue;
@@ -536,13 +542,17 @@ __global__ void full_pipeline_batch_kernel(
 
     // --- Step 3: overlap-weighted rebinning (FIX B: per-channel width) ---
     double df_approx = (nchan_old > 1) ? fabs(fo[1]-fo[0]) : 1.0;
+    const bool narrow = equisp && nchan_old > 1 && fo[1] > fo[0];   // see full_pipeline_kernel
     for (int c = 0; c < ncorr; ++c) {
         for (int j = 0; j < nchan_new; ++j) {
             double accum_r=0.0, accum_i=0.0, out_wgt=0.0;
             double lo_out = fn[j] - df_new*0.5;
             double hi_out = fn[j] + df_new*0.5;
-            int k0 = max(0,           (int)floor((lo_out-fo[0]-df_approx*0.5)/df_approx)-1);
-            int k1 = min(nchan_old-1, (int)floor((hi_out-fo[0]+df_approx*0.5)/df_approx)+1);
+            int k0 = 0, k1 = nchan_old - 1;
+            if (narrow) {
+                k0 = max(0,           (int)floor((lo_out-fo[0]-df_approx*0.5)/df_approx)-1);
+                k1 = min(nchan_old-1, (int)floor((hi_out-fo[0]+df_approx*0.5)/df_approx)+1);
+            }
             for (int k = k0; k <= k1; ++k) {
                 if (fin_ms[(i*nchan_old+k)*ncorr+c]) continue;
                 double dfo   = dfk[k];

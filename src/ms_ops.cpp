@@ -1116,6 +1116,9 @@ PYBIND11_MODULE(ms_ops, m)
           py::arg("vis"), py::arg("uvw"), py::arg("freq_old_rf"), py::arg("z"),
           py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"));
 
+    m.def("gpu_available", []() { return _gpu_available; },
+          "True if the kernel was built with CUDA and a GPU is visible.");
+
     m.def("full_pipeline", &full_pipeline,
           py::arg("vis"), py::arg("flag"), py::arg("uvw"), py::arg("z"),
           py::arg("freq_old_rf"),

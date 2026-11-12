@@ -57,15 +57,11 @@ except ImportError:          # or found on PYTHONPATH
 # ---------------------------------------------------------------------------
 # GPU availability check
 # ---------------------------------------------------------------------------
-# Try to call cuda_available() exposed by the CUDA-enabled ms_ops module.
-# If the module was compiled without CUDA or no device is present, fall back
-# to CPU-only mode transparently.
-try:
-    import ctypes
-    _lib = ctypes.CDLL(ms_ops.__file__)
-    _gpu_available = bool(_lib.cuda_available())
-except Exception:
-    _gpu_available = hasattr(ms_ops, 'full_pipeline_batch')
+# ms_ops.full_pipeline() runs on the GPU by itself when the kernel was built
+# with CUDA and a GPU is visible; here it is only reported in the log.
+_gpu_available = bool(getattr(ms_ops, "gpu_available", lambda: False)())
+# Several datasets in one launch: only if the kernel has the batch entry.
+_gpu_batch = _gpu_available and hasattr(ms_ops, "full_pipeline_batch")
 
 
 # ---------------------------------------------------------------------------
@@ -1930,7 +1926,7 @@ class ViSta:
         # On GPU: accumulate up to GPU_BATCH MS packages and process them in
         # a single CUDA kernel launch via ms_ops.full_pipeline_batch().
         # On CPU: GPU_BATCH=1, fall through to the sequential _process_ms path.
-        GPU_BATCH  = 20 if _gpu_available else 1
+        GPU_BATCH  = 20 if _gpu_batch else 1
         processed  = 0
         batch_pkgs = []
 
