@@ -99,7 +99,7 @@ print(removed)
 ```
 
 ```text
-[ViSta       0.4s] z_ref = 2.6596 (median of the sample)
+[ViSta       0.5s] z_ref = 2.6596 (median of the sample)
 ```
 
 ```text
@@ -144,4 +144,49 @@ removed:     0.400 ± 0.015 Jy km/s   size: 0.00 arcsec
 
 ```text
 expected:    0.400 Jy km/s,   size: 0 (points)
+```
+
+## 14.3 In the image
+
+The field of that galaxy alone, before and after: the companion, brighter
+and off the centre, is gone, and the galaxy is left at the centre.
+
+```python
+window = (-500, 500)
+simulate.plot_images({
+    "The galaxy and its companion": vista.dirty_image("comp_left.zarr", LINE, window,
+                                                      sources=[5], fov_arcsec=14),
+    "The same, companion removed": vista.dirty_image("comp_removed.zarr", LINE, window,
+                                                     sources=[5], fov_arcsec=14)})
+```
+
+```{image} figures/14_03.png
+:width: 100%
+```
+
+In the stack of the twelve the companion is diluted, and the difference is
+smaller to the eye: a peak that is too high, and a tail towards the
+companion. This is why it is easy to miss.
+
+```python
+simulate.plot_images({
+    "Stack, companion left": vista.dirty_image("comp_left.zarr", LINE, window, fov_arcsec=14),
+    "Stack, companion removed": vista.dirty_image("comp_removed.zarr", LINE, window,
+                                                  fov_arcsec=14)})
+```
+
+```{image} figures/14_04.png
+:width: 100%
+```
+
+The two measurements together, with the true mean of the twelve in green:
+
+```python
+vista.compare({"companion left": left, "companion removed": removed},
+              expected=dict(simulate.expected(truth_comp), label="mean of the twelve (true)"),
+              table=False)
+```
+
+```{image} figures/14_05.png
+:width: 100%
 ```

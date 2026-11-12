@@ -21,7 +21,7 @@ print(far)
 ```
 
 ```text
-[ViSta       0.6s] z_ref = 2.2867 (median of the sample)
+[ViSta       0.5s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text

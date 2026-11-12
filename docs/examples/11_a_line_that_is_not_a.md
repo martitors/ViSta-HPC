@@ -23,7 +23,7 @@ print(wings)
 ```
 
 ```text
-[ViSta      17.4s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
+[ViSta      16.9s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
 ```
 
 ```text
@@ -31,7 +31,7 @@ print(wings)
 ```
 
 ```text
-Stack      wings.zarr: 433,440 rows, 140 channels, 8 s
+Stack      wings.zarr: 433,440 rows, 140 channels, 9 s
 Line       345.796 GHz, 12 sources: detected at 48.7 sigma (S/N 48.8, searched over centre and width)
   flux     0.6295 ± 0.045 Jy km/s, the area under the spectrum in the window
            because the area and the Gaussian fit differ by +2.4 sigma: the line is not a Gaussian

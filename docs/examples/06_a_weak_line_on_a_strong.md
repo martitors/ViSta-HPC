@@ -19,7 +19,7 @@ print(weak)
 ```
 
 ```text
-[ViSta      10.9s] z_ref = 2.5073 (median of the sample)
+[ViSta      10.2s] z_ref = 2.5073 (median of the sample)
 ```
 
 ```text

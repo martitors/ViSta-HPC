@@ -25,7 +25,7 @@ pts.plot("line_uv")
 ```
 
 ```text
-[ViSta       0.3s] z_ref = 2.6596 (given)
+[ViSta       0.2s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/08_01.png
@@ -107,7 +107,7 @@ mix.plot("line_uv")
 ```
 
 ```text
-[ViSta       0.2s] z_ref = 2.6596 (given)
+[ViSta       0.3s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/08_03.png

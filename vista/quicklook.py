@@ -78,7 +78,7 @@ def image_visibilities(u, v, vis, weight, fov_arcsec=None, pixels_per_beam=5):
 
 
 def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None,
-                column="auto", sources=None, fov_arcsec=None):
+                column="auto", sources=None, fov_arcsec=None, weighting="natural"):
     """Dirty image of a ViSta stack (a Zarr store or a Measurement Set).
 
     The stack is already centred on the sources, so the stacked emission is
@@ -100,10 +100,15 @@ def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None
         list): the image of one galaxy, or of a subsample.
     fov_arcsec : float, optional
         Size of the image; default 30 beams.
+    weighting : {'natural', 'democratic'}
+        ``'natural'``: every visibility with its weight, the deepest datasets
+        count most.  ``'democratic'``: every dataset the same total weight.
     """
     from .extract.config import parse_freq_ghz
     from .stackio import open_stack
 
+    if weighting not in ("natural", "democratic"):
+        raise ValueError(f"weighting must be 'natural' or 'democratic', not {weighting!r}")
     stack = open_stack(path)
     freqs = stack.dd_frequencies()
     wanted = stack.dd_ids() if sources is None else [int(s) for s in sources]
@@ -125,6 +130,7 @@ def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None
             col = column if column != "auto" else (
                 "CORRECTED_DATA" if "CORRECTED_DATA" in stack.columns(dd) else "DATA")
         nu = float(freq[chans].mean())
+        first = len(wts)
         for row0, nrow in stack.pieces(dd):
             d = stack.read(dd, row0, nrow, ["UVW", "WEIGHT", "FLAG", col])
             w = np.where(d["FLAG"][:, chans, :], 0.0, d["WEIGHT"][:, None, :])
@@ -136,6 +142,10 @@ def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None
             vs.append(d["UVW"][:, 1] * nu / C)
             vis.append(mean)
             wts.append(wsum)
+        if weighting == "democratic":
+            total = sum(float(w.sum()) for w in wts[first:])
+            if total > 0:
+                wts[first:] = [w / total for w in wts[first:]]
     if not us:
         raise ValueError(f"dirty_image: no channel of {path} in the velocity range {velocity}")
     img = image_visibilities(np.concatenate(us), np.concatenate(vs), np.concatenate(vis),
@@ -146,10 +156,10 @@ def dirty_image(path, line_freq=None, velocity: Optional[Sequence[float]] = None
 
 
 def plot_image(image, ax=None, unit: Optional[str] = "Jy", title=None, vmax=None,
-               colorbar=True):
+               colorbar=True, contours=True):
     """Draw a :class:`DirtyImage` (north up, east left), with the contours at
-    3, 5, 7... times its rms (in the title) and the resolution in the corner.
-    Returns the axes."""
+    3, 5, 7... times its rms (in the title; ``contours=False``: without) and
+    the resolution in the corner.  Returns the axes."""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Circle
 
@@ -160,7 +170,7 @@ def plot_image(image, ax=None, unit: Optional[str] = "Jy", title=None, vmax=None
     top = vmax * f if vmax is not None else max(np.nanmax(image.data) * f, 5 * image.rms * f)
     im = ax.imshow(image.data * f, origin="lower", extent=(lo, hi, lo, hi), cmap="inferno",
                    vmin=-3 * image.rms * f, vmax=top, interpolation="nearest")
-    if np.isfinite(image.rms) and image.rms > 0:
+    if contours and np.isfinite(image.rms) and image.rms > 0:
         levels = [k * image.rms * f for k in (3, 5, 7, 10, 15, 20, 30)
                   if k * image.rms < np.nanmax(image.data)]
         if levels:

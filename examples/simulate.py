@@ -392,6 +392,19 @@ def channel_image(rec, v_kms=0.0, fov_arcsec=None):
                               fov_arcsec)
 
 
+def clean_image(rec, fov_arcsec=None):
+    """One simulated galaxy without noise, on the baselines of its dataset:
+    the dirty image of its line at the peak, centred on the galaxy."""
+    from vista.quicklook import image_visibilities
+    _, uvw, wt, freq = _centred(rec)
+    nu = rec["rest_freq_ghz"] * 1e9 / (1 + rec["z"])
+    u, v = uvw[:, 0] * nu / C, uvw[:, 1] * nu / C
+    sig = rec["fwhm_kms"] / 2.3548200450309493
+    peak = rec["primary_beam"] * rec["line_flux"] / (sig * math.sqrt(2 * math.pi))
+    vis = peak * shape_visibility(np.hypot(u, v), rec["size_arcsec"], rec.get("shape", "gauss"))
+    return image_visibilities(u, v, vis, wt.sum(axis=(1, 2)), fov_arcsec)
+
+
 def plot_galaxy(clean, noisy, unit_factor=1e3):
     """One simulated galaxy as the telescope would see it without noise
     (``clean``, a record of ``make_ms(..., noiseless=True)``) and with it
@@ -704,6 +717,115 @@ def expected(truth, v_kms=None, b_klambda=None, weighting="natural"):
     cont = sum(wi * ai * r["cont_flux"] for r, ai, wi in zip(truth["sources"], a, w))
     return {"flux": [flux[k] for k in range(len(freqs))], "profile": (v, prof), "uv": (b, uv),
             "continuum": float(cont), "rest_freq_ghz": freqs}
+
+
+def weight_shares(truth, special):
+    """Who makes the stack: for the natural and the democratic weighting,
+    the share of the weight and of the line flux of the stack that comes
+    from the galaxies ``special`` (their indices in the sample), the flux
+    the stack should give, and the mean flux of the other galaxies."""
+    special = np.zeros(len(truth["sources"]), bool) | np.isin(np.arange(len(truth["sources"])),
+                                                              special)
+    out = {}
+    for weighting in ("natural", "democratic"):
+        a, w = _stack_weights(truth, weighting=weighting)
+        flux = w * a * np.array([r["line_flux"] for r in truth["sources"]])
+        out[weighting] = {"weight": float(w[special].sum()),
+                          "flux": float(flux[special].sum() / flux.sum()),
+                          "expected": float(flux.sum()),
+                          "others": float(flux[~special].sum() / w[~special].sum())}
+    return out
+
+
+def plot_weighting(truth, special, results, names=("the others", "the special ones"),
+                   unit_factor=1e3):
+    """A stack with the natural and with the democratic weighting
+    (``results``: ``{"natural": r, "democratic": r}``), against the velocity
+    and against the baseline length: the stacked data and their fits, and,
+    dotted, the true value with those weights.  Dashed: the true signal of the galaxies
+    that are not ``special`` (their mean: the reference) and of the special
+    ones."""
+    import matplotlib.pyplot as plt
+    plt.rcParams.update(FONTS)
+    recs = truth["sources"]
+    special = np.isin(np.arange(len(recs)), special)
+    everyone = np.ones(len(recs), bool)
+    v = np.linspace(-900, 900, 1201)
+    lines = [results[k].line for k in ("natural", "democratic")]
+    b_all = np.concatenate([ln.baseline_klambda[ln.annulus_ok] for ln in lines])
+    b = np.geomspace(b_all.min() * 0.7, b_all.max() * 1.3, 300)
+
+    def mean(weighting, keep, per_galaxy):
+        a, w = _stack_weights(truth, weighting=weighting)
+        return sum(wi * ai * per_galaxy(r) for r, ai, wi, k in zip(recs, a, w, keep) if k) \
+            / w[keep].sum()
+
+    def spectrum(r):
+        sig = r["fwhm_kms"] / 2.3548200450309493
+        return (r["line_flux"] / (sig * math.sqrt(2 * math.pi))
+                * np.exp(-0.5 * ((v - r["v0_kms"]) / sig) ** 2))
+
+    def uv(r):
+        return r["line_flux"] * shape_visibility(b * 1e3, r["size_arcsec"],
+                                                 r.get("shape", "gauss"))
+
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(17, 6.8))
+    for (weighting, c), line in zip((("natural", "C3"), ("democratic", "C0")), lines):
+        o = np.argsort(line.velocity_kms)
+        ax.step(line.velocity_kms[o], line.profile[o] * unit_factor, where="mid", color=c,
+                lw=1.0, alpha=0.8)
+        fit = np.zeros_like(v)
+        for blk in line.summary["lines"]:
+            fit += blk["peak"] * np.exp(-4 * math.log(2)
+                                        * ((v - blk["v0_kms"]) / blk["fwhm_kms"]) ** 2)
+        ax.plot(v, fit * unit_factor, color=c, lw=2.4, label=f"Stack, {weighting}")
+        ok = line.annulus_ok & np.isfinite(line.annulus_flux)
+        bx.errorbar(line.baseline_klambda[ok], line.annulus_flux[ok],
+                    line.annulus_flux_error[ok], fmt="o", color=c, ms=4, capsize=2, lw=1)
+        p = line.summary["line"]
+        theta = p.get("theta_fwhm_arcsec") or 0.0
+        bx.plot(b, p["flux_gauss"] * shape_visibility(b * 1e3, theta), color=c, lw=2.4,
+                label=f"Stack, {weighting}")
+        dotted = f"True, {weighting} weights"
+        ax.plot(v, mean(weighting, everyone, spectrum) * unit_factor, color=c, lw=2.2,
+                ls=":", label=dotted)
+        bx.plot(b, mean(weighting, everyone, uv), color=c, lw=2.2, ls=":", label=dotted)
+    for keep, c, lw, label in ((special, "C1", 2, names[1].capitalize()),
+                               (~special, "#1e8449", 2.6, f"Mean of {names[0]}")):
+        ax.plot(v, mean("natural", keep, spectrum) * unit_factor, color=c, lw=lw, ls="--",
+                label=label)
+        bx.plot(b, mean("natural", keep, uv), color=c, lw=lw, ls="--", label=label)
+    for a_, xlabel, ylabel, title in (
+            (ax, "velocity [km/s]", "Re flux density [mJy]", "Against the velocity"),
+            (bx, r"baseline [k$\lambda$]", "Re line flux [Jy km/s]",
+             "Against the baseline length")):
+        a_.axhline(0, color="0.4", lw=0.6)
+        a_.set_xlabel(xlabel)
+        a_.set_ylabel(ylabel)
+        a_.set_title(title)
+    ax.set_xlim(-900, 900)
+    bx.set_xscale("log")
+    ax.legend(frameon=False, loc="upper right")
+    fig.suptitle("The stacked line, natural and democratic weighting")
+    fig.tight_layout()
+
+
+def plot_images(images, ncols=None, same_scale=True, unit="Jy"):
+    """Several dirty images (``{title: image}``, from ``vista.dirty_image``)
+    side by side, with the same colour scale."""
+    import matplotlib.pyplot as plt
+    from vista.quicklook import plot_image
+    plt.rcParams.update(FONTS)
+    ncols = ncols or len(images)
+    nrows = -(-len(images) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.6 * ncols, 5.2 * nrows), squeeze=False)
+    top = max(max(float(np.nanmax(i.data)), 5 * i.rms) for i in images.values())
+    for ax, (title, img) in zip(axes.ravel(), images.items()):
+        plot_image(img, ax, unit=unit, title=title, vmax=top if same_scale else None,
+                   contours=False)
+    for ax in axes.ravel()[len(images):]:
+        ax.axis("off")
+    fig.tight_layout()
 
 
 # ---------------------------------------------------------------------------

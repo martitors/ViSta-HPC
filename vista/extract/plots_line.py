@@ -473,6 +473,18 @@ def _line_of(result):
 _COLOURS = ["#000000", "#c0392b", "#2471a3", "#d68910", "#7d3c98", "#17a589", "#7f8c8d"]
 
 
+def _fit_curve(summary, v):
+    """The fitted Gaussians of a measurement (and the continuum fitted with
+    them) at the velocities ``v`` of the first line: a smooth curve."""
+    cf = summary.get("continuum_fit")
+    out = np.full(len(v), cf["flux_density"] if cf else 0.0)
+    for b in summary.get("lines") or [summary["line"]]:
+        shift = ((b["window_kms_line1_velocity"][0] - b["window_kms"][0])
+                 if b.get("window_kms_line1_velocity") and b.get("window_kms") else 0.0)
+        out += b["peak"] * np.exp(-4 * np.log(2) * ((v - shift - b["v0_kms"]) / b["fwhm_kms"]) ** 2)
+    return out
+
+
 def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy",
             rebin: int = 1, v_limits=None, save: Optional[str] = None, show: bool = True,
             table: bool = True):
@@ -489,7 +501,8 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
         What a perfect measurement would give, when it is known (a
         simulation): ``flux`` (line flux, or a list, one per line),
         ``profile`` (``(velocity_kms, flux_density)``), ``uv``
-        (``(baseline_klambda, line_flux)``), ``continuum``.  Drawn in green.
+        (``(baseline_klambda, line_flux)``), ``continuum``.  Drawn in green,
+        named ``label`` (default "expected").
     unit : str
         Unit of the data (``"Jy"``: drawn in mJy).
     rebin : int
@@ -504,6 +517,7 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
     if not items:
         raise ValueError("compare: no result")
     truth = expected or {}
+    expected_label = truth.get("label", "expected")
     f, ulabel = _scale(unit, _typical(items[0][1]))
     fig = plt.figure(figsize=(16, 11), layout="constrained")
     gs = fig.add_gridspec(2, 2, height_ratios=[1.15, 1])
@@ -532,8 +546,6 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
         used = r.fitted[o]
         vb, yb, eb = _rebin(v[o], np.where(used, r.profile[o] * f, np.nan),
                             r.profile_error[o] * f, rho, rebin)
-        _, mb, _ = _rebin(v[o], np.where(used, r.profile_model[o] * f, np.nan),
-                          r.profile_error[o] * f, rho, rebin)
         if i == 0:
             ax_p.fill_between(vb, -eb, eb, step="mid", color="0.6", alpha=0.3, lw=0,
                               label=r"$\pm1\sigma$ noise")
@@ -543,9 +555,12 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
             spectra.append(yb)
             ax_p.step(vb, yb, where="mid", color=c if len(spectra) > 1 else "0.25", lw=1.0,
                       alpha=0.75)
-        # different dashes: fits that coincide stay visible, one over the other
-        ax_p.step(vb, mb, where="mid", color=c, lw=1.8, dashes=dashes[i % len(dashes)],
-                  label=label)
+        # the fitted Gaussians on a fine grid; different dashes: fits that
+        # coincide stay visible, one over the other
+        if used.any():
+            vf = np.linspace(v[o][used].min(), v[o][used].max(), 1500)
+            ax_p.plot(vf, _fit_curve(r.summary, vf) * f, color=c, lw=2.0,
+                      dashes=dashes[i % len(dashes)], label=label)
         if len(windows) > 1:                 # the window of the area flux of each
             for edge in r.summary["line"]["window_kms"]:
                 ax_p.axvline(edge, color=c, lw=1.0, ls=":")
@@ -553,12 +568,12 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
             vmin, vmax = min(vmin, v[o][used].min()), max(vmax, v[o][used].max())
     if "profile" in truth:
         tv, ty = truth["profile"]
-        ax_p.plot(tv, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="expected")
+        ax_p.plot(tv, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label=expected_label)
     ax_p.axhline(0, color="0.3", lw=0.6)
     ax_p.set_xlim(*(v_limits or (vmin, vmax)))
     ax_p.set_xlabel("velocity [km/s]")
     ax_p.set_ylabel(f"Re flux density [{ulabel}]")
-    ax_p.set_title("Stacked spectra (thin) and their fits (dashed)")
+    ax_p.set_title("Stacked spectra (thin) and their fits")
     ax_p.legend(frameon=False, loc="upper right")
 
     # ---- the line flux per annulus ----------------------------------------
@@ -589,8 +604,11 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
                       dashes=dashes[i % len(dashes)],
                       label=f"{label}: " + (f"Gaussian {th:.2f}\"" if th else "point source"))
         if "uv" in truth:
-            tb, ty = truth["uv"]
-            ax_u.plot(tb, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8, label="expected")
+            tb, ty = np.asarray(truth["uv"][0]), np.asarray(truth["uv"][1])
+            inside = (tb >= bb[0]) & (tb <= bb[-1])        # over the baselines of the data
+            tb, ty = tb[inside], ty[inside]
+            ax_u.plot(tb, np.asarray(ty) * f, color="#1e8449", lw=2, alpha=0.8,
+                      label=expected_label)
     ax_u.axhline(0, color="0.3", lw=0.6)
     ax_u.set_xscale("log")
     ax_u.set_xlabel(r"baseline [k$\lambda$]")
@@ -619,7 +637,7 @@ def _compare(results, expected: Optional[dict] = None, unit: Optional[str] = "Jy
     ax_f.plot([], [], "s", mfc="none", mec="0.3", ls="none", label="Gaussian fit")
     ax_f.plot([], [], "^", mfc="none", mec="0.3", ls="none", label="area in the window")
     if tf is not None:
-        ax_f.plot([], [], color="#1e8449", ls="--", label="expected")
+        ax_f.plot([], [], color="#1e8449", ls="--", label=expected_label)
     ax_f.set_yticks(y)
     ax_f.set_yticklabels([r[0] for r in rows])
     ax_f.set_ylim(-0.8, len(rows) - 0.4)

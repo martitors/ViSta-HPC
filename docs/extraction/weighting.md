@@ -28,6 +28,36 @@ lensed galaxy, a much brighter one), the stack looks like them and not like
 the sample. The difference between the two schemes tells you how uneven the
 depths are.
 
+In [Example 7](../examples/07_a_few_galaxies_that_count), two lensed
+galaxies, 5 times brighter and observed 4 times deeper, are added to twelve
+normal ones (0.40 Jy km/s each):
+
+| Weighting | Weight of the two | Flux of the stack that is theirs | The stack gives |
+|---|---|---|---|
+| natural | 76% | 94% | 1.61 Jy km/s |
+| democratic | 14% | 45% | 0.63 Jy km/s |
+
+```{figure} ../_static/fig_weighting_images.png
+:width: 100%
+
+The twelve normal galaxies, and the fourteen with the two weightings. The
+lensed ones are rings: with the natural weighting the stack is a ring too.
+```
+
+```{figure} ../_static/fig_weighting.png
+:width: 100%
+
+The two stacks and their fits; dotted, the true value with those weights;
+green, the mean of the twelve normal; orange, the two lensed.
+```
+
+The democratic stack is much closer to the mean of the twelve, but two
+sources 5 times brighter still bring almost half of it. **When a few
+sources are much brighter than the others, no weighting makes them "one of
+many": it is often better to take them out of the stack and treat them
+separately**, or, if the reason is known (a magnification), to divide it
+out (below).
+
 ## The redshift correction
 
 **What.** With `z_norm=True` (default) every galaxy is brought to the flux

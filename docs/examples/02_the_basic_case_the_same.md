@@ -131,7 +131,7 @@ v.run()
 ```
 
 ```text
-Stack      stack.zarr: 433,440 rows, 90 channels, 5 s
+Stack      stack.zarr: 433,440 rows, 90 channels, 6 s
 ```
 
 **What stacking does, in an image.** One galaxy of the stack, then all

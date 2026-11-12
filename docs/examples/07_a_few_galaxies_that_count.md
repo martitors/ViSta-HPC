@@ -5,14 +5,16 @@ noise: the deepest observations count most, and the noise of the stack is
 the lowest possible. That is right when all the galaxies are alike. It is
 not when a few of them are different **and** observed much deeper.
 
-We add to the twelve galaxies of chapter 2 **two lensed ones**: the same
-galaxy magnified 5 times, observed 4 times deeper.
+We add to the twelve galaxies of chapter 2 **two lensed ones**: 5 times
+brighter, observed 4 times deeper, and with the shape of a lensed source,
+a ring 2.4″ across. The twelve stay as they were.
 
 ```python
 lensed = simulate.make_sample(
     "lensed", n_sources=2, z_range=(2.3, 2.6), rest_freq_ghz=LINE,
     line_flux=0.4 * 5, fwhm_kms=300, cont_flux=1e-4 * 5,       # magnified 5 times
-    size_arcsec=0.8, z_ref=truth["z_ref"],
+    size_arcsec=2.4, shape="ring",                             # an Einstein ring
+    z_ref=truth["z_ref"],
     noise=0.07 / 4, kappa=1.3, rmax=600, seed=7)        # 4 times deeper
 
 # one list with the fourteen, and the magnification of each in the NORM column
@@ -39,98 +41,133 @@ lensed/galaxy_00.ms  2.487529  10:00:00.13341461  +02:00:01.0000000  norm=5
 lensed/galaxy_01.ms  2.569164  10:02:00.13342294  +02:06:01.0000000  norm=5
 ```
 
-## 7.1 The two lensed galaxies alone
-
-(`z_ref` is given, so that every stack of this chapter refers to the same
-redshift.)
+One of the twelve and one of the two, as these baselines see them, without
+noise and with the same colour scale:
 
 ```python
-l = ViSta(lensed["input_list"], output_name="lensed_stack")
-l.stack(line_freq=LINE, line_window=500, velocity_range=900)
-l.extract(z_ref=truth["z_ref"])
-two = l.run()
-two.plot("line")
-```
-
-```text
-[ViSta       0.9s] z_ref = 2.6596 (given)
+simulate.plot_images({
+    "One normal galaxy, no noise": simulate.clean_image(all14["sources"][5], fov_arcsec=10),
+    "One lensed galaxy, no noise": simulate.clean_image(all14["sources"][12], fov_arcsec=10)})
 ```
 
 ```{image} figures/07_01.png
 :width: 100%
 ```
 
-## 7.2 The fourteen, natural weighting
+## 7.1 Natural and democratic weighting
 
-The stack looks like the two lensed galaxies: they hold most of the weight.
+The fourteen are stacked once and measured twice: with the natural
+weighting, and with `weighting_scheme="democratic"`, which gives every
+galaxy the same weight. (`z_ref` is given, so that every stack of this
+chapter refers to the same redshift.)
 
 ```python
 a = ViSta(all14["input_list"], output_name="all14")
 a.stack(line_freq=LINE, line_window=500, velocity_range=900)
 a.extract(z_ref=truth["z_ref"])
 natural = a.run()
-natural.plot("line")
+
+a.extract(z_ref=truth["z_ref"], weighting_scheme="democratic")
+democratic = a.run(only="measure", tag="democratic")
 ```
 
 ```text
-[ViSta       1.6s] z_ref = 2.6596 (given)
+[ViSta       2.2s] z_ref = 2.6596 (given)
+```
+
+## 7.2 In the image
+
+The stack of the twelve of chapter 2, and the fourteen with the two
+weightings, with the same colour scale. With the natural weighting **the
+stack is a ring**: it shows the two lensed galaxies, not the sample. With
+the democratic weighting it looks like the twelve.
+
+```python
+window = (-500, 500)
+simulate.plot_images({
+    "The twelve normal": vista.dirty_image("stack.zarr", LINE, window, fov_arcsec=10),
+    "Fourteen, natural": vista.dirty_image("all14.zarr", LINE, window, fov_arcsec=10),
+    "Fourteen, democratic": vista.dirty_image("all14.zarr", LINE, window, fov_arcsec=10,
+                                              weighting="democratic")})
 ```
 
 ```{image} figures/07_02.png
 :width: 100%
 ```
 
-## 7.3 The fourteen, democratic weighting
+## 7.3 In the spectrum and against the baseline length
 
-`weighting_scheme="democratic"` gives every galaxy the same weight: the
-stack is the plain mean of the fourteen, with more noise.
+The two stacks (the data, and the fit through them), and what we know of
+the sample because it is simulated:
+
+* **dotted**, in the colour of each stack: the true value with the weights
+  of that stack;
+* **green, dashed**: the mean of the twelve normal galaxies, the reference;
+* **orange, dashed**: the two lensed ones.
+
+The natural stack lies almost on the two lensed galaxies; against the
+baseline it even goes negative near 100 kλ, the signature of a ring. The
+democratic stack is much closer to the mean of the twelve.
 
 ```python
-a.extract(z_ref=truth["z_ref"], weighting_scheme="democratic")
-democratic = a.run(only="measure", tag="democratic")
-democratic.plot("line")
+simulate.plot_weighting(all14, special=[12, 13],
+                        results={"natural": natural, "democratic": democratic},
+                        names=("the twelve normal", "the two lensed"))
 ```
 
 ```{image} figures/07_03.png
 :width: 100%
 ```
 
-The three spectra together: the natural stack lies on the lensed pair, the
-democratic one far below. Neither is wrong: they answer different
-questions, and each has its own expected value.
+Who makes the stack, in numbers: the share of the weight, and of the flux
+of the stack, that comes from the two lensed galaxies.
 
 ```python
-vista.compare({"two lensed alone": two, "fourteen, natural": natural,
-               "fourteen, democratic": democratic}, table=False)
-```
-
-```{image} figures/07_04.png
-:width: 100%
-```
-
-```python
-print("two lensed alone:     ", flux(two))
-print("fourteen, natural:    ", flux(natural),
-      f"  expected {simulate.expected(all14)['flux'][0]:.3f}")
-print("fourteen, democratic: ", flux(democratic),
-      f"  expected {simulate.expected(all14, weighting='democratic')['flux'][0]:.3f}")
+shares = simulate.weight_shares(all14, special=[12, 13])
+for weighting, s in shares.items():
+    print(f"{weighting:10s}: the two lensed have {100 * s['weight']:.0f}% of the weight and bring "
+          f"{100 * s['flux']:.0f}% of the flux;  the stack should give {s['expected']:.2f} Jy km/s")
+print(f"mean of the twelve normal: {shares['natural']['others']:.2f} Jy km/s")
+print()
+print("measured, natural:   ", flux(natural))
+print("measured, democratic:", flux(democratic))
 ```
 
 ```text
-two lensed alone:      1.999 ± 0.016 Jy km/s
+natural   : the two lensed have 76% of the weight and bring 94% of the flux;  the stack should give 1.61 Jy km/s
+democratic: the two lensed have 14% of the weight and bring 45% of the flux;  the stack should give 0.63 Jy km/s
+mean of the twelve normal: 0.40 Jy km/s
+
+measured, natural:    1.808 ± 0.480 Jy km/s
+measured, democratic: 0.648 ± 0.179 Jy km/s
 ```
 
-```text
-fourteen, natural:     1.616 ± 0.411 Jy km/s   expected 1.609
-fourteen, democratic:  0.653 ± 0.144 Jy km/s   expected 0.629
-```
+* **Natural**: observed 4 times deeper, each lensed galaxy weighs 16 times
+  a normal one. The two hold 76% of the weight and bring 94% of the flux:
+  the stack is theirs.
+* **Democratic**: every galaxy weighs 1/14. The two hold 14% of the weight,
+  but, 5 times brighter, they still bring 45% of the flux. The stack
+  (0.63 Jy km/s) is much closer to the mean of the twelve (0.40) than the
+  natural one (1.61), but it does not get there.
+
+Neither weighting is wrong: they answer different questions. But note two
+things. The first: a ring is not a Gaussian, so the Gaussian fit against
+the baseline describes the natural stack badly, and its flux comes out
+above the true value, with a large error that says so (chapter 12 is about
+such sources). The second, and more important:
+
+> **When a few sources are much brighter than the others, no weighting
+> makes them "one of many".** It is often better to take them out of the
+> stack and treat them separately: measure them on their own, and stack the
+> rest.
 
 ## 7.4 When the magnification is known
 
 `flux_norm=True` divides every galaxy by its `NORM` (here the
-magnification). All fourteen are again the same galaxy, and the natural
-weighting can use the deep data at full value: the flux of chapter 2, with
-a smaller error.
+magnification). In flux, all fourteen are again the same galaxy, and the
+natural weighting can use the deep data at full value. The shape is not
+undone: the two are still rings, so the flux is right only as far as a
+Gaussian describes the mix.
 
 ```python
 a.extract(z_ref=truth["z_ref"], flux_norm=True, flux_ref=1)
@@ -139,10 +176,10 @@ delensed.plot("line")
 ```
 
 ```text
-[ViSta       1.9s] z_ref = 2.6596 (given); flux_ref = 1 (given)
+[ViSta       2.1s] z_ref = 2.6596 (given); flux_ref = 1 (given)
 ```
 
-```{image} figures/07_05.png
+```{image} figures/07_04.png
 :width: 100%
 ```
 
@@ -154,6 +191,6 @@ print("expected:                   ", f"{expected['flux'][0]:.3f} Jy km/s")
 
 ```text
 twelve unlensed (chapter 2): 0.431 ± 0.052 Jy km/s
-fourteen, de-lensed:         0.406 ± 0.022 Jy km/s
+fourteen, de-lensed:         0.442 ± 0.034 Jy km/s
 expected:                    0.400 Jy km/s
 ```

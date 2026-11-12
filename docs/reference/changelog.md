@@ -43,7 +43,8 @@ choice was made; `result["flux"]`, `result["size"]`, `result["continuum"]`,
 ... give every quantity with its value, error and unit; `result.plot()`
 draws the figures (`"line"`, `"line_uv"`, `"continuum"`,
 `"continuum_uv"`, `"noise"`, `"image"`); `vista.compare` puts several
-measurements side by side.
+measurements side by side. `vista.dirty_image(..., weighting="democratic")`
+images the stack with the same weight for every dataset.
 
 **Resources.** Readers, writers and kernel threads are taken from the cores
 the process may use, and the GPU batch from the free memory.
