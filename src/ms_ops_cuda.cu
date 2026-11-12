@@ -312,10 +312,12 @@ void full_pipeline_cuda(
             for (int k = 0; k < 3; ++k)
                 Rot[i*3+j] += basis_new[i*3+k] * basis_old[j*3+k];
         }
-    double dl  = (ra_new - ra_old) * cos(dec_old);
-    double dm  = dec_new - dec_old;
-    double arg = 1.0 - dl*dl - dm*dm;
-    double dn  = (arg > 0.0 ? sqrt(arg) : 0.0) - 1.0;
+    // Exact delay between the old and the new phase centre, as in the CPU
+    // kernel: w_new - w_old = Rot[6] u + Rot[7] v + (Rot[8] - 1) w.  The
+    // small-angle dl = dra cos(dec), dm = ddec was wrong by ~ offset^2 tan(dec).
+    double dl  = Rot[6];
+    double dm  = Rot[7];
+    double dn  = Rot[8] - 1.0;
     double inv_z = 1.0 / (1.0 + z);
 
     // --- Per-channel input widths (FIX B, computed on host) ---
@@ -626,10 +628,10 @@ void full_pipeline_batch_cuda(
                 for (int k = 0; k < 3; ++k)
                     Rot[i*3+j] += basis_new[i*3+k] * basis_old[j*3+k];
             }
-        double dl   = (ra_new-ra_old)*cos(dec_old);
-        double dm_  = dec_new-dec_old;
-        double arg  = 1.0-dl*dl-dm_*dm_;
-        double dn   = (arg>0.0?sqrt(arg):0.0)-1.0;
+        // exact delay, as in the CPU kernel (see full_pipeline_cuda)
+        double dl   = Rot[6];
+        double dm_  = Rot[7];
+        double dn   = Rot[8]-1.0;
         double inv_z = 1.0/(1.0+z);
 
         double* g = geom_h.data() + m*14;
