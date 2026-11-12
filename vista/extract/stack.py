@@ -276,6 +276,7 @@ class ContinuumResult:
     sources_per_annulus: np.ndarray
     bin_ok: np.ndarray
     fit: UVFitResult
+    flux_error_bootstrap: Optional[np.ndarray] = None
 
     def save(self, prefix: str) -> List[str]:
         """Write ``<prefix>_results.json``, ``_spectrum.txt``, ``_uvamp.txt``."""
@@ -287,8 +288,12 @@ class ContinuumResult:
                    header="v_kms  Re_stack  err_bootstrap  n_sources")
         np.savetxt(f"{prefix}_uvamp.txt",
                    np.column_stack([self.baseline_klambda, self.flux, self.flux_error,
-                                    self.flux_imaginary, self.sources_per_annulus]),
-                   header="b_klambda  flux  err_bootstrap  flux_imaginary(null_test)  n_sources")
+                                    self.flux_imaginary, self.sources_per_annulus,
+                                    self.flux_error_bootstrap
+                                    if self.flux_error_bootstrap is not None
+                                    else np.full(len(self.flux), np.nan)]),
+                   header="b_klambda  flux  err  flux_imaginary(null_test)  n_sources  "
+                          "err_bootstrap")
         return [f"{prefix}_results.json", f"{prefix}_spectrum.txt", f"{prefix}_uvamp.txt"]
 
 
@@ -311,8 +316,13 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
     3. The source model (``uvfit``: a Gaussian or a point) is fitted to
        those means against the baseline: its value at zero baseline is the
        flux density, its width gives the size.
-    4. The errors come from the bootstrap over the sources: every
-       realisation repeats steps 1 to 3.
+    4. Two errors, and the larger is quoted, as for the lines: the thermal
+       one, from the noise measured in the cells (the scatter of their
+       visibilities), and that of the bootstrap over the sources, where every
+       realisation repeats steps 1 to 3.  The annuli are weighted in the fit
+       by their thermal noise: with few sources the scatter of the bootstrap
+       in one annulus can be small by chance, and that annulus would decide
+       the fit.
 
     The same on the imaginary part is a null test: it must be zero.
 
@@ -381,11 +391,28 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
         warnings.simplefilter("ignore", RuntimeWarning)
         flux_error = np.nanstd(boot_flux, axis=0)
         spectrum_error = np.nanstd(np.asarray(boot_spectrum), axis=0)
-    # a floor on the errors: with few sources the bootstrap can make one too small
-    usable = np.isfinite(flux_error) & (flux_error > 0) & bin_ok
-    if usable.any() and uvfit.error_floor_frac > 0:
-        flux_error = np.maximum(flux_error,
-                                uvfit.error_floor_frac * np.nanmedian(flux_error[usable]))
+    flux_error_bootstrap = flux_error
+    # the thermal noise of every annulus, from the noise measured in the cells.
+    # The channels of a continuum are one measurement (the level fitted to a
+    # visibility is the same in all of them): their noise does not average
+    thermal = None
+    if data.has_scatter:
+        from .noise import combine_variance
+        sd = np.sqrt(combine_variance(data.variance, sums, factors, renormalise=renormalise))
+        w_c = np.where(np.isfinite(sd), weight, 0.0)[channels]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            thermal = (np.nansum(w_c * np.where(np.isfinite(sd), sd, 0.0)[channels], axis=0)
+                       / np.nansum(w_c, axis=0))
+        thermal = np.where(np.isfinite(thermal) & (thermal > 0), thermal, np.nan)
+    if thermal is not None and np.isfinite(thermal[bin_ok]).any():
+        flux_error = thermal
+    else:
+        # statistics without the scatter: the bootstrap, with a floor (with few
+        # sources it can make one error too small)
+        usable = np.isfinite(flux_error) & (flux_error > 0) & bin_ok
+        if usable.any() and uvfit.error_floor_frac > 0:
+            flux_error = np.maximum(flux_error,
+                                    uvfit.error_floor_frac * np.nanmedian(flux_error[usable]))
 
     # ---- the source model: on the stack, and on every resampling ----------
     fit = fit_uv_profile(baseline, flux, sigma=flux_error, config=uvfit, bin_ok=bin_ok)
@@ -402,6 +429,13 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
         return ([float(x) for x in np.nanpercentile(values[ok], [16, 50, 84])]
                 if ok.any() else [float("nan")] * 3)
 
+    def larger(a, b):
+        both = [x for x in (a, b) if np.isfinite(x)]
+        return float(max(both)) if both else float("nan")
+
+    thermal_fit = thermal is not None and np.isfinite(fit.flux_error)
+    flux_err_th = fit.flux_error if thermal_fit else float("nan")
+    theta_err_th = fit.theta_error if thermal_fit else float("nan")
     finite = np.isfinite(flux)
     weight_per_bin = np.nansum(weight[channels], axis=0)
     flux_point = float(np.nansum(flux[finite] * weight_per_bin[finite])
@@ -422,10 +456,14 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
         "flux_ref_given": weighting.norm_ref is not None,
         "rest_freq_ghz": line.rest_freq_ghz,
         "flux_total": fit.flux,
-        "flux_total_error": spread(boot_fit_flux),
+        "flux_total_error": larger(flux_err_th, spread(boot_fit_flux)),
+        "flux_total_error_thermal": flux_err_th,
+        "flux_total_error_bootstrap": spread(boot_fit_flux),
         "flux_percentiles_16_50_84": percentiles(boot_fit_flux),
         "theta_fwhm_arcsec": fit.theta_arcsec,
-        "theta_error_arcsec": spread(boot_fit_theta),
+        "theta_error_arcsec": larger(theta_err_th, spread(boot_fit_theta)),
+        "theta_error_thermal_arcsec": theta_err_th,
+        "theta_error_bootstrap_arcsec": spread(boot_fit_theta),
         "theta_percentiles_16_50_84": percentiles(boot_fit_theta),
         "theta_at_bound": fit.theta_at_bound,
         "theta_max_arcsec": uvfit.theta_max_arcsec,
@@ -456,10 +494,12 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
         spectrum=mean_per_channel(real, weight), spectrum_error=spectrum_error,
         sources_per_channel=per_channel, baseline_klambda=baseline / 1e3,
         flux=flux, flux_error=flux_error, flux_imaginary=flux_imaginary,
-        sources_per_annulus=per_annulus, bin_ok=bin_ok, fit=fit)
+        sources_per_annulus=per_annulus, bin_ok=bin_ok, fit=fit,
+        flux_error_bootstrap=flux_error_bootstrap)
     if output_prefix:
         _say("  written: " + ", ".join(result.save(output_prefix)), verbose)
-    _say(f"Continuum done: S = {fit.flux:.4g} +- {summary['flux_total_error']:.3g}   "
+    _say(f"Continuum done: S = {fit.flux:.4g} +- {summary['flux_total_error']:.3g} "
+         f"(thermal {flux_err_th:.3g}, bootstrap {summary['flux_total_error_bootstrap']:.3g})   "
          f"theta = {fit.theta_arcsec:.3f}\" +- {summary['theta_error_arcsec']:.3f}\"   "
          f"chi2r = {fit.chi2_reduced:.2f}", verbose)
     return result

@@ -41,15 +41,10 @@ ViSta-HPC/
 ├── examples/
 │   ├── ViSta_tutorial.ipynb the worked examples, one situation at a time (Colab)
 │   ├── simulate.py          synthetic ALMA-like Measurement Sets
-│   ├── plot_line.py         the figures of the lines, in your own style
-│   ├── run_vista.py         a run in a script
-│   ├── run_extraction.py    the measurement repeated with different options
 │   ├── inspect_ms.py        the bands of the datasets: velocity_range, line_window, annuli
-│   ├── inspect_line.py      one dataset imaged: where the line is, its width
-│   ├── check_rest.py        the rest frequency rest-framed copies were written with
 │   └── example_input_list.txt
 ├── docs/                    this documentation (Sphinx, Read the Docs)
-├── benchmarks/              ViSta 1.0 against this version: time, memory, accuracy
+├── benchmarks/              validation of the measurement, GPU check, timings
 ├── run_vista.sh             the command line (python -m vista)
 ├── CMakeLists.txt
 ├── requirements.txt

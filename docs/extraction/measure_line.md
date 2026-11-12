@@ -137,7 +137,16 @@ the report, `results["sizes"]`).
 
 **Why it matters.** The total flux of an extended source depends on its
 size. A point source fitted to an extended one is too low
-([Example 8](../examples/08_point_sources_only_extended)).
+([Example 8](../examples/08_points_and_extended_sources)).
+
+**What the model assumes: one size for the whole stack.** Galaxies of
+somewhat different sizes are fine. A stack of point-like and clearly
+extended galaxies together is not: it is a flat level plus something that
+falls with the baseline, a single Gaussian settles on a small size, and the
+flux comes out low (16 % in the [Validation](validation), with an error
+that does not cover it). The figure against the baseline length shows it:
+the short baselines lie above the model. If the two kinds can be told
+apart, stack them separately.
 
 **A size from elsewhere.** `model=0.8` fixes it at 0.8″;
 `model_prior=(0.8, 0.15)` ties it softly (0.15 dex);
@@ -275,7 +284,7 @@ normalisations and the noise ([3](../examples/03_the_window_the)), whose
 size the line and the continuum take
 ([5](../examples/05_a_weak_continuum_under_a),
 [6](../examples/06_a_weak_line_on_a_strong)), the source model
-([8](../examples/08_point_sources_only_extended)), two lines
+([8](../examples/08_points_and_extended_sources)), two lines
 ([9](../examples/09_two_lines_far_apart),
 [10](../examples/10_two_lines_that_blend)), a line and a source that are
 not Gaussians ([11](../examples/11_a_line_that_is_not_a),

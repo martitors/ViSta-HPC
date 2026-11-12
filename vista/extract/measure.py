@@ -104,7 +104,7 @@ class LineResult:
             self.velocity_kms, self.noise_channel, self.noise_channel_weights]),
             header="v_kms  sigma_profile_from_scatter  sigma_profile_from_weights")
         written.append(f"{prefix}_noise.txt")
-        # what the figures need besides the tables (examples/plot_line.py)
+        # what the figures need besides the tables
         corr = (self.channel_correlation if self.channel_correlation is not None
                 else np.zeros((0, 0)))
         np.savez_compressed(
@@ -704,15 +704,18 @@ def _fluxes(job):
         fopt, eopt, _ = _area(pr, pe, dv, opt_mask, corr, c_fit, c_err)
         e_t = res.errors.get("theta", 0.0) if "theta" in sp.free else 0.0
         if th > 0 and e_t > 0:
-            step = max(0.25 * e_t, 1e-3)
-            lo_t = max(th - step, 0.0)
-            f_up = _area(zero_spacing_spectrum(cube_g, th + step)[0], pe, dv, mask, corr,
-                         c_fit)[0]
+            # in theta^2, which the visibilities depend on: for a size close
+            # to zero the error of theta itself has no bound, that of theta^2
+            # does, and a step in theta would leave the data far behind
+            e_t2 = 2.0 * th * e_t
+            step = max(0.25 * e_t2, 1e-6)
+            hi_t, lo_t = math.sqrt(th * th + step), math.sqrt(max(th * th - step, 0.0))
+            f_up = _area(zero_spacing_spectrum(cube_g, hi_t)[0], pe, dv, mask, corr, c_fit)[0]
             f_dn = _area(zero_spacing_spectrum(cube_g, lo_t)[0], pe, dv, mask, corr, c_fit)[0]
-            dfdt = (f_up - f_dn) / (th + step - lo_t)
-            ewin = float(np.hypot(ewin, dfdt * e_t))
+            dfdt2 = (f_up - f_dn) / (hi_t * hi_t - lo_t * lo_t)
+            ewin = float(np.hypot(ewin, dfdt2 * e_t2))
             if fwin:
-                eopt = float(np.hypot(eopt, dfdt * e_t * fopt / fwin))
+                eopt = float(np.hypot(eopt, dfdt2 * e_t2 * fopt / fwin))
         return fwin, ewin, nwin, fopt, eopt
 
     def averaged(values, errors, weights):

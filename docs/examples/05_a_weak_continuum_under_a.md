@@ -54,8 +54,8 @@ print("expected:                ", f"{expected['continuum'] * 1e3:.3f} mJy")
 ```
 
 ```text
-its own Gaussian:         0.180 ± 0.029 mJy
-a point:                  0.166 ± 0.025 mJy
-the size of the line:     0.204 ± 0.032 mJy
-expected:                 0.200 mJy
+its own Gaussian:         0.081 ± 0.088 mJy
+a point:                  0.052 ± 0.029 mJy
+the size of the line:     0.089 ± 0.045 mJy
+expected:                 0.100 mJy
 ```

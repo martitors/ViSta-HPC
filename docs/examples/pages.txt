@@ -6,7 +6,7 @@
 05_a_weak_continuum_under_a
 06_a_weak_line_on_a_strong
 07_a_few_galaxies_that_count
-08_point_sources_only_extended
+08_points_and_extended_sources
 09_two_lines_far_apart
 10_two_lines_that_blend
 11_a_line_that_is_not_a

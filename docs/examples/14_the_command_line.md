@@ -12,22 +12,22 @@ PYTHONPATH={REPO} python -m vista --input sample/input_list.txt --output-name cl
 ```
 
 ```text
-[ViSta       0.3s] z_ref = 2.6596 (median of the sample)
+[ViSta       0.4s] z_ref = 2.6596 (median of the sample)
 ```
 
 ```text
-Stack      cli/stack.zarr: 433,440 rows, 90 channels, 8 s
-Line       345.796 GHz, 12 sources: detected at 18.5 sigma (S/N 18.8, searched over centre and width)
-  flux     0.4035 ± 0.04 Jy km/s, the area of the Gaussian fit
-           because the area agrees with the Gaussian (-0.6 sigma)
-           Gaussian fit 0.4035 ± 0.04; area in the window (-320 to +320 km/s) 0.3917 ± 0.04
-  Gaussian centre +15 ± 10 km/s, FWHM 284 ± 21 km/s, peak 1.34 ± 0.13 mJy
-  source   Gaussian, FWHM 0.59 ± 0.07 arcsec
-           because it fits better than a point source: delta chi2 = 28.1 (at least 9 needed to call it extended)
-Continuum  subtracted while stacking and measured on its own: 0.204 ± 0.032 mJy (S/N 6.4), Gaussian, FWHM 0.59 arcsec
-           because the source measured on the line is used: its own Gaussian improves the fit by delta chi2 = 1.0 (at least 9 needed to call it extended)
-           outside the line window: 0.0036 ± 0.006 mJy (+0.6 sigma): nothing left
-Sizes      each on its own: line 0.59 ± 0.07 arcsec, continuum 0.28 ± 0.15 arcsec: compatible (1.9 sigma apart)
+Stack      cli/stack.zarr: 433,440 rows, 90 channels, 14 s
+Line       345.796 GHz, 12 sources: detected at 13.8 sigma (S/N 14.1, searched over centre and width)
+  flux     0.4314 ± 0.052 Jy km/s, the area of the Gaussian fit
+           because the area agrees with the Gaussian (-0.0 sigma)
+           Gaussian fit 0.4314 ± 0.052; area in the window (-320 to +320 km/s) 0.4301 ± 0.049
+  Gaussian centre -12 ± 11 km/s, FWHM 295 ± 26 km/s, peak 1.37 ± 0.17 mJy
+  source   Gaussian, FWHM 0.95 ± 0.12 arcsec
+           because it fits better than a point source: delta chi2 = 52.8 (at least 9 needed to call it extended)
+Continuum  subtracted while stacking and measured on its own: 0.0895 ± 0.045 mJy (S/N 2.0), Gaussian, FWHM 0.95 arcsec
+           because the source measured on the line is used: its own Gaussian improves the fit by delta chi2 = 0.6 (at least 9 needed to call it extended)
+           outside the line window: 0.0054 ± 0.0078 mJy (+0.7 sigma): nothing left
+Sizes      each on its own: line 0.95 ± 0.12 arcsec, continuum 0.76 ± 1.09 arcsec: compatible (0.2 sigma apart)
 Reference  natural weighting, fluxes at z_ref = 2.6596 (median of the sample)
   stack                  cli/stack.zarr
   line_statistics        cli/stack_line_stats.npy

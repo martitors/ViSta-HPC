@@ -40,10 +40,6 @@ left = v.run(only="measure", tag="left")
 left.plot("line")
 ```
 
-```text
-[ViSta      11.0s] WARNING: measure: continuum in the data (not subtracted) outside the line windows: offset 0.000233 +- 3e-05 (+7.8 sigma, +16% of the line peak), slope -0.0001 +- 3.7e-05 per 1000 km/s (-2.7 sigma).  Subtract it (the default) or fit it with the lines (stack(..., continuum='fit')): as it is, the line fluxes include it
-```
-
 ```{image} figures/04_02.png
 :width: 100%
 ```
@@ -56,9 +52,9 @@ print("expected:             ", f"{expected['flux'][0]:.3f} Jy km/s")
 ```
 
 ```text
-subtracted (default):  0.404 ± 0.040 Jy km/s
-fitted with the line:  0.404 ± 0.029 Jy km/s
-left in the data:      0.554 ± 0.037 Jy km/s
+subtracted (default):  0.431 ± 0.052 Jy km/s
+fitted with the line:  0.418 ± 0.044 Jy km/s
+left in the data:      0.493 ± 0.042 Jy km/s
 expected:              0.400 Jy km/s
 ```
 

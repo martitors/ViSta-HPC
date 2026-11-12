@@ -23,7 +23,7 @@ its results. To run it yourself:
 | [5. A weak continuum under a strong line](05_a_weak_continuum_under_a) | the continuum takes the size of the line |
 | [6. A weak line on a strong continuum](06_a_weak_line_on_a_strong) | the line takes the size of the continuum |
 | [7. A few galaxies that count much more](07_a_few_galaxies_that_count) | lensed galaxies: natural and democratic weighting, the flux normalisation |
-| [8. Point sources only, extended sources only](08_point_sources_only_extended) | which source model, and what the wrong one does |
+| [8. Points and extended sources](08_points_and_extended_sources) | which source model, what the wrong one does, and what a mixed sample does |
 | [9. Two lines far apart](09_two_lines_far_apart) | measured each on its own |
 | [10. Two lines that blend](10_two_lines_that_blend) | fitted together |
 | [11. A line that is not a Gaussian](11_a_line_that_is_not_a) | broad wings: the flux in the window |

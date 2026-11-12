@@ -11,7 +11,7 @@ galaxy magnified 5 times, observed 4 times deeper.
 ```python
 lensed = simulate.make_sample(
     "lensed", n_sources=2, z_range=(2.3, 2.6), rest_freq_ghz=LINE,
-    line_flux=0.4 * 5, fwhm_kms=300, cont_flux=2e-4 * 5,       # magnified 5 times
+    line_flux=0.4 * 5, fwhm_kms=300, cont_flux=1e-4 * 5,       # magnified 5 times
     size_arcsec=0.8, z_ref=truth["z_ref"],
     noise=0.07 / 4, kappa=1.3, rmax=600, seed=7)        # 4 times deeper
 
@@ -23,18 +23,18 @@ print(open("all14.txt").read())
 
 ```text
 # <ms_path>  <redshift>  <RA>  <Dec>  norm=<NORM>
-sample/galaxy_00.ms  2.026588  10:00:00.56956667  +01:59:54.4681047  norm=1
-sample/galaxy_01.ms  2.065154  10:02:00.56556167  +02:06:14.6322224  norm=1
-sample/galaxy_02.ms  2.286817  10:04:00.84710080  +02:11:47.6919234  norm=1
-sample/galaxy_03.ms  2.437248  10:05:59.38968111  +02:17:46.8676049  norm=1
-sample/galaxy_04.ms  2.484944  10:08:00.24706000  +02:24:08.4628839  norm=1
-sample/galaxy_05.ms  2.603148  10:09:59.37807210  +02:30:02.8785866  norm=1
-sample/galaxy_06.ms  2.716075  10:12:00.60111751  +02:35:51.5873007  norm=1
-sample/galaxy_07.ms  2.777534  10:14:00.56471225  +02:42:01.2020839  norm=1
-sample/galaxy_08.ms  2.860394  10:15:59.02817282  +02:47:56.3165941  norm=1
-sample/galaxy_09.ms  2.870249  10:18:00.58260802  +02:54:03.1715908  norm=1
-sample/galaxy_10.ms  2.915380  10:20:00.13802363  +02:59:55.2607827  norm=1
-sample/galaxy_11.ms  2.918238  10:22:00.49759661  +03:06:05.7918213  norm=1
+sample/galaxy_00.ms  2.026588  10:00:00.96719368  +02:00:08.5382956  norm=1
+sample/galaxy_01.ms  2.065154  10:01:59.55919839  +02:06:08.4777275  norm=1
+sample/galaxy_02.ms  2.286817  10:04:00.41672099  +02:12:01.6349063  norm=1
+sample/galaxy_03.ms  2.437248  10:05:59.95542388  +02:18:08.7857364  norm=1
+sample/galaxy_04.ms  2.484944  10:07:59.26490427  +02:23:51.7829498  norm=1
+sample/galaxy_05.ms  2.603148  10:10:00.86329657  +02:30:07.8837517  norm=1
+sample/galaxy_06.ms  2.716075  10:11:59.53445747  +02:35:50.0817844  norm=1
+sample/galaxy_07.ms  2.777534  10:14:00.44691319  +02:41:47.2381414  norm=1
+sample/galaxy_08.ms  2.860394  10:16:00.23368901  +02:48:02.7757871  norm=1
+sample/galaxy_09.ms  2.870249  10:17:59.75412473  +02:53:46.6399170  norm=1
+sample/galaxy_10.ms  2.915380  10:20:00.21172955  +03:00:02.1567271  norm=1
+sample/galaxy_11.ms  2.918238  10:22:00.13803646  +03:05:55.2607827  norm=1
 lensed/galaxy_00.ms  2.487529  10:00:00.13341461  +02:00:01.0000000  norm=5
 lensed/galaxy_01.ms  2.569164  10:02:00.13342294  +02:06:01.0000000  norm=5
 ```
@@ -53,7 +53,7 @@ two.plot("line")
 ```
 
 ```text
-[ViSta       0.7s] z_ref = 2.6596 (given)
+[ViSta       0.8s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/07_01.png
@@ -73,7 +73,7 @@ natural.plot("line")
 ```
 
 ```text
-[ViSta       1.1s] z_ref = 2.6596 (given)
+[ViSta       1.2s] z_ref = 2.6596 (given)
 ```
 
 ```{image} figures/07_02.png
@@ -118,11 +118,11 @@ print("fourteen, democratic: ", flux(democratic),
 
 ```text
 two lensed alone:      1.999 ± 0.016 Jy km/s
-fourteen, natural:     1.616 ± 0.421 Jy km/s   expected 1.620
+fourteen, natural:     1.616 ± 0.411 Jy km/s   expected 1.609
 ```
 
 ```text
-fourteen, democratic:  0.640 ± 0.147 Jy km/s   expected 0.629
+fourteen, democratic:  0.653 ± 0.144 Jy km/s   expected 0.629
 ```
 
 ## 7.4 When the magnification is known
@@ -139,7 +139,7 @@ delensed.plot("line")
 ```
 
 ```text
-[ViSta       1.0s] z_ref = 2.6596 (given); flux_ref = 1 (given)
+[ViSta       1.4s] z_ref = 2.6596 (given); flux_ref = 1 (given)
 ```
 
 ```{image} figures/07_05.png
@@ -153,7 +153,7 @@ print("expected:                   ", f"{expected['flux'][0]:.3f} Jy km/s")
 ```
 
 ```text
-twelve unlensed (chapter 2): 0.404 ± 0.040 Jy km/s
-fourteen, de-lensed:         0.398 ± 0.017 Jy km/s
+twelve unlensed (chapter 2): 0.431 ± 0.052 Jy km/s
+fourteen, de-lensed:         0.406 ± 0.022 Jy km/s
 expected:                    0.400 Jy km/s
 ```

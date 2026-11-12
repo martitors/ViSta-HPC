@@ -16,7 +16,7 @@ tend to overfit.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Optional
 
 import numpy as np
 
@@ -32,12 +32,6 @@ def gaussian_visibility(b_lambda, flux, theta_arcsec):
                          / _FOUR_LN2)
 
 
-def two_gaussian_visibility(b_lambda, flux1, theta1, flux2, theta2):
-    """Sum of two circular Gaussians: compact plus extended."""
-    return (gaussian_visibility(b_lambda, flux1, theta1)
-            + gaussian_visibility(b_lambda, flux2, theta2))
-
-
 @dataclass
 class UVFitResult:
     """Outcome of one uv-plane fit."""
@@ -50,6 +44,8 @@ class UVFitResult:
     model: str = "gauss"
     converged: bool = False
     theta_at_bound: bool = False
+    flux_error: float = float("nan")          # from the errors given to the fit
+    theta_error: float = float("nan")
 
     def as_dict(self, prefix: str = "") -> dict:
         return {f"{prefix}flux": self.flux,
@@ -64,7 +60,6 @@ class UVFitResult:
 def fit_uv_profile(b_lambda, flux, sigma=None,
                    config: UVFitConfig = UVFitConfig(),
                    bin_ok=None,
-                   theta_prior: Optional[Sequence[float]] = None,
                    theta_fixed: Optional[float] = None) -> UVFitResult:
     """Fit the flux-versus-baseline profile with the configured source model.
 
@@ -82,8 +77,6 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
     bin_ok
         Extra boolean mask of usable annuli, typically the minimum number of
         contributing sources.
-    theta_prior
-        ``(theta_ref, sigma_dex)`` soft tie, overriding ``config.theta_prior``.
     theta_fixed
         FWHM to freeze, overriding the config.  ``0`` means point source.
 
@@ -91,7 +84,7 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
     -------
     UVFitResult
     """
-    from scipy.optimize import curve_fit, least_squares
+    from scipy.optimize import curve_fit
 
     b_lambda = np.asarray(b_lambda, float)
     flux = np.asarray(flux, float)
@@ -108,8 +101,6 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
 
     if theta_fixed is None:
         theta_fixed = config.resolved_theta_fixed()
-    if theta_prior is None:
-        theta_prior = config.theta_prior
 
     def reduced_chi2(model_values, n_par):
         if sigma is None or n_used <= n_par:
@@ -130,91 +121,43 @@ def fit_uv_profile(b_lambda, flux, sigma=None,
                 else gaussian_visibility(b, f, theta)
 
         try:
-            p, _ = curve_fit(model, b_lambda[good], flux[good],
-                             p0=[np.nanmax(flux[good])], sigma=err,
-                             absolute_sigma=sigma is not None, maxfev=10000)
+            p, cov = curve_fit(model, b_lambda[good], flux[good],
+                               p0=[np.nanmax(flux[good])], sigma=err,
+                               absolute_sigma=sigma is not None, maxfev=10000)
         except Exception:
             return UVFitResult(n_bins=n_used, model=name)
         return UVFitResult(flux=float(p[0]), theta_arcsec=theta,
+                           flux_error=float(np.sqrt(cov[0, 0])), theta_error=0.0,
                            params=[float(p[0]), theta],
                            chi2_reduced=reduced_chi2(model(b_lambda[good], *p), 1),
                            n_bins=n_used, model=name, converged=True)
 
-    n_par = 2 if config.model == "gauss" else 4
+    n_par = 2
     if n_used < n_par + 1:
         return UVFitResult(n_bins=n_used, model=config.model)
-    flux0 = float(np.nanmax(flux[good]))
     theta_lo = max(1e-3, float(config.theta_min_arcsec))
+    theta_start = float(np.clip(1.0, theta_lo * 1.001, config.theta_max_arcsec * 0.999))
 
-    def start(theta):
-        """A starting size inside the allowed range."""
-        return float(np.clip(theta, theta_lo * 1.001, config.theta_max_arcsec * 0.999))
-
-    # -- circular Gaussian with a soft tie on the size ----------------------
-    if theta_prior is not None and config.model == "gauss":
-        theta_ref, sigma_dex = float(theta_prior[0]), float(theta_prior[1])
-        if np.isfinite(theta_ref) and theta_ref > 0 and sigma_dex > 0:
-            scale = np.ones(n_used) if sigma is None else err
-
-            def residuals(p):
-                data = (flux[good] - gaussian_visibility(b_lambda[good],
-                                                         p[0], p[1])) / scale
-                prior = np.log10(max(abs(p[1]), 1e-6) / theta_ref) / sigma_dex
-                return np.concatenate([data, [prior]])
-
-            try:
-                solution = least_squares(
-                    residuals, x0=[flux0, start(theta_ref)],
-                    bounds=([-np.inf, theta_lo], [np.inf, config.theta_max_arcsec]),
-                    max_nfev=20000)
-            except Exception:
-                return UVFitResult(n_bins=n_used, model="gauss_prior")
-            f_tot, theta = float(solution.x[0]), abs(float(solution.x[1]))
-            values = gaussian_visibility(b_lambda[good], *solution.x)
-            return UVFitResult(flux=f_tot, theta_arcsec=theta,
-                               params=[f_tot, theta],
-                               chi2_reduced=reduced_chi2(values, n_par),
-                               n_bins=n_used, model="gauss_prior",
-                               converged=True,
-                               theta_at_bound=theta > 0.95 * config.theta_max_arcsec)
-
-    # -- free fit -----------------------------------------------------------
+    # -- circular Gaussian: flux and size -----------------------------------
     try:
-        if config.model == "gauss":
-            p, _ = curve_fit(gaussian_visibility, b_lambda[good], flux[good],
-                             p0=[flux0, start(1.0)], sigma=err,
-                             absolute_sigma=sigma is not None,
-                             bounds=([-np.inf, theta_lo],
-                                     [np.inf, config.theta_max_arcsec]),
-                             maxfev=10000)
-            f_tot, theta = float(p[0]), abs(float(p[1]))
-            values = gaussian_visibility(b_lambda[good], *p)
-        else:
-            p, _ = curve_fit(two_gaussian_visibility, b_lambda[good],
-                             flux[good],
-                             p0=[0.6 * flux0, start(2.5), 0.4 * flux0, start(0.4)],
-                             sigma=err, absolute_sigma=sigma is not None,
-                             bounds=([0, theta_lo, 0, theta_lo],
-                                     [np.inf, config.theta_max_arcsec,
-                                      np.inf, config.theta_max_arcsec]),
-                             maxfev=20000)
-            if p[1] < p[3]:                     # extended component first
-                p = np.array([p[2], p[3], p[0], p[1]])
-            f_tot = float(p[0] + p[2])
-            theta = abs(float(p[1]))            # size of the extended one
-            values = two_gaussian_visibility(b_lambda[good], *p)
+        p, cov = curve_fit(gaussian_visibility, b_lambda[good], flux[good],
+                           p0=[float(np.nanmax(flux[good])), theta_start], sigma=err,
+                           absolute_sigma=sigma is not None,
+                           bounds=([-np.inf, theta_lo], [np.inf, config.theta_max_arcsec]),
+                           maxfev=10000)
     except Exception:
         return UVFitResult(n_bins=n_used, model=config.model)
-
+    f_tot, theta = float(p[0]), abs(float(p[1]))
+    values = gaussian_visibility(b_lambda[good], *p)
     at_bound = theta > 0.95 * config.theta_max_arcsec
-    if config.model == "gauss2":
-        at_bound = max(p[1], p[3]) > 0.95 * config.theta_max_arcsec
+    errors = (np.sqrt(np.diag(cov)) if cov is not None and np.all(np.isfinite(cov))
+              else [float("nan")] * 2)
     return UVFitResult(flux=f_tot, theta_arcsec=theta,
+                       flux_error=float(errors[0]), theta_error=float(errors[1]),
                        params=[float(x) for x in np.atleast_1d(p)],
                        chi2_reduced=reduced_chi2(values, n_par),
                        n_bins=n_used, model=config.model, converged=True,
                        theta_at_bound=bool(at_bound))
 
 
-__all__ = ["gaussian_visibility", "two_gaussian_visibility", "fit_uv_profile",
-           "UVFitResult"]
+__all__ = ["gaussian_visibility", "fit_uv_profile", "UVFitResult"]

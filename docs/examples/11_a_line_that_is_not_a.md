@@ -23,15 +23,15 @@ print(wings)
 ```
 
 ```text
-[ViSta      14.2s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
+[ViSta      16.2s] WARNING: measure: the line is not Gaussian (double peak, wings?): the area and the Gaussian flux differ by +2.4 sigma; the area in the window is quoted
 ```
 
 ```text
-[ViSta       0.4s] z_ref = 2.5250 (median of the sample)
+[ViSta       0.5s] z_ref = 2.5250 (median of the sample)
 ```
 
 ```text
-Stack      wings.zarr: 433,440 rows, 140 channels, 7 s
+Stack      wings.zarr: 433,440 rows, 140 channels, 11 s
 Line       345.796 GHz, 12 sources: detected at 48.7 sigma (S/N 48.8, searched over centre and width)
   flux     0.6295 ± 0.045 Jy km/s, the area under the spectrum in the window
            because the area and the Gaussian fit differ by +2.4 sigma: the line is not a Gaussian
@@ -39,7 +39,7 @@ Line       345.796 GHz, 12 sources: detected at 48.7 sigma (S/N 48.8, searched o
   Gaussian centre +4 ± 4 km/s, FWHM 307 ± 13 km/s, peak 1.71 ± 0.1 mJy
   source   Gaussian, FWHM 0.53 ± 0.03 arcsec
            because it fits better than a point source: delta chi2 = 155.4 (at least 9 needed to call it extended)
-Continuum  subtracted while stacking and measured on its own: none detected (-0.02 ± 0.017 mJy)
+Continuum  subtracted while stacking and measured on its own: none detected (-0.0254 ± 0.017 mJy)
            outside the line window: -1.6e-05 ± 0.003 mJy (-0.0 sigma): nothing left
 Reference  natural weighting, fluxes at z_ref = 2.5250 (median of the sample)
 ```
@@ -61,8 +61,5 @@ print("expected:                   ", f"{simulate.expected(truth_wings)['flux'][
 ```text
 flux in the window (quoted): 0.630 ± 0.045 Jy km/s
 flux of the Gaussian fit:    0.559 ± 0.033 Jy km/s
-```
-
-```text
 expected:                    0.600 Jy km/s
 ```

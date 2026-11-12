@@ -490,21 +490,12 @@ class UVFitConfig:
         ``'point'``  unresolved source, ``V(b) = F_tot``.  Use it when the
         stack is unresolved at the available resolution: a free Gaussian
         would overfit a size the data cannot constrain.
-
-        ``'gauss2'``  two circular Gaussians, for a compact plus extended
-        decomposition.  Needs many well-populated annuli.
     theta_fixed_arcsec
         Freeze the FWHM at this value and fit the flux only.  Equivalent to
         ``model='point'`` when set to 0.
     theta_min_arcsec, theta_max_arcsec
         Range of the fitted FWHM.  Lower the maximum to a physically
         sensible value if the fit converges to the bound.
-    theta_prior
-        ``(theta_ref_arcsec, sigma_dex)``: soft tie of the size to a
-        reference value, typically the continuum size in the same band.
-        It adds ``log10(theta / theta_ref) / sigma_dex`` to the residuals,
-        so the size stays free but pays for wandering off.  A
-        non-destructive alternative to freezing it.
     b_max_klambda
         Ignore annuli beyond this baseline length in the fit.
     min_sources_per_bin
@@ -518,19 +509,17 @@ class UVFitConfig:
         single annulus would then dominate the chi square.
     """
 
-    model: str = "gauss"                # 'gauss' | 'point' | 'gauss2'
+    model: str = "gauss"                # 'gauss' | 'point'
     theta_fixed_arcsec: Optional[float] = None
     theta_min_arcsec: float = 0.0
     theta_max_arcsec: float = 15.0
-    theta_prior: Optional[Tuple[float, float]] = None
     b_max_klambda: Optional[float] = None
     min_sources_per_bin: int = 2
     error_floor_frac: float = 0.1
 
     def __post_init__(self):
-        if self.model not in ("gauss", "point", "gauss2"):
-            raise ValueError("model must be 'gauss', 'point' or 'gauss2', "
-                             f"got {self.model!r}")
+        if self.model not in ("gauss", "point"):
+            raise ValueError(f"model must be 'gauss' or 'point', got {self.model!r}")
 
     def resolved_theta_fixed(self) -> Optional[float]:
         """FWHM to freeze, taking ``model='point'`` into account."""

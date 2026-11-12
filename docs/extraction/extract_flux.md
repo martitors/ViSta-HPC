@@ -42,11 +42,11 @@ length, the Gaussian source (red) and the point source (green, dashed), in
 bold the one used. Grey crosses: the imaginary part, a null test.
 
 ```python
-result.results["continuum"]
-# {'value': 0.000204, 'error': 3.2e-05, 'unit': 'Jy', 'snr': 6.4,
+result["continuum"]
+# {'value': 8.9e-05, 'error': 4.5e-05, 'unit': 'Jy', 'snr': 2.0,
 #  'treatment': 'subtracted, measured on its own',
-#  'size': {'value': 0.59, 'unit': 'arcsec'},
-#  'model': {'chosen': 'gauss', 'size_from': 'line', 'delta_chi2': 1.0, ...}}
+#  'size': {'value': 0.95, 'unit': 'arcsec'},
+#  'model': {'chosen': 'gauss', 'size_from': 'line', 'delta_chi2': 0.6, ...}}
 ```
 
 ## Which source model it gets
@@ -80,7 +80,7 @@ on its own, are always reported side by side, with their difference in
 units of its error:
 
 ```text
-Sizes      each on its own: line 0.59 ± 0.07 arcsec, continuum 0.28 ± 0.15 arcsec: compatible (1.9 sigma apart)
+Sizes      each on its own: line 0.95 ± 0.12 arcsec, continuum 0.76 ± 1.09 arcsec: compatible (0.2 sigma apart)
 ```
 
 If they differ clearly, gas and dust do not have the same extent, and
@@ -97,10 +97,20 @@ repeats the continuum alone; `measure="line"` the lines alone.
    ([Weighting](weighting)).
 2. **The mean per annulus**: over the channels that every source covers,
    annulus by annulus. Annuli with fewer than two sources are left out.
-3. **The source model**: fitted to those means against the baseline length.
-4. **The errors**: from the bootstrap over the sources, which repeats steps
-   1 to 3 on resampled stacks. This is why the continuum needs at least two
-   sources and `n_bootstrap >= 2`.
+3. **The source model**: fitted to those means against the baseline length,
+   every annulus weighted by its thermal noise.
+4. **The errors**: two, and the larger is quoted, as for the line.
+   - *thermal*: from the noise measured in the cells (the scatter of their
+     visibilities);
+   - *bootstrap*: steps 1 to 3 repeated on stacks of galaxies drawn with
+     replacement. It includes how much the galaxies differ.
+
+**Why both.** With few galaxies the bootstrap alone is too small, and noisy
+from one annulus to the next: an annulus where it happens to be small would
+decide the fit. On simulated stacks of 5 to 10 galaxies it gave fluxes off
+by several of its own errors ([Validation](validation)). The thermal noise
+does not depend on the number of galaxies. Both are in the results
+(`flux_total_error_thermal`, `flux_total_error_bootstrap`).
 
 The function is `vista.extract.measure_continuum`; `result.continuum` is its
 result (a `ContinuumResult`).

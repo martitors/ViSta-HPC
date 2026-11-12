@@ -12,7 +12,8 @@ The options are listed in [Parameters](parameters).
    :members: stack, extract, run, help, files
 
 .. autoclass:: vista.RunResult
-   :members: plot, results, report
+   :members: plot, report, as_dict, keys
+   :special-members: __getitem__
 
 .. autofunction:: vista.compare
 
@@ -50,9 +51,6 @@ The options are listed in [Parameters](parameters).
 
 .. autofunction:: vista.extract.plots_line.plot_line_result
 ```
-
-`examples/plot_line.py` draws the same figures from the output files alone
-(NumPy and matplotlib), to restyle them ([Output files](../extraction/outputs)).
 
 ## The steps underneath
 

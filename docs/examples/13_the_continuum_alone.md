@@ -32,8 +32,8 @@ print(cont)
 
 ```text
 Stack      cont.zarr: 361,200 rows, 64 channels, 3 s
-Continuum  10 sources, every channel: 0.312 ± 0.017 mJy (S/N 18.7), Gaussian, FWHM 0.60 ± 0.05 arcsec
-           because its own Gaussian improves the fit by delta chi2 = 60.2 (at least 9 needed to call it extended)
+Continuum  10 sources, every channel: 0.31 ± 0.019 mJy (S/N 16.1), Gaussian, FWHM 0.60 ± 0.06 arcsec
+           because its own Gaussian improves the fit by delta chi2 = 166.3 (at least 9 needed to call it extended)
 Reference  natural weighting, fluxes at z_ref = 2.6663 (median of the sample)
 ```
 
@@ -47,13 +47,13 @@ cont.plot("continuum_uv")
 
 ```python
 print("measured:", flux(cont, "continuum"))
-print("size:    ", cont.results["continuum"]["size"])
+print("size:    ", cont["continuum"]["size"])
 print("expected:", f"{simulate.expected(truth_cont)['continuum'] * 1e3:.3f} mJy")
 ```
 
 ```text
-measured: 0.312 ± 0.017 mJy
-size:     {'value': 0.6049742963772008, 'unit': 'arcsec', 'error': 0.04968505782017133}
+measured: 0.310 ± 0.019 mJy
+size:     {'value': 0.6000756525377018, 'unit': 'arcsec', 'error': 0.05968234171282386}
 ```
 
 ```text

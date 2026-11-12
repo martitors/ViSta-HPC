@@ -6,7 +6,7 @@ report in words, a dictionary of numbers, figures, and files on disk.
 ```python
 result = v.run()
 print(result)            # the report
-result.results           # the numbers
+result["flux"]           # the numbers
 result.plot()            # the figures
 result.files             # the files
 ```
@@ -25,25 +25,24 @@ result.files             # the files
   on its own, and how far apart they are;
 - **Reference**: the weighting and the redshift the fluxes refer to.
 
-## The numbers: `result.results`
+## The numbers: `result[...]`
 
-One dictionary with everything measured. Every quantity has its `value`,
-`error` and `unit`.
+The result is read like a dictionary: `result["flux"]`. Every quantity
+has its `value`, `error` and `unit`; `result.keys()` lists them.
 
 ```python
-res = result.results
-res["flux"]          # {'value': 0.404, 'error': 0.040, 'unit': 'Jy km/s', 'method': 'fit', 'reason': ...}
-res["flux_fit"]      # area of the Gaussian fit
-res["flux_window"]   # area under the spectrum in the window
-res["centre"], res["fwhm"], res["peak"]
-res["snr"], res["significance"]
-res["size"]          # FWHM of the source used for the line (0: a point)
-res["model"]         # {'chosen': 'gauss', 'size_from': 'own fit', 'probability': ..., 'delta_chi2': ...}
-res["window"], res["noise"]
-res["continuum"]     # flux density, S/N, size, model, how it was treated
-res["sizes"]         # line and continuum, each on its own, and their difference in sigma
-res["lines"]         # the same keys for every line (the ones above are of the first)
-print(res["summary"])  # all of it in words: the same as print(result)
+result["flux"]          # {'value': 0.431, 'error': 0.052, 'unit': 'Jy km/s', 'method': 'fit', 'reason': ...}
+result["flux_fit"]      # area of the Gaussian fit
+result["flux_window"]   # area under the spectrum in the window
+result["centre"], result["fwhm"], result["peak"]
+result["snr"], result["significance"]
+result["size"]          # FWHM of the source used for the line (0: a point)
+result["model"]         # {'chosen': 'gauss', 'size_from': 'own fit', 'probability': ..., 'delta_chi2': ...}
+result["window"], result["noise"]
+result["continuum"]     # flux density, S/N, size, model, how it was treated
+result["sizes"]         # line and continuum, each on its own, and their difference in sigma
+result["lines"]         # the same keys for every line (the ones above are of the first)
+result["summary"]    # all of it in words: the same as print(result)
 ```
 
 - **Units.** Fluxes are in data units × km/s for a line (Jy km/s for data
@@ -147,39 +146,11 @@ Every file starts with `output_name` (`stacked` by default). With
 The first line also has the size (`theta_fwhm_arcsec`, `size_model`) and
 the χ² of the fit.
 
-## Figures in your own style: `plot_line.py`
+## Figures in your own style
 
-`examples/plot_line.py` draws the same three figures from the output files
-alone, with only NumPy and Matplotlib (it does not import ViSta, so it can be
-copied next to a paper):
-
-```bash
-python examples/plot_line.py <prefix> --unit Jy --rebin 2 --vlim -800 800 --format pdf
-python examples/plot_line.py <prefix> --style thesis.mplstyle --only profile
-```
-
-Colours, line styles, sizes and fonts are in the `STYLE` dictionary at the
-top, or in a Matplotlib style file (`--style`, applied on top); each figure is
-one function (`plot_profile`, `plot_uv`, `plot_noise`) that returns the
-figure, commented on what every element is and how it is computed — e.g. the
-rebinned errors use the channel correlation matrix,
-`var(mean) = Σᵢⱼ Rᵢⱼ σᵢ σⱼ / n²`, not `σ / √n`. From Python:
-
-```python
-import plot_line as pl
-pl.STYLE["model"]["color"] = "C2"
-pl.apply_style()
-d = pl.load("<prefix>")
-fig = pl.plot_profile(d, unit="Jy", rebin=2, reference=(v_true, s_true))
-fig.axes[0].set_ylim(-3, 6)
-fig.savefig("line.pdf")
-```
-
-`plot_profile` and `plot_uv` take a `reference=(x, y)` curve to compare with,
-in data units: the true signal of a simulation (as in the [Examples](../examples/index)),
-another line, a model. Without `_diagnostics.npz` (outputs of older
-versions) the noise histograms are replaced by the rms values of the JSON
-and the rebinned errors ignore the correlation.
+Every figure is drawn from the files above. To restyle one, set Matplotlib
+(`plt.rcParams`, a style file) before `result.plot(...)`, or read the
+tables (`_profile.txt`, `_uvamp.txt`, `_noise.txt`) and plot them your way.
 
 ## Things to check
 

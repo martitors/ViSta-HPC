@@ -47,7 +47,7 @@ w150.plot("line")
 ```
 
 ```text
-[ViSta      11.4s] WARNING: measure: the line: the area flux differs from the Gaussian by -3.7 sigma, but the window holds only 78% of the fitted line: widen the window (the Gaussian flux is quoted)
+[ViSta      13.6s] WARNING: measure: the line: the area flux differs from the Gaussian by -2.9 sigma, but the window holds only 77% of the fitted line: widen the window (the Gaussian flux is quoted)
 ```
 
 ```{image} figures/03_03.png
@@ -62,9 +62,9 @@ print("expected:   ", f"{expected['flux'][0]:.3f} Jy km/s")
 ```
 
 ```text
-window ±500: 0.371 ± 0.057 Jy km/s
-window ±320: 0.392 ± 0.040 Jy km/s
-window ±150: 0.303 ± 0.029 Jy km/s
+window ±500: 0.442 ± 0.062 Jy km/s
+window ±320: 0.430 ± 0.049 Jy km/s
+window ±150: 0.320 ± 0.030 Jy km/s
 expected:    0.400 Jy km/s
 ```
 
@@ -87,8 +87,8 @@ print("expected at z_ref:            ", f"{expected['flux'][0]:.3f} Jy km/s")
 ```
 
 ```text
-with the correction (default): 0.404 ± 0.040 Jy km/s
-without:                       0.436 ± 0.060 Jy km/s
+with the correction (default): 0.431 ± 0.052 Jy km/s
+without:                       0.442 ± 0.048 Jy km/s
 expected at z_ref:             0.400 Jy km/s
 ```
 
@@ -107,12 +107,12 @@ print("expected:                     ", f"{expected['flux'][0]:.3f} Jy km/s")
 ```
 
 ```text
-[ViSta       0.3s] z_ref = 2.6596 (median of the sample)
+[ViSta       0.4s] z_ref = 2.6596 (median of the sample)
 ```
 
 ```text
-with the correction (default): 0.404 ± 0.040 Jy km/s
-without:                       0.372 ± 0.032 Jy km/s
+with the correction (default): 0.431 ± 0.052 Jy km/s
+without:                       0.397 ± 0.050 Jy km/s
 expected:                      0.400 Jy km/s
 ```
 

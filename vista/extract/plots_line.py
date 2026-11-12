@@ -56,14 +56,6 @@ def _rebin(v, y, e, corr, n):
     return vb, yb, eb
 
 
-def _pm(value, error):
-    """'value +- error' with the error to two significant digits."""
-    if not (np.isfinite(value) and np.isfinite(error)) or error <= 0:
-        return f"{value:.3g}"
-    digits = max(0, 1 - int(np.floor(np.log10(abs(error)))))
-    return f"{value:.{digits}f} $\\pm$ {error:.{digits}f}"
-
-
 def _scale(unit, typical=None):
     """Factor and label for the flux-density axis: mJy for data in Jy whose
     typical value (e.g. the noise of a channel) is below 1 Jy."""
@@ -97,23 +89,6 @@ _ORANGE = "#c8650a"            # the text of what belongs to the window
 def _window_label(lo, hi):
     return (f"Window ±{hi:.0f} km/s" if abs(lo + hi) < 1e-6 * max(abs(hi), 1)
             else f"Window {lo:+.0f}, {hi:+.0f} km/s")
-
-
-def _continuum_label(s, f, ulabel, continuum=None):
-    """The continuum in the legend: its value and what was done with it."""
-    rc = s.get("continuum_residual") or {}
-    cf = s.get("continuum_fit")
-    if cf:
-        return f"Cont. {cf['flux_density'] * f:.2g} {ulabel} (fitted)"
-    if rc.get("detected"):
-        return f"Cont. {rc['offset'] * f:.2g} {ulabel} (left in the data)"
-    if rc.get("continuum_subtracted"):
-        if continuum is not None:
-            c = continuum.summary
-            if c["flux_total"] > 2 * c["flux_total_error"]:
-                return f"Cont. {c['flux_total'] * f:.2g} {ulabel} (subtracted)"
-        return "Cont. subtracted"
-    return "Cont. none found" if rc else "Cont. not measured"
 
 
 def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = None,
@@ -272,13 +247,6 @@ def plot_profile(result, line: Optional[Lines] = None, path: Optional[str] = Non
         else:
             axn.set_xlim(v[used].min() - dvb, v[used].max() + dvb)
     return _finish(fig, path)
-
-
-def _size_text(model, theta):
-    """'Gaussian, FWHM 0.46"' or 'point source'."""
-    if not theta:
-        return "point source"
-    return f"Gaussian, FWHM {theta:.2f}\"" + (" (fixed)" if model == "fixed" else "")
 
 
 _GREEN = "#1e8449"             # the point-source model (blue is the continuum)

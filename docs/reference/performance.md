@@ -1,92 +1,63 @@
 # Performance
 
-## Stacking: ViSta 1.0 (CASA) and ViSta-HPC
+**In one sentence.** The stacking is limited by reading the inputs and
+writing the stack, not by the computing: a Zarr stack, written in parallel,
+is the fast path.
 
-ViSta-HPC 2.3, the stack written as a Measurement Set. Leonardo (CINECA), one node: 32-core Intel Xeon Platinum 8358 and an NVIDIA
-A100; input and output on Lustre. 50 datasets, 1000 output channels,
-2 readers, 32 OpenMP threads (GPU: 20 chunks per launch); medians of 3 runs.
-ViSta 1.0 is the CASA pipeline of the paper (restframing, centering,
-rebinning, stacking) on the same data: median of 3 runs (200 channels) and
-mean of 2 runs (2048 channels).
+## Against ViSta 1.0 (CASA)
+
+The numbers of Torsello et al. (2026, Proc. SPIE 14153), with the stack
+written as a Measurement Set. Leonardo (CINECA), one node: 32-core Intel
+Xeon Platinum 8358 and an NVIDIA A100; input and output on Lustre. 50
+datasets, 2 readers, 32 OpenMP threads (GPU: 20 chunks per launch); medians
+of 3 runs. ViSta 1.0 is the CASA pipeline (restframing, centring,
+rebinning, stacking) on the same data.
 
 | Sample | ViSta 1.0 (CASA) | ViSta-HPC, CPU | ViSta-HPC, GPU |
 |---|---|---|---|
 | 50 MS × 200 channels, one setup | 308.5 s | 18.5 s (×16.7) | 18.9 s (×16.3) |
 | 50 MS × 2048 channels, mixed telescopes, redshifts and channel widths | 833.5 s | 27.4 s (×30) | 28.6 s (×29) |
 
-Adding OpenMP threads, readers or a larger GPU batch does not shorten these
-runs: the single writer sets the pace.
+More OpenMP threads, readers or a larger GPU batch did not shorten these
+runs: the single writer of the Measurement Set set the pace, and for the
+same reason the GPU gave the time of the CPU.
 
-The output is the same as the previous version: bit-identical on the CPU
-(compared column by column, subtables included, independently of the row
-order); on the GPU a few values differ in the last float32 digit, because the
-phase is computed per channel instead of by recurrence.
+## Zarr or Measurement Set
 
-## The Zarr stack and the extraction (v2.4)
+On a 2-core test machine, inputs in the page cache: two simulated ALMA
+datasets of 541,800 rows × 120 channels stacked on 160 channels (30% of the
+output empty, flagged).
 
-Measured on a 2-core test machine (not
-Leonardo), with the inputs in the page cache: two simulated ALMA datasets of
-541,800 rows × 120 channels, labelled TOPO, stacked with `frame="LSRK"` on 160
-channels (30% of the output empty, flagged). v2.3 is the previous version
-(MS output, extraction with casatools); "v2.4, MS" is `output_format="ms"`
-and the new extraction run on that MS.
-
-| Step | v2.3 (MS, casatools) | v2.4, MS | v2.4, Zarr |
-|---|---|---|---|
-| stacking, whole run | 13–21 s | 13.5 s | 10–11 s |
-| of which writing (per writer) | 9–17 s | 9.6 s | 2.7–4.1 s (4 writers) |
-| size of the stack | 2.8 GB | 2.8 GB | 0.86 GB |
-| continuum subtraction (order 0) | 224 s | 28 s | 8.6 s |
-| compression into statistics | 225 s | 22 s | 4.8 s |
-| peak memory of the extraction | 1.9 GB | 1.0 GB | 0.35 GB |
-| stack after the subtraction | 8.0 GB | 8.0 GB | 1.5 GB |
+| Step | `output_format="ms"` | Zarr (default) |
+|---|---|---|
+| stacking, whole run | 13.5 s | 10–11 s |
+| of which writing (per writer) | 9.6 s | 2.7–4.1 s (4 writers) |
+| size of the stack | 2.8 GB | 0.86 GB |
+| continuum subtraction, on its own | 28 s | 8.6 s |
+| compression into statistics, on its own | 22 s | 4.8 s |
+| stack after the subtraction | 8.0 GB | 1.5 GB |
 
 `export_ms` of this store takes 14 s. The emptier the grid, the larger the
-gain of the store on disk: with 88% of the grid empty (10 datasets × 200
-channels on 1000 channels) it was 182 MB against 1.6 GB.
+gain on disk: with 88% of the grid empty (10 datasets × 200 channels on
+1000 channels) the store was 182 MB against 1.6 GB. The two formats hold
+the same numbers.
 
-The results are the same: `output_format="ms"` and `export_ms` give the MS
-of v2.3 bit for bit (1,083,600 rows, every column and subtable); the
-continuum and the subtracted visibilities differ from v2.3 only in the last
-float32 digit (closed-form least squares instead of `np.polyfit`), the line
-statistics by less than 10⁻⁹ in relative terms, with identical counts. The
-continuum statistics change only where they should: the flagged, empty
-channels no longer enter the fit of the continuum (see the changelog).
+In a run with `extract()`, the subtraction and the compression are done
+while the stack is written (one pass), so the stack is not read back:
+17 s instead of 21.5 s on this machine, and more on a node with more cores.
 
-## One pass (v2.5)
+## Readers, writers, threads
 
-On the 2-core test machine (1,083,600 rows, 160 channels, inputs in the page
-cache), stacking, continuum subtraction and compression in one pass instead
-of three: MS stack 51 s → 26 s; Zarr stack 21.5 s → 17 s. With 2 cores the
-computing of the three steps competes with the readers and the writers, so on
-Zarr most of the time saved by not reading the stack back is spent there; on
-a node with more cores the stacking is limited by reading and the extra
-computing is hidden.
-
-## Readers, writers, threads (v3.0)
-
-From v3.0 the readers, the writers and the kernel threads share the cores
-the process may use (its CPU affinity, a SLURM allocation, a container
-quota): readers and writers about a quarter each (at most 8), the kernel the
-rest; on two cores one of each. Until v2.5.1 the defaults were 2 readers, 4
-writers and all the cores for the kernel, and `OMP_PROC_BIND=close` pinned
-the main thread — and with it every reader process and writer thread — to a
-single core. On the 2-core test machine, the twelve simulated datasets of the
-[Examples](../examples/index) (433,440 rows, 90 channels; stacking,
-subtraction and compression in one pass, Zarr), best of two or three runs (they vary by about 5%):
-
-| | time |
-|---|---|
-| v2.5.1 defaults (2 readers, 4 writers, 2 threads, pinned) | 9.0 s |
-| the same numbers, not pinned | 7.4 s |
-| v3.0 defaults (1 reader, 1 writer, 1 thread, not pinned) | 6.6 s |
-
-More workers than cores only made them compete: 2 readers, 2 writers and 2
-threads took 7.8 s.
+The readers, the writers and the kernel threads share the cores the
+process may use (its CPU affinity, a SLURM allocation, a container quota):
+readers and writers about a quarter each (at most 8), the kernel the rest;
+on two cores one of each. More workers than cores only make them compete:
+on two cores, the twelve datasets of the [Examples](../examples/index)
+stack in 6.6 s with one of each and in 7.8 s with two of each.
 
 ## CPU or GPU?
 
-On the Leonardo runs above (MS output) the stacking was limited by the single
-writer of the Measurement Set, so the GPU gave the same time as the CPU. With
-the parallel Zarr writers the limit moves towards reading and computing,
-where the GPU can help.
+`ViSta(..., device="gpu")` runs the kernel on the GPU;
+`benchmarks/gpu_check.py` checks that it gives what the CPU gives, to the
+last digits of single precision. The GPU helps when the computing is
+what limits the run: many channels, fast disks, the Zarr stack.

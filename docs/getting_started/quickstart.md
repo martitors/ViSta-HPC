@@ -56,17 +56,17 @@ print(result)
 ```
 
 ```text
-Line       345.796 GHz, 12 sources: detected at 18.5 sigma (S/N 18.8, searched over centre and width)
-  flux     0.4035 ± 0.04 Jy km/s, the area of the Gaussian fit
-           because the area agrees with the Gaussian (-1.2 sigma)
-           Gaussian fit 0.4035 ± 0.04; area in the window (-500 to +500 km/s) 0.3713 ± 0.057
-  Gaussian centre +15 ± 10 km/s, FWHM 284 ± 21 km/s, peak 1.34 ± 0.13 mJy
-  source   Gaussian, FWHM 0.59 ± 0.07 arcsec
-           because it fits better than a point source: delta chi2 = 28.1 (at least 9 needed to call it extended)
-Continuum  subtracted while stacking and measured on its own: 0.204 ± 0.032 mJy (S/N 6.4), Gaussian, FWHM 0.59 arcsec
-           because the source measured on the line is used: its own Gaussian improves the fit by delta chi2 = 1.0 (at least 9 needed to call it extended)
-           outside the line window: 0.0036 ± 0.006 mJy (+0.6 sigma): nothing left
-Sizes      each on its own: line 0.59 ± 0.07 arcsec, continuum 0.28 ± 0.15 arcsec: compatible (1.9 sigma apart)
+Line       345.796 GHz, 12 sources: detected at 13.8 sigma (S/N 14.1, searched over centre and width)
+  flux     0.4314 ± 0.052 Jy km/s, the area of the Gaussian fit
+           because the area agrees with the Gaussian (+0.3 sigma)
+           Gaussian fit 0.4314 ± 0.052; area in the window (-500 to +500 km/s) 0.4422 ± 0.062
+  Gaussian centre -12 ± 11 km/s, FWHM 295 ± 26 km/s, peak 1.37 ± 0.17 mJy
+  source   Gaussian, FWHM 0.95 ± 0.12 arcsec
+           because it fits better than a point source: delta chi2 = 52.8 (at least 9 needed to call it extended)
+Continuum  subtracted while stacking and measured on its own: 0.0894 ± 0.045 mJy (S/N 2.0), Gaussian, FWHM 0.95 arcsec
+           because the source measured on the line is used: its own Gaussian improves the fit by delta chi2 = 0.6 (at least 9 needed to call it extended)
+           outside the line window: 0.0054 ± 0.0078 mJy (+0.7 sigma): nothing left
+Sizes      each on its own: line 0.95 ± 0.12 arcsec, continuum 0.76 ± 1.09 arcsec: compatible (0.2 sigma apart)
 Reference  natural weighting, fluxes at z_ref = 2.6596 (median of the sample)
 ```
 
@@ -82,13 +82,13 @@ The report says what was measured **and why each choice was made**:
   they agree.
 - **Reference**: the weighting, and the redshift the fluxes refer to.
 
-The same numbers are in a dictionary, each with its value, error and unit:
+The same numbers are read from the result like from a dictionary, each
+with its value, error and unit:
 
 ```python
-res = result.results
-res["flux"]        # {'value': 0.4035, 'error': 0.0396, 'unit': 'Jy km/s', 'method': 'fit', ...}
-res["size"]        # {'value': 0.59, 'error': 0.07, 'unit': 'arcsec'}
-res["continuum"]   # flux density, S/N, size, model
+result["flux"]        # {'value': 0.4314, 'error': 0.0519, 'unit': 'Jy km/s', 'method': 'fit', ...}
+result["size"]        # {'value': 0.95, 'error': 0.12, 'unit': 'arcsec'}
+result["continuum"]   # flux density, S/N, size, model
 ```
 
 ## 4. Look at the figures

@@ -173,7 +173,7 @@ examples/04_not_subtracting_the
 examples/05_a_weak_continuum_under_a
 examples/06_a_weak_line_on_a_strong
 examples/07_a_few_galaxies_that_count
-examples/08_point_sources_only_extended
+examples/08_points_and_extended_sources
 examples/09_two_lines_far_apart
 examples/10_two_lines_that_blend
 examples/11_a_line_that_is_not_a

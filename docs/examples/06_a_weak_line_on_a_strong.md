@@ -19,22 +19,22 @@ print(weak)
 ```
 
 ```text
-[ViSta       8.8s] z_ref = 2.5073 (median of the sample)
+[ViSta       9.4s] z_ref = 2.5073 (median of the sample)
 ```
 
 ```text
-Stack      weak.zarr: 433,440 rows, 90 channels, 5 s
+Stack      weak.zarr: 433,440 rows, 90 channels, 8 s
 Line       345.796 GHz, 12 sources: detected at 4.9 sigma (S/N 5.6, searched over centre and width)
-  flux     0.2049 ± 0.061 Jy km/s, the area of the Gaussian fit
+  flux     0.2023 ± 0.061 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (+0.0 sigma)
-           Gaussian fit 0.2049 ± 0.061; area in the window (-500 to +500 km/s) 0.2058 ± 0.063
-  Gaussian centre -3 ± 34 km/s, FWHM 343 ± 88 km/s, peak 0.562 ± 0.17 mJy
-  source   Gaussian, FWHM 0.77 arcsec
+           Gaussian fit 0.2023 ± 0.061; area in the window (-500 to +500 km/s) 0.2025 ± 0.062
+  Gaussian centre -3 ± 34 km/s, FWHM 343 ± 88 km/s, peak 0.555 ± 0.17 mJy
+  source   Gaussian, FWHM 0.76 arcsec
            because its own Gaussian improves the fit by delta chi2 = 7.2 only (at least 9 needed to call it extended), and the continuum is extended: the size of the continuum is used
-Continuum  subtracted while stacking and measured on its own: 1.01 ± 0.03 mJy (S/N 33.9), Gaussian, FWHM 0.77 ± 0.05 arcsec
-           because its own Gaussian improves the fit by delta chi2 = 104.8 (at least 9 needed to call it extended)
+Continuum  subtracted while stacking and measured on its own: 1.01 ± 0.062 mJy (S/N 16.3), Gaussian, FWHM 0.76 ± 0.06 arcsec
+           because its own Gaussian improves the fit by delta chi2 = 88.4 (at least 9 needed to call it extended)
            outside the line window: -0.0017 ± 0.0057 mJy (-0.3 sigma): nothing left
-Sizes      each on its own: line 0.91 arcsec, continuum 0.77 ± 0.05 arcsec
+Sizes      each on its own: line 0.91 arcsec, continuum 0.76 ± 0.06 arcsec
 Reference  natural weighting, fluxes at z_ref = 2.5073 (median of the sample)
 ```
 
@@ -79,7 +79,7 @@ print("expected:                      ", f"{expected_weak['flux'][0]:.3f} Jy km/
 ```
 
 ```text
-with the size of the continuum: 0.205 ± 0.061 Jy km/s
+with the size of the continuum: 0.202 ± 0.061 Jy km/s
 as a point:                     0.116 ± 0.035 Jy km/s
 expected:                       0.200 Jy km/s
 ```

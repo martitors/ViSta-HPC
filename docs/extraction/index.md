@@ -33,7 +33,7 @@ print(result)
 | [The continuum](extract_flux.md) | how the continuum is measured, which size it gets, the continuum alone |
 | [Weighting and normalisation](weighting.md) | natural or democratic; the redshift and primary-beam corrections; the flux normalisation |
 | [Output files and figures](outputs) | the `results` dictionary, the figures, the files, what to check |
-| [Validation](validation) | how well it works on simulations; uv plane against image plane |
+| [Validation](validation) | how well it works on simulations: bias, scatter, and whether the errors hold |
 
 ## Why not image the stack?
 

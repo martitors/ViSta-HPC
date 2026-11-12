@@ -183,7 +183,8 @@ __global__ void vista_kernel(
         uvw_out[grow*3 + 1] = it.R[3]*u + it.R[4]*v + it.R[5]*w;
         uvw_out[grow*3 + 2] = it.R[6]*u + it.R[7]*v + it.R[8]*w;
     }
-    const double proj = u*it.dl + v*it.dm + w*it.dn;
+    // exact delay w_new - w_old, in the same order as the CPU kernel
+    const double proj = (it.R[6]*u + it.R[7]*v + it.R[8]*w) - w;
 
     // phase shift + rebinning, one output channel per thread
     for (int j = threadIdx.x; j < ncn; j += blockDim.x)

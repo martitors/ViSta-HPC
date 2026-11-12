@@ -25,7 +25,7 @@ print(far)
 ```
 
 ```text
-Stack      far.zarr: 433,440 rows, 144 channels, 7 s
+Stack      far.zarr: 433,440 rows, 144 channels, 11 s
 Line 1     345.796 GHz, 12 sources: detected at 39.3 sigma (S/N 39.4, searched over centre and width)
   flux     0.3955 ± 0.015 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (-0.1 sigma)
@@ -40,7 +40,7 @@ Line 2     344.066 GHz, 12 sources: detected at 20.3 sigma (S/N 20.4, searched o
   Gaussian centre -8 ± 6 km/s, FWHM 229 ± 16 km/s, peak 0.85 ± 0.067 mJy
   source   Gaussian, FWHM 0.54 ± 0.06 arcsec
            because it fits better than a point source: delta chi2 = 33.7 (at least 9 needed to call it extended)
-Continuum  subtracted while stacking and measured on its own: none detected (0.00239 ± 0.0064 mJy)
+Continuum  subtracted while stacking and measured on its own: none detected (-0.00246 ± 0.011 mJy)
            outside the line window: -0.0099 ± 0.005 mJy (-2.0 sigma): nothing left
 Reference  natural weighting, fluxes at z_ref = 2.2867 (median of the sample)
 ```
@@ -54,7 +54,7 @@ far.plot("line")
 ```
 
 ```python
-for k, line in enumerate(far.results["lines"]):
+for k, line in enumerate(far["lines"]):
     print(f"line {k + 1}: {line['flux']['value']:.3f} ± {line['flux']['error']:.3f} Jy km/s"
           f"   expected {simulate.expected(truth_far)['flux'][k]:.3f}")
 ```

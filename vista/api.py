@@ -307,27 +307,37 @@ class RunResult:
             out["difference_sigma"] = float(abs(a - b) / np.hypot(ea, eb))
         return out
 
-    @property
-    def results(self):
+    def __getitem__(self, key):
+        """``result["flux"]``: one of the quantities of :meth:`as_dict`."""
+        return self.as_dict()[key]
+
+    def __contains__(self, key):
+        return key in self.as_dict()
+
+    def keys(self):
+        """The quantities that ``result[...]`` gives."""
+        return self.as_dict().keys()
+
+    def as_dict(self):
         """Everything measured, in one dictionary; every quantity with its
-        ``value``, ``error`` and ``unit``::
+        ``value``, ``error`` and ``unit``.  ``result[key]`` reads one of
+        them::
 
-            res = result.results
-            res["flux"]            # the line flux quoted, and how it was measured
-            res["flux_fit"]        # area of the Gaussian fit
-            res["flux_window"]     # area under the spectrum in the window
-            res["centre"], res["fwhm"], res["peak"]
-            res["snr"]             # S/N of the line
-            res["significance"]    # in sigma, after the search over centre and width
-            res["size"]            # FWHM of the source used for the line (0: a point)
-            res["model"]           # source model chosen, with its probability
-            res["window"]          # km/s
-            res["noise"]           # per channel
-            res["continuum"]       # flux density, size, model, how it was treated
-            res["sizes"]           # line and continuum, each on its own, and their agreement
-            res["summary"]         # all of it in words (print it)
+            result["flux"]            # the line flux quoted, and how it was measured
+            result["flux_fit"]        # area of the Gaussian fit
+            result["flux_window"]     # area under the spectrum in the window
+            result["centre"], result["fwhm"], result["peak"]
+            result["snr"]             # S/N of the line
+            result["significance"]    # in sigma, after the search over centre and width
+            result["size"]            # FWHM of the source used for the line (0: a point)
+            result["model"]           # source model chosen, with its probability
+            result["window"]          # km/s
+            result["noise"]           # per channel
+            result["continuum"]       # flux density, size, model, how it was treated
+            result["sizes"]           # line and continuum, each on its own, and their agreement
+            result["summary"]         # all of it in words (the same as print(result))
 
-        With several lines these are of the first; ``res["lines"]`` has the
+        With several lines these are of the first; ``result["lines"]`` has the
         same for every line.  Without a line (the continuum only) the keys
         of the line are missing.
         """

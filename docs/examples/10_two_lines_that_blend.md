@@ -19,15 +19,15 @@ print(blend)
 ```
 
 ```text
-[ViSta      13.8s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.3 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
+[ViSta      16.5s] WARNING: measure: line 2: its window overlaps line(s) 1, so its area flux holds part of them (+8.3 sigma from the Gaussian flux); the Gaussian flux of the joint fit separates them, and is quoted
 ```
 
 ```text
-[ViSta       0.3s] z_ref = 2.2867 (median of the sample)
+[ViSta       0.4s] z_ref = 2.2867 (median of the sample)
 ```
 
 ```text
-Stack      blend.zarr: 433,440 rows, 110 channels, 6 s
+Stack      blend.zarr: 433,440 rows, 110 channels, 10 s
 Line 1     345.796 GHz, 12 sources: detected at 35.4 sigma (S/N 35.5, searched over centre and width)
   flux     0.4076 ± 0.023 Jy km/s, the area of the Gaussian fit
            because the area agrees with the Gaussian (+1.9 sigma)
@@ -40,7 +40,7 @@ Line 2     345.335 GHz, 12 sources: detected at 33.8 sigma (S/N 33.9, searched o
            because the window overlaps line(s) 1: only the joint Gaussian fit separates them
            Gaussian fit 0.1762 ± 0.016; area in the window (-300 to +300 km/s) 0.26 ± 0.017
   Gaussian centre -9 ± 8 km/s, FWHM 224 ± 19 km/s, peak 0.739 ± 0.065 mJy
-Continuum  subtracted while stacking and measured on its own: none detected (0.012 ± 0.0076 mJy)
+Continuum  subtracted while stacking and measured on its own: none detected (0.0162 ± 0.014 mJy)
            outside the line window: -8.3e-05 ± 0.0034 mJy (-0.0 sigma): nothing left
 Reference  natural weighting, fluxes at z_ref = 2.2867 (median of the sample)
 ```
@@ -54,7 +54,7 @@ blend.plot("line")
 ```
 
 ```python
-for k, line in enumerate(blend.results["lines"]):
+for k, line in enumerate(blend["lines"]):
     print(f"line {k + 1}: {line['flux']['value']:.3f} ± {line['flux']['error']:.3f} Jy km/s"
           f"   expected {simulate.expected(truth_blend)['flux'][k]:.3f}")
 ```

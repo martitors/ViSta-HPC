@@ -3,7 +3,7 @@
 // =============================================================================
 //
 //   VistaItem          : one block of rows of ONE MS (host pointers)
-//   vista_geometry     : UVW rotation matrix + (dl, dm, dn) + 1/(1+z)
+//   vista_geometry     : UVW rotation matrix, the exact delay (dl, dm, dn), 1/(1+z)
 //   vista_median_df    : median |df| of a frequency grid
 //   vista_df_old_k     : per-channel width of the input grid (centred diff.)
 //   vista_build_map    : input -> output channel map with the overlap weights
@@ -78,10 +78,14 @@ inline VistaGeometry vista_geometry(double z,
             for (int k = 0; k < 3; ++k) s += bn[i*3+k] * bo[j*3+k];
             g.R[i*3+j] = s;
         }
-    g.dl = (ra_new - ra_old) * std::cos(dec_old);
-    g.dm = dec_new - dec_old;
-    const double arg = 1.0 - g.dl*g.dl - g.dm*g.dm;
-    g.dn = (arg > 0.0 ? std::sqrt(arg) : 0.0) - 1.0;
+    // The delay between the old and the new phase centre is exactly
+    // w_new - w_old = R[6] u + R[7] v + (R[8] - 1) w: the third row of the
+    // rotation holds the direction cosines (l, m, n) of the new centre in the
+    // old frame.  (The small-angle l = dra cos(dec), m = ddec is wrong by
+    // ~ offset^2 tan(dec).)
+    g.dl = g.R[6];
+    g.dm = g.R[7];
+    g.dn = g.R[8] - 1.0;
     g.inv_z = 1.0 / (1.0 + z);
     return g;
 }

@@ -1,131 +1,122 @@
 # Validation
 
-**In one sentence.** On simulations where the true line is known, the joint
-fit recovers the flux of point and extended sources within a few per cent,
-with errors that mean what they say; a point-source model, or a peak in an
-image, loses more than half of the flux of an extended source.
+**In one sentence.** On synthetic stacks where the truth is known, the flux
+of the line and of the continuum comes back within a few per cent for point
+and for extended sources, with errors that mean what they say from 5 to 50
+galaxies; it does not when the sources of one stack have very different
+sizes, or when an extended source is measured as a point.
 
-The [Examples](../examples/index) show the same on complete simulated
-samples, one situation at a time. This page has the numbers over many
-noise realisations.
+The [Examples](../examples/index) show single cases, one situation at a
+time. This page has the statistics over many noise realisations.
 
-**How to read the tables.**
+## How it is done
 
-- *joint*: the measurement of ViSta, all channels and baselines in one fit
-  ([Measuring the line](measure_line));
-- *window* and *template*: the two earlier methods (the spectrum summed
-  over a window; a spectral template fitted baseline by baseline). They are
-  no longer in the code, and are kept here as a comparison;
-- *bias*: mean of measured over true flux, minus one;
-- *scatter*: the rms of the flux over the true flux;
-- *coverage*: the fraction of realisations whose quoted ±1σ holds the
-  truth (ideal 0.68).
+`benchmarks/validation.py` makes the numbers of this page:
 
-## Point and resolved sources
+```bash
+python benchmarks/validation.py --realisations 100 --out validation
+```
 
-Synthetic statistics built cell by cell as the compression builds them: 20
-sources, weights wrong by κ = 1.3, channel correlation 0.3; 50–100
-realisations per case. *noise > 2σ* is the fraction of pure-noise stacks
-with F/σ > 2 (ideal 0.023).
+**The stacks.** They are built directly as the compressed statistics that
+ViSta measures, so a stack takes milliseconds to make. Every galaxy has its
+own array (43 antennas within 600 m), its redshift (2 to 3) and its depth
+(0.15 dex of scatter), so the galaxies do not weigh the same. The noise is
+1.3 times what the weights say, and correlated between adjacent channels
+(0.3). The continuum is subtracted visibility by visibility outside the
+line window, as the stacking does, with the noise that this adds.
 
-| Method | noise > 2σ | weak (S/N ≈ 3): bias, scatter, coverage | medium (S/N ≈ 6): scatter, coverage | resolved (θ = 1″): bias |
-|---|---|---|---|---|
-| window ±600 (Sec. 5.3) | 0.07 | −6%, 0.62, 0.59 | 0.32, 0.55 | −61% |
-| template, point | 0.09 | −4%, 0.48, 0.65 | 0.24, 0.58 | −69% |
-| template, gauss | 0.03 | +128%, 9.0, 0.90 | 0.27, 0.92 | −4% |
-| joint, centre and width free | p < 0.05 in 2% | −11%, 0.53, 0.56 | 0.23, 0.73 | +4% |
-| **joint, centre and width fixed** (known) | 0.00 | −6%, **0.31**, 0.70 | **0.15**, 0.72 | +2% |
-| joint, area flux ±600 | 0.02 | −8%, 0.55, 0.65 | 0.29, 0.62 | +6% |
+**The measurement.** That of `v.extract()` with its defaults, with 200
+bootstrap realisations.
 
-The errors of the per-annulus chain (bootstrap only) are too small for a
-point model (noise gives F/σ > 2 three to four times too often) and too large
-for a free Gaussian, whose flux also runs away at low S/N. The joint fit with
-a known width halves the scatter of the template method; a free search is
-reliable from about 4σ. On whole Measurement Sets (8 simulated ALMA datasets,
-Hanning-smoothed noise, weights wrong by a factor 52, continuum subtracted on
-18 line-free channels, 16 noise realisations), the measured scatter of the
-flux is 71 against 69 quoted (fixed shape) and 108 against 113 quoted (area);
-with only the first lags of the channel correlation, the quoted errors were
-50 and 70.
+**What is counted**, over the realisations of a case:
 
-## Extended and non-ideal sources
+| | Meaning | A good value |
+|---|---|---|
+| *bias* | mean of the measured flux over the true one, minus one | 0 |
+| *scatter* | rms of the measured flux, over the true one | — |
+| *quoted* | the median quoted error, over the true flux | equal to the scatter |
+| *coverage* | fraction of the realisations whose flux ± 1σ holds the truth | 0.68 |
 
-Same simulations, the signal of every cell averaged over the baselines of its
-annulus; bias of the total flux and, in brackets, the coverage of the quoted
-±1σ.
+With 100 realisations a coverage is known to about ± 0.05, with 60 to
+± 0.06.
 
-| Case (S/N) | template, point | template, gauss | joint, fixed shape | joint, free |
-|---|---|---|---|---|
-| Gaussian 1″, 40 sources (8) | −69% | −4% (0.66) | +3% (0.68) | +5% (0.68) |
-| the same, weak (4) | −64% | +18%, scatter 1.25 (0.77) | +8%, scatter 0.62 (0.83) | +10% (0.65) |
-| weak, size prior from elsewhere (±0.15 dex) | | | +4%, scatter 0.33 (0.65) | +1% (0.63) |
-| sizes from 0.5″ to 1.5″ (8) | −62% | −7% (0.66) | −7% (0.74) | −5% (0.72) |
-| point sources, 0.3″ position errors (8) | −54% | +16% (0.82) | +4% (0.82) | +9% (0.66) |
-| rotating disk, velocity gradient over 1″ (8) | −62% | −16% (0.58) | +1% (0.72) | −7% (0.64) |
-| exponential disk (8) | −68% | −10% (0.44) | −4% (0.62) | −1% (0.54) |
-| double-horn profile, point source (8) | 0% (0.66) | +4% (0.70) | +9% (0.60) | +3% (0.76) |
-| Gaussian 1″, bright (25) | −68% | 0% (0.57) | +1% (0.60) | +2% (0.60) |
+## The errors, from 5 to 50 galaxies
 
-A point model loses 55–70% of the flux of anything extended — including
-point sources stacked with 0.3″ position errors, which add up to an extended
-stack. The joint fit recovers the total flux within a few per cent when the
-source is resolved at S/N ≳ 8, also for an exponential or a rotating disk,
-which the Gaussian model does not describe exactly. For a weak resolved stack
-the total flux is uncertain because the size is: the averaged model gives an
-honest, large error, and a size prior halves it. With the Gaussian shape fixed,
-a double-horn profile comes out 9% high: there the area flux is the one to
-quote, and `flux_measure="auto"` quotes it when the difference is significant. On whole Measurement Sets with a 1″ source (8 datasets, 12
-noise realisations): F = 211 ± 18 against 213 true, size 0.95″ ± 0.24″, while
-the point-source flux is 78.
+The same total depth for every number of galaxies, so that only the number
+changes. 100 realisations per row. The line has 0.4 Jy km/s and 300 km/s;
+the continuum 0.2 mJy, fitted as a free Gaussian for the extended sources
+and as a point for the points.
 
-These tables were made before the size test was corrected for the channel
-correlation. With the correlation of these simulations (0.3 at lag 1, a
-factor of about 1.6 on the χ² difference) the correction changes them within
-their noise — on 50 new realisations each, before → after: point source,
-bias +0.8% → −0.1%, scatter 0.21 → 0.20; Gaussian 1″ at S/N 8, +3.5% → +3.2%,
-coverage 0.68 → 0.70; a very weak 1″ source (S/N ≈ 2), +15% → +9%, coverage
-0.78 → 0.68. It matters with Hanning smoothing and a continuum subtraction,
-where the factor is 4–5.
+| Sample | Line: bias | scatter | quoted | coverage | *bootstrap alone* | Continuum: bias | scatter | quoted | coverage |
+|---|---|---|---|---|---|---|---|---|---|
+| extended 0.8″, 5 galaxies | −1% | 0.15 | 0.15 | 0.73 | *0.58* | +14% | 0.52 | 0.40 | 0.79 |
+| extended 0.8″, 10 galaxies | +1% | 0.14 | 0.14 | 0.70 | *0.64* | +9% | 0.41 | 0.39 | 0.80 |
+| extended 0.8″, 20 galaxies | +1% | 0.13 | 0.14 | 0.68 | *0.62* | +5% | 0.33 | 0.35 | 0.86 |
+| extended 0.8″, 50 galaxies | +3% | 0.13 | 0.15 | 0.76 | *0.75* | +1% | 0.28 | 0.36 | 0.86 |
+| point, 5 galaxies | +1% | 0.05 | 0.06 | 0.72 | *0.57* | 0% | 0.10 | 0.10 | 0.75 |
+| point, 10 galaxies | +1% | 0.06 | 0.05 | 0.70 | *0.62* | 0% | 0.09 | 0.10 | 0.74 |
+| point, 20 galaxies | +1% | 0.05 | 0.05 | 0.75 | *0.68* | −1% | 0.08 | 0.09 | 0.76 |
+| point, 50 galaxies | 0% | 0.05 | 0.05 | 0.76 | *0.72* | +1% | 0.09 | 0.09 | 0.67 |
 
-## uv plane or image plane
+**What it says.**
 
-The same stacks measured both ways: 8 simulated ALMA datasets (43 antennas,
-baselines up to ~370 m, beam 1.06″ × 0.76″, Hanning-smoothed noise, weights
-wrong by 1.3), a line of 200 km/s FWHM, stacked in one pass; in the image
-plane, `tclean` of the stacked visibilities over the line window (±300 km/s,
-natural weighting, CLEAN to 2σ in a 4″ mask). Mean of measured / true flux and
-its scatter over 6 noise realisations per case (so the scatter is known to
-about ±30%):
+- **The quoted errors hold at every number of galaxies**: the quoted error
+  equals the scatter, and the coverage is 0.68 to 0.76 for the line, 0.67
+  to 0.86 for the continuum.
+- **The bootstrap alone would not**: with 5 to 10 galaxies its coverage is
+  0.57 to 0.64. This is why the quoted error is the larger of the thermal
+  and the bootstrap one.
+- **A weak extended continuum is biased high** (+14 % with 5 galaxies, +5 %
+  with 20): its S/N here is about 3, and a Gaussian of free size fitted to
+  a weak signal prefers large sizes. Its error is large enough to cover it.
+  This is the case where the continuum is better given the size of the line
+  (`continuum_model="auto"` does it by itself: see
+  [The continuum](extract_flux)).
 
-| Method | point source, S/N ≈ 6 | 1″ source, S/N ≈ 8 | 1″ source, S/N ≈ 5 |
-|---|---|---|---|
-| uv, joint fit, fixed shape | 1.09 ± 0.16 | **1.05 ± 0.12** | 1.16 ± 0.29 |
-| uv, joint fit, free | 1.20 ± 0.28 | 1.04 ± 0.14 | 1.12 ± 0.35 |
-| uv, window ±300 km/s | 1.20 ± 0.26 | 0.99 ± 0.17 | 1.09 ± 0.41 |
-| uv, point-source fit only | **1.00 ± 0.12** | 0.44 ± 0.05 | 0.48 ± 0.11 |
-| image, dirty peak | 1.11 ± 0.17 | 0.42 ± 0.07 | 0.52 ± 0.14 |
-| image, aperture 1″ / 2″ / 3″ | 1.14 / 0.77 / 0.82 ± 0.37 / 0.63 / 0.78 | 0.74 / 1.09 / 0.87 ± 0.10 / 0.25 / 0.67 | 0.87 / 0.89 / 0.43 ± 0.35 / 0.63 / 1.41 |
-| image, aperture 2″, JvM-corrected | 0.78 ± 0.52 | 0.95 ± 0.22 | 0.76 ± 0.57 |
-| image, CLEAN model total | 0.58 ± 0.23 | 0.39 ± 0.40 | −0.03 ± 0.67 |
-| image, `imfit` Gaussian | 1.41 ± 1.05 | 1.20 ± 0.25 | 4.2 ± 3.1 (2 of 6 failed) |
+## Point and extended sources
 
-- **Point source**: the two planes measure the same thing. With natural
-  weighting the dirty image at the source position is the weighted mean of
-  the real part of the visibilities, i.e. the uv point-source flux. With
-  `model="auto"` the joint fit does not know that the source is unresolved
-  and averages in a Gaussian fitted to the noise, which costs some scatter
-  (on 50 simulated point sources the bias is 0.0% ± 3%); if the source is
-  known to be unresolved, `model="point"`.
-- **Resolved source**: the peak and the point-source flux lose 55–60%; in
-  the image the total flux needs an aperture, and the result depends on it
-  (1″ loses a quarter, 3″ is dominated by noise; the dirty-beam wings make the
-  raw aperture sum high, the JvM correction brings it back). CLEAN to 2σ of a
-  stack at S/N 5–8 leaves most of the flux in the residual. The joint uv fit
-  has no aperture to choose and half the scatter of the best image method.
-- **Weak resolved source**: every total flux is uncertain because the size
-  is; the uv fit gives the honest error, `imfit` fails or runs away. A size
-  from elsewhere (`model_prior`, or the size of the continuum with
-  `model="continuum"`) is the way to tighten it.
+20 galaxies, 60 realisations per row. *Fit* is the area of the Gaussian,
+*window* the area under the spectrum in ± 500 km/s; the flux quoted is one
+of the two.
 
-This agrees with Lindroos et al. (2015, MNRAS 446, 3502), who find
-uv stacking more robust than image stacking, with better size estimates.
+| Case | S/N | Flux quoted: bias | scatter | coverage | Fit: bias | coverage | Window: bias | coverage | Gaussian chosen | size |
+|---|---|---|---|---|---|---|---|---|---|---|
+| point sources, strong | 39 | +1% | 0.04 | 0.77 | +1% | 0.77 | +1% | 0.73 | 0% | 0.00″ |
+| point sources, weak | 8 | +9% | 0.22 | 0.73 | +9% | 0.73 | +8% | 0.75 | 2% | 0.00″ |
+| point sources, very weak | 4 | +18% | 0.52 | 0.73 | +18% | 0.73 | +23% | 0.78 | 0% | 0.00″ |
+| extended 0.8″, strong | 16 | +2% | 0.11 | 0.68 | +2% | 0.68 | +2% | 0.73 | 100% | 0.81″ |
+| extended 0.8″, weak | 5 | +7% | 0.38 | 0.72 | +7% | 0.72 | +5% | 0.75 | 75% | 0.79″ |
+| extended 0.8″, weak, centre and width fixed | 5 | +2% | 0.32 | 0.75 | +2% | 0.72 | +5% | 0.75 | 75% | 0.80″ |
+| extended 0.8″, fluxes scattered by 0.3 dex | 16 | +3% | 0.14 | 0.80 | +3% | 0.80 | +2% | 0.77 | 100% | 0.81″ |
+| **extended 0.8″ measured as a point** (`model="point"`) | 11 | **−71%** | 0.04 | **0.00** | −71% | 0.00 | −71% | 0.00 | — | — |
+| **half points, half 0.8″** | 26 | **−16%** | 0.07 | **0.15** | −16% | 0.15 | −16% | 0.25 | 87% | 0.30″ |
+
+**What works.**
+
+- **Strong lines**, point or extended: the flux within 1–2 %, the right
+  source model every time, the right size (median 0.81″ for 0.8″), errors
+  that cover.
+- **Galaxies of different luminosity** (0.3 dex): the same, with a larger
+  error, as it should be: the bootstrap sees the scatter of the population.
+
+**What to know.**
+
+- **A weak line found by a search is biased high**: +9 % at S/N 8, +18 % at
+  S/N 4. The search over centre and width picks the noise that makes the
+  line look brighter. The error is large enough to cover the truth, but the
+  bias is real. With **centre and width fixed** from another tracer
+  (`v0_range=(0, 0)`, `fwhm_range=(300, 300)`) it goes away: +2 % instead
+  of +7 %.
+- **An extended source measured as a point loses most of its flux** (−71 %
+  here), with a small error that never holds the truth. Never force
+  `model="point"` on sources that may be extended.
+- **A stack of points and extended sources together is biased low**
+  (−16 %), and its error holds the truth one time in seven. Such a stack is
+  a flat level plus something that falls with the baseline; a single
+  Gaussian settles on a small size (0.30″ here) and misses the flux of the
+  extended half. This is a limit of the model, not of the noise: it gets
+  worse, not better, with more signal. The figure against the baseline
+  length shows it (the short baselines lie above the model), and
+  [Example 8](../examples/08_points_and_extended_sources) is this case.
+  When the compact and the extended galaxies can be told apart, stack them
+  separately.

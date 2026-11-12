@@ -66,8 +66,8 @@ A one-line helper for this notebook, to print a flux with its error:
 
 ```python
 def flux(result, key="flux"):
-    """'0.400 ± 0.050 Jy km/s' from result.results[key] (small values in mJy)."""
-    f = result.results[key]
+    """'0.400 ± 0.050 Jy km/s' from result[key] (small values in mJy)."""
+    f = result[key]
     k, unit = (1e3, "m" + f["unit"]) if abs(f["value"]) < 0.01 else (1, f["unit"])   # Jy -> mJy
     return f"{f['value'] * k:.3f} ± {f['error'] * k:.3f} {unit}"
 ```
