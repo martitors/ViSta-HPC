@@ -180,21 +180,52 @@ def worker(args):
         np.save(os.path.join(args.work, "stack_launches.npy"), np.array(launches, dtype=int))
 
 
+def blocks(t):
+    """The rows of every dataset of a stack (one spectral window each), in an
+    order that does not depend on the run: the readers are several threads,
+    so the datasets are written in the order in which they happen to be
+    ready, and two runs of the same stack can hold them in another order."""
+    import numpy as np
+    ddid = np.asarray(t.getcol("DATA_DESC_ID"))
+    time, a1, a2 = (np.asarray(t.getcol(c)) for c in ("TIME", "ANTENNA1", "ANTENNA2"))
+    out = {}
+    for k in np.unique(ddid):
+        rows = np.flatnonzero(ddid == k)
+        out[int(k)] = rows[np.lexsort((a2[rows], a1[rows], time[rows]))]
+    return out
+
+
 def compare_tables(a, b):
+    """Every dataset of the two stacks against the other, column by column."""
     from casacore.tables import table
     ta, tb = table(a, ack=False), table(b, ack=False)
     check("same number of rows", ta.nrows() == tb.nrows(), f"{ta.nrows()} and {tb.nrows()}")
     if ta.nrows() != tb.nrows():
         return
-    step = 200000
+    ba, bb = blocks(ta), blocks(tb)
+    check("the two stacks hold the same datasets", sorted(ba) == sorted(bb),
+          f"{len(ba)} and {len(bb)} spectral windows")
+    if sorted(ba) != sorted(bb):
+        return
+    order = [int(ta.getcol("DATA_DESC_ID", int(r), 1)[0]) for r in
+             (0, *np.flatnonzero(np.diff(np.asarray(ta.getcol("DATA_DESC_ID")))) + 1)]
+    order_b = [int(tb.getcol("DATA_DESC_ID", int(r), 1)[0]) for r in
+               (0, *np.flatnonzero(np.diff(np.asarray(tb.getcol("DATA_DESC_ID")))) + 1)]
+    if order != order_b:
+        print(f"        the datasets are written in another order ({order} and {order_b}): "
+              f"they are compared one by one", flush=True)
     worst, flags = {}, True
-    for r0 in range(0, ta.nrows(), step):
-        n = min(step, ta.nrows() - r0)
-        fa, fb = ta.getcol("FLAG", r0, n), tb.getcol("FLAG", r0, n)
+    for k in sorted(ba):
+        ra, rb = ba[k], bb[k]
+        if len(ra) != len(rb):
+            check(f"dataset {k}: same rows", False, f"{len(ra)} and {len(rb)}")
+            return
+        fa = np.asarray(ta.getcol("FLAG"))[ra]
+        fb = np.asarray(tb.getcol("FLAG"))[rb]
         flags &= bool(np.array_equal(fa, fb))
         good = ~fa
         for c in ("DATA", "UVW", "WEIGHT"):
-            x, y = ta.getcol(c, r0, n), tb.getcol(c, r0, n)
+            x, y = np.asarray(ta.getcol(c))[ra], np.asarray(tb.getcol(c))[rb]
             if x.shape == good.shape:
                 x, y = x[good], y[good]
             scale = float(np.abs(x).std()) or 1.0
