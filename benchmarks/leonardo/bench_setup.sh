@@ -13,36 +13,32 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 activate_env
 
-pip install -q casatools casatasks psutil nvidia-ml-py
+pip install -q casatools casatasks psutil nvidia-ml-py "zarr>=2.12,<3"
 
-# CASA data: downloaded here, on the login node, into $CASA_DATA, and never
-# updated by CASA itself: the compute nodes have no internet, and an import
-# that tries to update would fail or hang there.  ~/.casa/config.py says so
-# (a previous one is kept as config.py.before_vista_bench).  To refresh the
-# data later, from a login node:
-#     python -c "import casaconfig; casaconfig.update_all('$CASA_DATA')"
-mkdir -p "$HOME/.casa" "$CASA_DATA"
-CFG="$HOME/.casa/config.py"
-if [ -f "$CFG" ] && ! grep -q "bench_setup.sh" "$CFG"; then
-    cp "$CFG" "$CFG.before_vista_bench"
-fi
-cat > "$CFG" <<CASACFG
+# CASA data.  A recent CASA downloads and updates them by itself, which on a
+# compute node (no internet) would fail or hang: they are downloaded here,
+# on the login node, into $CASA_DATA, and ~/.casa/config.py turns the updates
+# off (a previous config.py is kept as config.py.before_vista_bench).  An
+# older CASA has no casaconfig and takes its data from the casadata package:
+# then nothing is written, and the ~/.casa it already uses is left alone.
+if python -c "import casaconfig" 2> /dev/null; then
+    mkdir -p "$HOME/.casa" "$CASA_DATA"
+    CFG="$HOME/.casa/config.py"
+    if [ -f "$CFG" ] && ! grep -q "bench_setup.sh" "$CFG"; then
+        cp "$CFG" "$CFG.before_vista_bench"
+    fi
+    cat > "$CFG" <<CASACFG
 # written by benchmarks/leonardo/bench_setup.sh: the CASA data in one place,
 # downloaded on the login node and never updated during a job
 measurespath = "$CASA_DATA"
 measures_auto_update = False
 data_auto_update = False
 CASACFG
-python - "$CASA_DATA" <<'PY'
-import sys
-try:
-    from casaconfig import update_all
-except ImportError:          # older CASA: its data come with the casatools wheel
-    print("this casatools has no casaconfig: the data it ships are used as they are")
-else:
-    update_all(sys.argv[1])
-PY
-python -c "import casatasks, casatools; print('CASA', casatools.version_string(), 'with the data in $CASA_DATA')"
+    python -c "import casaconfig; casaconfig.update_all('$CASA_DATA')"
+else
+    echo "this CASA has no casaconfig: the data of the casadata package are used as they are"
+fi
+python -c "import casatasks, casatools; print('CASA', casatools.version_string())"
 
 if [ ! -d "$VISTA_HPC_V1" ]; then
     git clone -q --branch extract "$(git -C "$REPO" remote get-url origin)" "$VISTA_HPC_V1"
@@ -57,17 +53,26 @@ if [ ! -d "$UVMULTIFIT" ]; then
     git -C "$UVMULTIFIT" checkout -q 9aa59b7
     git -C "$UVMULTIFIT" apply "$REPO/benchmarks/uvmultifit.patch"
 fi
-for m in $GSL_MODULE $FFTW_MODULE; do
-    module load "$m" || { echo "module load $m failed: look for the right name with "\
-                               "'module avail gsl fftw' and set GSL_MODULE / FFTW_MODULE"; exit 1; }
-done
-GSL_FLAGS=$(dep_flags gsl "${GSL_HOME:-${GSL_ROOT:-}}")
-FFTW_FLAGS=$(dep_flags fftw3 "${FFTW_HOME:-${FFTW_ROOT:-}}")
-[ -n "$GSL_FLAGS" ]  || { echo "GSL not found after 'module load $GSL_MODULE': set GSL_HOME";  exit 1; }
-[ -n "$FFTW_FLAGS" ] || { echo "FFTW not found after 'module load $FFTW_MODULE': set FFTW_HOME"; exit 1; }
+while IFS="=" read -r key value; do
+    [ -n "$key" ] && export "$key=$value"
+done < <(module_homes "$GSL_MODULE $FFTW_MODULE")
+GSL_FLAGS=$(dep_flags "${GSL_HOME-}")
+FFTW_FLAGS=$(dep_flags "${FFTW_HOME-}")
+BLAS_FLAGS=$(dep_flags "${OPENBLAS_HOME-}")
+[ -n "$GSL_FLAGS" ]  || { echo "GSL not found: 'module avail gsl' and set GSL_MODULE, "\
+                               "or set GSL_HOME to where it is installed"; exit 1; }
+[ -n "$FFTW_FLAGS" ] || { echo "FFTW not found: 'module avail fftw' and set FFTW_MODULE, "\
+                               "or set FFTW_HOME"; exit 1; }
+# a GSL built against OpenBLAS (as the one of Leonardo) has no libgslcblas
+if ! ls "$GSL_HOME"/lib*/libgslcblas.* > /dev/null 2>&1; then
+    echo "this GSL has no libgslcblas: UVMultiFit is linked against OpenBLAS instead"
+    sed -i "s/'gslcblas'/'openblas'/g" "$UVMULTIFIT/setup.py"
+fi
 echo "GSL:  $GSL_FLAGS"
 echo "FFTW: $FFTW_FLAGS"
-(cd "$UVMULTIFIT" && CFLAGS="$GSL_FLAGS $FFTW_FLAGS" LDFLAGS="$GSL_FLAGS $FFTW_FLAGS" \
+[ -n "$BLAS_FLAGS" ] && echo "BLAS: $BLAS_FLAGS" || true
+(cd "$UVMULTIFIT" && CFLAGS="$GSL_FLAGS $FFTW_FLAGS $BLAS_FLAGS" \
+     LDFLAGS="$GSL_FLAGS $FFTW_FLAGS $BLAS_FLAGS" \
      python setup.py build_ext --inplace > build.log 2>&1) \
     || { tail -20 "$UVMULTIFIT/build.log"; echo "UVMultiFit did not build"; exit 1; }
 PYTHONPATH="$UVMULTIFIT" python -c "import uvmultifit; print('UVMultiFit: ok')"

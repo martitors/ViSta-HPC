@@ -10,10 +10,11 @@ CONDA_BASE=${CONDA_BASE:-$HOME/opt/miniconda3}
 ENV_NAME=${ENV_NAME:-vista38}                    # conda environment with the Python packages
 MODULES=${MODULES:-cuda/12.2}                    # modules for the CUDA build
 # UVMultiFit needs GSL and FFTW: the modules of the machine, not conda.  The
-# names are those of "module avail gsl fftw"; give them in the environment if
-# they differ:  GSL_MODULE=gsl/2.7.1--gcc--12.2.0 bash .../bench_setup.sh
-GSL_MODULE=${GSL_MODULE:-gsl}
-FFTW_MODULE=${FFTW_MODULE:-fftw}
+# FFTW one without MPI is enough and pulls in far less.  Another machine:
+# give the names of "module avail gsl fftw" in the environment, or set
+# GSL_HOME and FFTW_HOME directly.
+GSL_MODULE=${GSL_MODULE:-gsl/2.7.1--gcc--12.2.0-spack0.22}
+FFTW_MODULE=${FFTW_MODULE:-fftw/3.3.10--gcc--12.2.0-spack0.22}
 CUDA_ARCH=${CUDA_ARCH:-80}                       # compute capability: 80 = A100
 WORK=${WORK:-${SCRATCH:-$HOME/scratch}/vista_gpu_check}   # where samples and stacks go
 
@@ -48,17 +49,27 @@ if ! type module > /dev/null 2>&1; then
     done
 fi
 
-# Include and library flags of a dependency loaded as a module: from
-# pkg-config if the module sets it, else from <NAME>_HOME or <NAME>_ROOT.
-# Usage:  dep_flags gsl "${GSL_HOME:-${GSL_ROOT:-}}"
+# Where some modules install, without loading them in this shell: these are
+# spack modules and bring their own glibc and libstdc++, which in
+# LD_LIBRARY_PATH would break the Python of the environment.  The build of
+# UVMultiFit only needs their paths, and an rpath makes them found later.
+#    module_homes "gsl fftw"   ->   GSL_HOME=/...   FFTW_HOME=/...
+module_homes() {
+    bash -lc 'module load '"$1"' > /dev/null 2>&1
+              for v in GSL_HOME FFTW_HOME OPENBLAS_HOME; do
+                  [ -n "${!v-}" ] && printf "%s=%s\n" "$v" "${!v}"
+              done' 2>/dev/null
+}
+
+# Include and library flags of a dependency installed in $1.
 dep_flags() {
-    local pc=$1 home=${2-} libs
-    if pkg-config --exists "$pc" 2>/dev/null; then
-        libs=$(pkg-config --libs-only-L "$pc")
-        echo "$(pkg-config --cflags "$pc") $libs ${libs//-L/-Wl,-rpath,}"
-    elif [ -n "$home" ] && [ -d "$home/include" ]; then
-        echo "-I$home/include -L$home/lib -Wl,-rpath,$home/lib"
-    fi
+    local home=${1-} out=""
+    [ -n "$home" ] && [ -d "$home/include" ] || { echo ""; return; }
+    out="-I$home/include"
+    for d in lib lib64; do
+        [ -d "$home/$d" ] && out="$out -L$home/$d -Wl,-rpath,$home/$d"
+    done
+    echo "$out"
 }
 
 activate_env() {
