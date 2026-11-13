@@ -1,0 +1,228 @@
+diff --git a/_uvmultimodel.cpp b/_uvmultimodel.cpp
+index f9176eb..3694130 100644
+--- a/_uvmultimodel.cpp
++++ b/_uvmultimodel.cpp
+@@ -620,9 +620,15 @@ for (t = mydata->t0[cIF]; t < mydata->t1[cIF] ; t++) {
+  ant2 = vis.ants[1][cIF][t];
+ 
+ // Figure out baseline index of this visibility:
+- for(basIdx=0;basIdx<Nbas;basIdx++){
+-   if(mod.BasIdx[0][basIdx]==ant1 && mod.BasIdx[1][basIdx]==ant2){break;};
+- }; 
++ // BasIdx lists the pairs (i, j), i < j, in row order: the index of (ant1, ant2)
++ // follows from the two antennas. Other pairs keep the original search.
++ if(ant1>=0 && ant1<ant2 && ant2<Nants){
++   basIdx = ant1*(2*Nants-ant1-1)/2 + (ant2-ant1-1);
++ } else {
++   for(basIdx=0;basIdx<Nbas;basIdx++){
++     if(mod.BasIdx[0][basIdx]==ant1 && mod.BasIdx[1][basIdx]==ant2){break;};
++   };
++ };
+ 
+ // Figure out if a "perfect" antenna is observing here (only one is admitted):
+    for(i=0;i<Nants;i++){
+@@ -1487,40 +1493,40 @@ static PyObject *setData(PyObject *self, PyObject *args)
+     /* Interprete the input objects as numpy arrays. */
+ 
+ 
+-    vis.ants[0][IF] = (int *)PyArray_DATA(ant1l);
+-    vis.ants[1][IF] = (int *)PyArray_DATA(ant2l);
++    vis.ants[0][IF] = (int *)PyArray_DATA((PyArrayObject*)ant1l);
++    vis.ants[1][IF] = (int *)PyArray_DATA((PyArrayObject*)ant2l);
+ 
+ 
+-    vis.dtArray[IF] = (double *)PyArray_DATA(tArr);
+-    vis.dtIndex[IF] = (int *)PyArray_DATA(tIdx);
++    vis.dtArray[IF] = (double *)PyArray_DATA((PyArrayObject*)tArr);
++    vis.dtIndex[IF] = (int *)PyArray_DATA((PyArrayObject*)tIdx);
+ 
+-    vis.uv[0][IF] = (double *)PyArray_DATA(pu);
+-    vis.uv[1][IF] = (double *)PyArray_DATA(pv);
+-    vis.uv[2][IF] = (double *)PyArray_DATA(pw);
++    vis.uv[0][IF] = (double *)PyArray_DATA((PyArrayObject*)pu);
++    vis.uv[1][IF] = (double *)PyArray_DATA((PyArrayObject*)pv);
++    vis.uv[2][IF] = (double *)PyArray_DATA((PyArrayObject*)pw);
+ 
+-    vis.wgt[0][IF] = (double *)PyArray_DATA(pwgt);
+-    vis.ObsVis[IF] = (cplx64 *)PyArray_DATA(preal);
++    vis.wgt[0][IF] = (double *)PyArray_DATA((PyArrayObject*)pwgt);
++    vis.ObsVis[IF] = (cplx64 *)PyArray_DATA((PyArrayObject*)preal);
+ 
+-    mod.ModVis[IF] = (cplx64 *)PyArray_DATA(poreal);
++    mod.ModVis[IF] = (cplx64 *)PyArray_DATA((PyArrayObject*)poreal);
+ 
+-    vis.freqs[IF] = (double *)PyArray_DATA(pfreqs);
++    vis.freqs[IF] = (double *)PyArray_DATA((PyArrayObject*)pfreqs);
+ 
+-    vis.fittable[IF] = (int *)PyArray_DATA(pfittable);
+-    vis.wgt[1][IF] = (double *)PyArray_DATA(pwgtcorr);
++    vis.fittable[IF] = (int *)PyArray_DATA((PyArrayObject*)pfittable);
++    vis.wgt[1][IF] = (double *)PyArray_DATA((PyArrayObject*)pwgtcorr);
+ 
+-    vis.isGain[IF] = (int *)PyArray_DATA(iG);
++    vis.isGain[IF] = (int *)PyArray_DATA((PyArrayObject*)iG);
+ 
+ 
+-    vis.dt[IF] = (double *)PyArray_DATA(dtime);
++    vis.dt[IF] = (double *)PyArray_DATA((PyArrayObject*)dtime);
+ 
+-    vis.RAshift[IF] = (double *)PyArray_DATA(RAoffset);
++    vis.RAshift[IF] = (double *)PyArray_DATA((PyArrayObject*)RAoffset);
+ 
+-    vis.Decshift[IF] = (double *)PyArray_DATA(Decoffset);
++    vis.Decshift[IF] = (double *)PyArray_DATA((PyArrayObject*)Decoffset);
+ 
+-    vis.Stretch[IF] = (double *)PyArray_DATA(Stretchoff);
++    vis.Stretch[IF] = (double *)PyArray_DATA((PyArrayObject*)Stretchoff);
+ 
+-    vis.nt[IF] = PyArray_DIM(preal,0);
+-    vis.nnu[IF] = PyArray_DIM(preal,1);
++    vis.nt[IF] = PyArray_DIM((PyArrayObject*)preal,0);
++    vis.nnu[IF] = PyArray_DIM((PyArrayObject*)preal,1);
+ 
+     Nbas = Nants*(Nants-1)/2;
+ 
+@@ -1578,22 +1584,22 @@ PyObject *setModel(PyObject *self, PyObject *args) {
+     if(NCPU>1 && (doAmpClos || doPhClos)){printf("FAILED Closures cannot be used if NCPU>1!\n"); fflush(stdout); PyObject *ret = Py_BuildValue("i",-2); return ret;};
+ 
+ 
+-    mod.models = (int *)PyArray_DATA(modArr);
+-    mod.Hessian = (double *)PyArray_DATA(HessArr);
+-    mod.Gradient = (double *)PyArray_DATA(GradArr);
+-    mod.dpar = (double *)PyArray_DATA(dparArr);
+-    mod.muRA = (double *)PyArray_DATA(propRA);
+-    mod.muDec = (double *)PyArray_DATA(propDec);
+-    vis.phaseCenter = (double *)PyArray_DATA(refpos);
+-    mod.triSpec = (int *)PyArray_DATA(triSpec);
++    mod.models = (int *)PyArray_DATA((PyArrayObject*)modArr);
++    mod.Hessian = (double *)PyArray_DATA((PyArrayObject*)HessArr);
++    mod.Gradient = (double *)PyArray_DATA((PyArrayObject*)GradArr);
++    mod.dpar = (double *)PyArray_DATA((PyArrayObject*)dparArr);
++    mod.muRA = (double *)PyArray_DATA((PyArrayObject*)propRA);
++    mod.muDec = (double *)PyArray_DATA((PyArrayObject*)propDec);
++    vis.phaseCenter = (double *)PyArray_DATA((PyArrayObject*)refpos);
++    mod.triSpec = (int *)PyArray_DATA((PyArrayObject*)triSpec);
+ 
+     cosDecRef = cos(vis.phaseCenter[1]);
+     sinDecRef = sin(vis.phaseCenter[1]);
+ 
+ 
+ 
+-    ncomp = PyArray_DIM(modArr,0);
+-    npar = PyArray_DIM(GradArr,0);
++    ncomp = PyArray_DIM((PyArrayObject*)modArr,0);
++    npar = PyArray_DIM((PyArrayObject*)GradArr,0);
+     Nants = (int) PyList_Size(parDep);
+     Nbas = Nants*(Nants-1)/2;
+ 
+@@ -1721,8 +1727,8 @@ PyObject *setModel(PyObject *self, PyObject *args) {
+     mod.parAnt = new int*[Nants];
+ 
+     for (i=0;i<Nants;i++){
+-      mod.nparAnt[i] = PyArray_DIM(PyList_GetItem(parDep,i),0);
+-      mod.parAnt[i] = (int *)PyArray_DATA(PyList_GetItem(parDep,i));
++      mod.nparAnt[i] = PyArray_DIM((PyArrayObject*)PyList_GetItem(parDep,i),0);
++      mod.parAnt[i] = (int *)PyArray_DATA((PyArrayObject*)PyList_GetItem(parDep,i));
+     };
+ 
+ 
+@@ -1736,7 +1742,7 @@ PyObject *setModel(PyObject *self, PyObject *args) {
+         mod.Gain[IF][j] = new cplx64*[mod.nparAnt[j]];
+         for (i=0;i<mod.nparAnt[j];i++){
+           tempArr = PyList_GetItem(PyList_GetItem(PyList_GetItem(aG,IF),j),i);
+-          mod.Gain[IF][j][i] = (cplx64 *)PyArray_DATA(tempArr);
++          mod.Gain[IF][j][i] = (cplx64 *)PyArray_DATA((PyArrayObject*)tempArr);
+         };
+       };
+ 
+@@ -1747,8 +1753,8 @@ PyObject *setModel(PyObject *self, PyObject *args) {
+ 
+ 
+ 
+-    HankelOrder = PyArray_DIM(PyList_GetItem(VarArr,0),1)-NparMax;
+-    maxnchan = PyArray_DIM(PyList_GetItem(VarArr,0),2);
++    HankelOrder = PyArray_DIM((PyArrayObject*)PyList_GetItem(VarArr,0),1)-NparMax;
++    maxnchan = PyArray_DIM((PyArrayObject*)PyList_GetItem(VarArr,0),2);
+ //    delete[] mod.vars;
+ //    delete[] mod.fixp;
+ 
+@@ -1758,13 +1764,13 @@ PyObject *setModel(PyObject *self, PyObject *args) {
+ 
+     for (i=0; i<(npar+1); i++) {
+       tempArr = PyList_GetItem(VarArr,i);
+-      mod.vars[i] = (double *)PyArray_DATA(tempArr);
++      mod.vars[i] = (double *)PyArray_DATA((PyArrayObject*)tempArr);
+     };
+ 
+ 
+     for (i=0; i<(npar+1); i++) {
+       tempArr = PyList_GetItem(FixArr,i);
+-      mod.fixp[i] = (double *)PyArray_DATA(tempArr);
++      mod.fixp[i] = (double *)PyArray_DATA((PyArrayObject*)tempArr);
+     };
+ 
+ 
+@@ -1987,9 +1993,9 @@ if (result != 0){ret = Py_BuildValue("i",result); return ret;};
+ //double *Delays = new double[Nants];
+ //double *Phases = new double[Nants];
+ 
+-double *Delays = (double *)PyArray_DATA(PyList_GetItem(gainList,0));
+-double *Rates = (double *)PyArray_DATA(PyList_GetItem(gainList,1));
+-double *Phases = (double *)PyArray_DATA(PyList_GetItem(gainList,2));
++double *Delays = (double *)PyArray_DATA((PyArrayObject*)PyList_GetItem(gainList,0));
++double *Rates = (double *)PyArray_DATA((PyArrayObject*)PyList_GetItem(gainList,1));
++double *Phases = (double *)PyArray_DATA((PyArrayObject*)PyList_GetItem(gainList,2));
+ double *Bins = new double[2];
+ 
+ ErrStat = FringeFit->getRates(Rates);
+diff --git a/setup.py b/setup.py
+index 00dc067..f03f204 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1,4 +1,4 @@
+-from distutils.core import setup, Extension
++from setuptools import setup, Extension
+ import numpy as np
+ 
+ 
+@@ -35,14 +35,14 @@ if BUILD_QUINN_FITTER:
+                   ["_uvmultimodel.cpp","_QuinnFringe.cpp"],
+                   define_macros = [('QUINN_FITTER','0')],
+                   libraries=['gsl','gslcblas','fftw3'],
+-                  extra_compile_args=["-Wno-deprecated","-O3"],
++                  extra_compile_args=["-Wno-deprecated","-O3","-fpermissive","-w"],
+                   extra_link_args=["-Xlinker", "-export-dynamic"])
+ else:
+   c_ext = Extension("_uvmultimodel", 
+                   ["_uvmultimodel.cpp"],
+                   define_macros = [('QUINN_FITTER','1')],
+                   libraries=['gsl','gslcblas'],
+-                  extra_compile_args=["-Wno-deprecated","-O3"])
++                  extra_compile_args=["-Wno-deprecated","-O3","-fpermissive","-w"])
+ 
+ 
+ setup(
+diff --git a/uvmultifit.py b/uvmultifit.py
+index 0dba33e..f4df1dd 100644
+--- a/uvmultifit.py
++++ b/uvmultifit.py
+@@ -2562,7 +2562,7 @@ A previous successful run of function ``checkInputs()`` is assumed.
+ 
+     #       ant1s = uvscan['antenna1'][crosscorr]
+     #       ant2s = uvscan['antenna2'][crosscorr]
+-    #       maskan1 = np.zeros(np.shape(ant1s),dtype=np.bool)
++    #       maskan1 = np.zeros(np.shape(ant1s),dtype=bool)
+     #       mask = np.copy(maskan1)
+     #       mask2 = np.copy(mask)
+     #       # Antennas participating in this scan:
+@@ -5009,7 +5009,9 @@ Model_components : `list`
+ #
+ 
+ 
+-from numpy import asfarray
++def asfarray(a):
++    import numpy as _np
++    return _np.asarray(a, dtype=float)
+ 
+ def wrap_function(function, args):
+     ncalls = [0]
