@@ -53,6 +53,15 @@ extern "C" {
         double*  uvw_out_h,
         const double* width_old_h       // input channel widths, or nullptr
     );
+    void full_pipeline_batch_cuda(
+        const float*   vis_in_h,    const uint8_t* flag_in_h,
+        const double*  uvw_in_h,    const double*  freq_old_h,
+        const double*  freq_new_h,  const double*  z_h,
+        const double*  ra_old_h,    const double*  dec_old_h,
+        const double*  ra_new_h,    const double*  dec_new_h,
+        int n_ms, int nrow, int nchan_old, int nchan_new, int ncorr,
+        float* vis_out_h, uint8_t* flag_out_h, double* uvw_out_h
+    );
 }
 static bool _gpu_available = (cuda_available() > 0);
 #else
@@ -1115,6 +1124,59 @@ PYBIND11_MODULE(ms_ops, m)
     m.def("restframe_and_shift", &restframe_and_shift,
           py::arg("vis"), py::arg("uvw"), py::arg("freq_old_rf"), py::arg("z"),
           py::arg("ra_old"), py::arg("dec_old"), py::arg("ra_new"), py::arg("dec_new"));
+
+#ifdef WITH_CUDA
+    // Several datasets of the same shape in one GPU launch.  The arrays carry
+    // the datasets along their first axis.
+    m.def("full_pipeline_batch_same_shape",
+          [](py::array_t<std::complex<float>, py::array::c_style | py::array::forcecast> vis,
+             py::array_t<bool,   py::array::c_style | py::array::forcecast> flag,
+             py::array_t<double, py::array::c_style | py::array::forcecast> uvw,
+             py::array_t<double, py::array::c_style | py::array::forcecast> z,
+             py::array_t<double, py::array::c_style | py::array::forcecast> freq_old_rf,
+             py::array_t<double, py::array::c_style | py::array::forcecast> ra_old,
+             py::array_t<double, py::array::c_style | py::array::forcecast> dec_old,
+             py::array_t<double, py::array::c_style | py::array::forcecast> ra_new,
+             py::array_t<double, py::array::c_style | py::array::forcecast> dec_new,
+             py::array_t<double, py::array::c_style | py::array::forcecast> freq_new) {
+              if (!_gpu_available)
+                  throw std::runtime_error("no GPU visible");
+              if (vis.ndim() != 4 || flag.ndim() != 4 || uvw.ndim() != 3
+                  || freq_old_rf.ndim() != 2 || freq_new.ndim() != 2)
+                  throw std::invalid_argument("vis, flag: [n, row, chan, corr]; uvw: [n, row, 3]; "
+                                              "freq_old_rf, freq_new: [n, chan]");
+              const ssize_t n = vis.shape(0), nrow = vis.shape(1), nchan_old = vis.shape(2),
+                            ncorr = vis.shape(3), nchan_new = freq_new.shape(1);
+              for (ssize_t d = 0; d < 4; ++d)
+                  if (flag.shape(d) != vis.shape(d))
+                      throw std::invalid_argument("flag must have the shape of vis");
+              if (uvw.shape(0) != n || uvw.shape(1) != nrow || uvw.shape(2) != 3
+                  || freq_old_rf.shape(0) != n || freq_old_rf.shape(1) != nchan_old
+                  || freq_new.shape(0) != n || z.size() != n || ra_old.size() != n
+                  || dec_old.size() != n || ra_new.size() != n || dec_new.size() != n)
+                  throw std::invalid_argument("one entry per dataset in every argument");
+              py::array_t<std::complex<float>> vis_out({n, nrow, nchan_new, ncorr});
+              py::array_t<bool>                flag_out({n, nrow, nchan_new, ncorr});
+              py::array_t<double>              uvw_out({n, nrow, (ssize_t)3});
+              {
+                  py::gil_scoped_release release;
+                  full_pipeline_batch_cuda(
+                      reinterpret_cast<const float*>(vis.data()),
+                      reinterpret_cast<const uint8_t*>(flag.data()),
+                      uvw.data(), freq_old_rf.data(), freq_new.data(), z.data(),
+                      ra_old.data(), dec_old.data(), ra_new.data(), dec_new.data(),
+                      (int)n, (int)nrow, (int)nchan_old, (int)nchan_new, (int)ncorr,
+                      reinterpret_cast<float*>(vis_out.mutable_data()),
+                      reinterpret_cast<uint8_t*>(flag_out.mutable_data()),
+                      uvw_out.mutable_data());
+              }
+              return py::make_tuple(vis_out, flag_out, uvw_out);
+          },
+          py::arg("vis"), py::arg("flag"), py::arg("uvw"), py::arg("z"),
+          py::arg("freq_old_rf"), py::arg("ra_old"), py::arg("dec_old"),
+          py::arg("ra_new"), py::arg("dec_new"), py::arg("freq_new"),
+          "full_pipeline() on several datasets of the same shape, in one GPU launch.");
+#endif
 
     m.def("gpu_available", []() { return _gpu_available; },
           "True if the kernel was built with CUDA and a GPU is visible.");

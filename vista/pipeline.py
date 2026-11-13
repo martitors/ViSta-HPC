@@ -29,7 +29,9 @@ extension module ms_ops.so, built from src/ms_ops.cpp and src/ms_ops_cuda.cu.
 import os
 
 # ── Threading environment (set before any NumPy / OpenBLAS / MKL import) ──
-_n_threads = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or (os.cpu_count() or 4)
+# VISTA_OMP_THREADS, if set, wins over the cores of the SLURM allocation.
+_n_threads = (int(os.environ.get("VISTA_OMP_THREADS", 0))
+              or int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or (os.cpu_count() or 4))
 os.environ["OMP_NUM_THREADS"]        = str(_n_threads)
 os.environ["OPENBLAS_NUM_THREADS"]   = str(_n_threads)
 os.environ["MKL_NUM_THREADS"]        = str(_n_threads)
@@ -61,7 +63,65 @@ except ImportError:          # or found on PYTHONPATH
 # with CUDA and a GPU is visible; here it is only reported in the log.
 _gpu_available = bool(getattr(ms_ops, "gpu_available", lambda: False)())
 # Several datasets in one launch: only if the kernel has the batch entry.
-_gpu_batch = _gpu_available and hasattr(ms_ops, "full_pipeline_batch")
+_gpu_batch = _gpu_available and hasattr(ms_ops, "full_pipeline_batch_same_shape")
+
+
+def _regular_widths(freq, width):
+    """True if the channel widths are those the batch kernel derives from
+    the channel centres (contiguous channels): only then can a dataset go
+    in a batched launch, which takes no widths."""
+    freq, width = np.asarray(freq, float), np.abs(np.asarray(width, float))
+    if len(freq) < 2:
+        return False
+    d = np.empty(len(freq))
+    d[0], d[-1] = freq[1] - freq[0], freq[-1] - freq[-2]
+    d[1:-1] = 0.5 * (freq[2:] - freq[:-2])
+    return bool(np.allclose(np.abs(d), width, rtol=1e-6, atol=0.0))
+
+
+def full_pipeline_batch(vis_list, flag_list, uvw_list, z_list, freq_old_list,
+                        ra_old_list, dec_old_list, ra_new_list, dec_new_list,
+                        freq_new_list, width_list):
+    """``ms_ops.full_pipeline`` on several datasets, with as few GPU launches
+    as possible: the datasets of the same shape (rows, channels in and out,
+    correlations) and with contiguous channels go together in one launch;
+    every other one goes on its own.  Returns one ``(vis, flag, uvw)`` per
+    dataset, in the order given."""
+    n = len(vis_list)
+    out = [None] * n
+    groups = {}
+    for i in range(n):
+        key = None
+        if _regular_widths(freq_old_list[i], width_list[i]):
+            key = (vis_list[i].shape, len(freq_new_list[i]))
+        groups.setdefault(key if key is not None else ("alone", i), []).append(i)
+    def alone(i):
+        return ms_ops.full_pipeline(
+            vis_list[i], flag_list[i], uvw_list[i], z_list[i], freq_old_list[i],
+            ra_old_list[i], dec_old_list[i], ra_new_list[i], dec_new_list[i],
+            freq_new_list[i], width_old_rf=width_list[i])
+
+    for key, idx in groups.items():
+        if len(idx) == 1:
+            out[idx[0]] = alone(idx[0])
+            continue
+        try:
+            vis, flag, uvw = ms_ops.full_pipeline_batch_same_shape(
+            np.stack([vis_list[i] for i in idx]), np.stack([flag_list[i] for i in idx]),
+            np.stack([np.asarray(uvw_list[i], np.float64) for i in idx]),
+            np.array([z_list[i] for i in idx], np.float64),
+            np.stack([np.asarray(freq_old_list[i], np.float64) for i in idx]),
+            np.array([ra_old_list[i] for i in idx]), np.array([dec_old_list[i] for i in idx]),
+            np.array([ra_new_list[i] for i in idx]), np.array([dec_new_list[i] for i in idx]),
+            np.stack([np.asarray(freq_new_list[i], np.float64) for i in idx]))
+        except (RuntimeError, MemoryError) as e:     # e.g. not enough memory on the GPU
+            _log(f"  GPU batch of {len(idx)} datasets failed ({e}): one at a time")
+            for i in idx:
+                out[i] = alone(i)
+            continue
+        for k, i in enumerate(idx):
+            out[i] = (vis[k], flag[k], uvw[k])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1008,6 +1068,10 @@ class ViSta:
         else:
             _phys_cores = max(1, _mp.cpu_count() // 2)
             _n_readers  = 1
+        # Overrides, for scans: VISTA_OMP_THREADS (kernel threads, read when
+        # the module is imported) and VISTA_N_READERS (reader threads).
+        _phys_cores = int(os.environ.get("VISTA_OMP_THREADS", 0)) or _phys_cores
+        _n_readers  = int(os.environ.get("VISTA_N_READERS", 0)) or _n_readers
         os.environ["OMP_NUM_THREADS"] = str(_phys_cores)
         _log(f"OMP_NUM_THREADS={_phys_cores}  reader_threads={_n_readers}  "
              f"GPU={'yes' if _gpu_available else 'no'}")
@@ -1590,7 +1654,7 @@ class ViSta:
             """Process a batch of MS packages on the GPU in a single kernel launch.
 
             Packs all MSs in *pkgs* into the argument lists expected by
-            ``ms_ops.full_pipeline_batch()``, which processes them in one
+            ``full_pipeline_batch()``, which processes them in one
             CUDA kernel launch.  The results are then unpacked and wrapped
             in dask-ms Datasets for writing.
 
@@ -1654,12 +1718,13 @@ class ViSta:
             dec_new_list  = [pkg["dec1_rad"] for pkg in pkgs]
             freq_new_list = [freq_new_per_ms[pkg["ms_idx"]] for pkg in pkgs]
 
-            gpu_results = ms_ops.full_pipeline_batch(
+            gpu_results = full_pipeline_batch(
                 vis_list, flag_list, uvw_list,
                 z_list, freq_old_list,
                 ra_old_list, dec_old_list,
                 ra_new_list, dec_new_list,
                 freq_new_list,
+                [pkg["width_merged"] for pkg in pkgs],
             )
             dt_batch = time.perf_counter() - t_ms
             _log(f"  GPU batch: {len(pkgs)} MSs processed in {dt_batch:.1f}s")
@@ -1923,10 +1988,11 @@ class ViSta:
         # ------------------------------------------------------------------
         # GPU batch configuration
         # ------------------------------------------------------------------
-        # On GPU: accumulate up to GPU_BATCH MS packages and process them in
-        # a single CUDA kernel launch via ms_ops.full_pipeline_batch().
+        # On GPU: accumulate up to GPU_BATCH MS packages and process them with
+        # full_pipeline_batch(): one CUDA launch per group of the same shape.
         # On CPU: GPU_BATCH=1, fall through to the sequential _process_ms path.
-        GPU_BATCH  = 20 if _gpu_batch else 1
+        # VISTA_GPU_BATCH sets how many datasets go in one launch (default 20).
+        GPU_BATCH  = max(1, int(os.environ.get("VISTA_GPU_BATCH", 20))) if _gpu_batch else 1
         processed  = 0
         batch_pkgs = []
 
@@ -1934,7 +2000,7 @@ class ViSta:
             """Process a batch of MS packages and push results to write_q.
 
             On GPU: packs all MSs in the batch into a single kernel launch
-            (``ms_ops.full_pipeline_batch``), then unpacks the results.
+            (``full_pipeline_batch``), then unpacks the results.
             On CPU: processes each MS sequentially with ``ms_ops.full_pipeline``.
             """
             nonlocal processed, total_rows, total_bytes
