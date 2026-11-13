@@ -155,7 +155,14 @@ def run(cmd, watch=None, interval=0.5, disk_interval=2.0, log=None, env=None, cw
     # wait4: the exit status and the resources of the command and of every
     # descendant it waited for
     _, status, usage = os.wait4(proc.pid, 0)
-    rc = proc.returncode = os.waitstatus_to_exitcode(status)
+    # (os.waitstatus_to_exitcode is Python 3.9; the environment can be older)
+    if os.WIFEXITED(status):
+        rc = os.WEXITSTATUS(status)
+    elif os.WIFSIGNALED(status):
+        rc = -os.WTERMSIG(status)
+    else:
+        rc = 1
+    proc.returncode = rc
     t_end = time.time() - t_start
     stop.set()
     th.join()
