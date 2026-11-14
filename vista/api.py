@@ -97,6 +97,8 @@ _HELP = {
         ("n_writers", "int | None", "writer threads (zarr only); None: from the cores"),
         ("n_threads", "int | None", "kernel threads; None: the cores left"),
         ("gpu_batch", "int | None", "GPU: chunks per launch; None: as many as fit in memory"),
+        ("chunk_rows", "int | None", "rows a reader hands to the kernel; None: 5000, fewer "
+                                     "for wide spectra"),
         ("scratch_dir", "path | None", "write the stack on this disk, then move it"),
         ("verbose", "False | True | 'debug'", "warnings only | progress and results | also "
                                               "the details and the timing"),
@@ -641,6 +643,9 @@ class ViSta:
         is refused.
     gpu_batch : int or None
         GPU: chunks per launch.  None: as many as fit in the memory.
+    chunk_rows : int or None
+        Rows a reader hands to the kernel at a time.  None: the default of
+        the pipeline (5000), lowered for wide spectra.
     scratch_dir : str or None
         Write the stack on this (fast, local) disk and move it at the end.
     verbose : bool or 'debug', default False
@@ -652,7 +657,7 @@ class ViSta:
 
     def __init__(self, input_list, output_name="stacked", output_format=None, device="cpu",
                  n_readers=None, n_writers=None, n_threads=None, gpu_batch=None,
-                 scratch_dir=None, verbose=False, log_file=None):
+                 chunk_rows=None, scratch_dir=None, verbose=False, log_file=None):
         from .extract.sources import read_input_list
         from .resources import plan_workers
 
@@ -691,6 +696,7 @@ class ViSta:
                                                      ("gpu_batch", gpu_batch))}
         plan_workers(self.n_entries, output_format == "zarr", counts["n_readers"],
                      counts["n_writers"], counts["n_threads"])        # refuses now
+        self.chunk_rows = _check_count("chunk_rows", chunk_rows)
         if scratch_dir is not None and not os.path.isdir(scratch_dir):
             raise FileNotFoundError(f"scratch_dir {scratch_dir!r} does not exist")
         self.output_name, self.output_format = name, output_format
@@ -1232,7 +1238,8 @@ class ViSta:
 
             centre = (self._continuum_frequency() if self.lines is None
                       else self.lines.rest_freq_hz)
-            out = Stacker(self.input_list, verbose=self.verbose).run(
+            out = Stacker(self.input_list, verbose=self.verbose,
+                          chunk_rows=self.chunk_rows).run(
                 output=f["stack"], central_freq=centre, output_format=self.output_format,
                 **o, **self.run_options)
             subtract_companions(f["stack"], self.input_list, self.companions, self.lines,
@@ -1250,13 +1257,15 @@ class ViSta:
             centre = self._continuum_frequency()
             _say(f"No line: the stack of the continuum, around {centre / 1e9:.2f} GHz "
                  f"(rest frame)", bool(self.verbose))
-            out = Stacker(self.input_list, verbose=self.verbose).run(
+            out = Stacker(self.input_list, verbose=self.verbose,
+                          chunk_rows=self.chunk_rows).run(
                 output=f["stack"], central_freq=centre, output_format=self.output_format,
                 **o, **self.run_options)
             if ex is not None:
                 self._compress()
             return out
-        return Stacker(self.input_list, verbose=self.verbose).run(
+        return Stacker(self.input_list, verbose=self.verbose,
+                       chunk_rows=self.chunk_rows).run(
             output=f["stack"], central_freq=self.lines.rest_freq_hz,
             output_format=self.output_format, line=self.lines,
             continuum=ContinuumConfig(order=order) if subtract else None,

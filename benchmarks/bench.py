@@ -40,6 +40,7 @@ of at most 5000 rows for v2).  Every scan changes one thing:
     cores      8, 16 cores                      (ViSta-HPC; and 32: standard)
     batch      1, 5, 10 per GPU launch      (ViSta-HPC, GPU; and 20: standard)
     writers    1, 2, 4, 8 Zarr writers                  (ViSta-HPC v2 Zarr only)
+    chunk      500, 1000, 2500, 10000, 20000 rows per chunk   (and 5000: standard)
 
 ViSta 1.0 runs in the scans standard, nms and nchan, once per configuration
 (``--repeats-vista1``), and only when ``cpu`` is among the devices.  The
@@ -84,7 +85,7 @@ METHODS = ("vista1", "hpc_v1", "hpc_v2_ms", "hpc_v2_zarr", "hpc_v2_onepass")
 HPC = METHODS[1:]
 # writers = 0: the Zarr writers are chosen as ViSta-HPC v2 would choose them
 STANDARD = {"n_ms": 50, "nchan": 1000, "cores": 32, "readers": 2, "gpu_batch": 20,
-            "writers": 0, "extraction": "own"}
+            "writers": 0, "chunk_rows": 5000, "extraction": "own"}
 # What ViSta-HPC v2 is asked to measure.  "own": its own way, with the model
 # chosen by the data and the searches on noise.  "common": the measurement all
 # three versions can make, a Gaussian source and no searches, so that the
@@ -99,6 +100,7 @@ SCANS = {
     "cores": [{"cores": n} for n in (8, 16, 32)],
     "batch": [{"gpu_batch": n} for n in (1, 5, 10, 20)],
     "writers": [{"writers": n} for n in (1, 2, 4, 8)],
+    "chunk": [{"chunk_rows": n} for n in (500, 1000, 2500, 5000, 10000, 20000)],
 }
 VISTA1_SCANS = ("standard", "nms", "nchan")     # ViSta 1.0 has no readers, threads, GPU
 GPU_ONLY = ("batch",)
@@ -222,7 +224,8 @@ def command(method, device, a, cfg, lst, truth, out):
         # readers, threads and GPU batch of this version are set in the environment;
         # --scratch "": the stack is written in place, as by the other versions
         env.update(PYTHONPATH=a.hpc_v1, VISTA_N_READERS=str(used["readers"]),
-                   VISTA_OMP_THREADS=str(threads), VISTA_GPU_BATCH=str(cfg["gpu_batch"]))
+                   VISTA_OMP_THREADS=str(threads), VISTA_GPU_BATCH=str(cfg["gpu_batch"]),
+                   VISTA_CHUNK_ROWS=str(cfg["chunk_rows"]))
         return ["bash", os.path.join(a.hpc_v1, "run_vista.sh"), "--input", lst,
                 "--rest-freq", rest, "--velocity-range", vrange,
                 "--v-window", f"{-LINE_WINDOW} {LINE_WINDOW}", "--z-ref", z_ref,
@@ -235,6 +238,7 @@ def command(method, device, a, cfg, lst, truth, out):
            "--line-window", str(LINE_WINDOW), "--velocity-range", vrange,
            "--z-ref", z_ref, "--device", device, "--readers", str(used["readers"]),
            "--threads", str(threads), "--gpu-batch", str(cfg["gpu_batch"]),
+           "--chunk-rows", str(cfg["chunk_rows"]),
            "--output-format", "zarr" if zarr else "ms",
            "--mode", "onepass" if method == "hpc_v2_onepass" else "steps"]
     if zarr:

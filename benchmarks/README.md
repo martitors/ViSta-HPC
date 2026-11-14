@@ -164,5 +164,22 @@ It needs no data and reads nothing of the sample, so it can run while the
 benchmark of the three versions is going on; it only wants a node of its
 own.  The C++ side is measured twice, with the output buffers allocated once
 and allocated at every call, because the binding has to allocate them: the
-second is the honest comparison.  `THREADS="1 32"` and `CHANS="16 1000"`
-choose the sweeps.
+second is the honest comparison.  `THREADS="1 32"`, `CHANS="16 1000"` and
+`ROWS=...` choose the sweeps.
+
+With `ROWS` it answers a second question: how many rows a call has to carry
+before the kernel runs at full speed.  That is the lower bound of
+`chunk_rows`, the rows a reader hands to the kernel at a time (5000 in both
+HPC versions).
+
+```bash
+THREADS=32 CHANS=1000 ROWS="250 500 1000 2500 5000 10000 20000" \
+    OUT=$BENCH/results/binding_chunk.jsonl \
+    bash benchmarks/binding/run_binding.sh
+```
+
+The kernel only says where it stops gaining.  What the right value is is
+decided by the pipeline, where the chunk is the grain at which readers,
+kernel and writers take turns: that is the scan `chunk` of the benchmark
+above, which measures the three versions at 500 to 20 000 rows per chunk and,
+for ViSta-HPC v2, says in the results which stage limited each of them.

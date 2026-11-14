@@ -4,6 +4,9 @@
 //     g++ -O3 -fopenmp -std=c++17 $(python3 -m pybind11 --includes) \
 //         bench_binding.cpp -o bench_binding $(python3-config --ldflags --embed)
 //
+//     ./bench_binding --threads 32 --nchan 1000 --nchan-new 800 \
+//                     --rows 250 500 1000 2500 5000 10000 20000
+//
 // Three times are measured for every chunk size:
 //
 //   kernel         cpu_full_pipeline() on buffers allocated once;
@@ -18,6 +21,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -56,12 +60,17 @@ double median(std::vector<double> v)
 int main(int argc, char** argv)
 {
     int nchan_old = 1000, nchan_new = 800, ncorr = 2, threads = 1;
-    std::vector<long> rows = {1, 8, 64, 512, 5000};
-    for (int i = 1; i < argc - 1; ++i) {
-        if (!std::strcmp(argv[i], "--threads"))   threads = std::atoi(argv[i + 1]);
-        if (!std::strcmp(argv[i], "--nchan"))     nchan_old = std::atoi(argv[i + 1]);
-        if (!std::strcmp(argv[i], "--nchan-new")) nchan_new = std::atoi(argv[i + 1]);
+    std::vector<long> rows;
+    for (int i = 1; i < argc; ++i) {
+        const bool more = i < argc - 1;
+        if (more && !std::strcmp(argv[i], "--threads"))   threads = std::atoi(argv[i + 1]);
+        if (more && !std::strcmp(argv[i], "--nchan"))     nchan_old = std::atoi(argv[i + 1]);
+        if (more && !std::strcmp(argv[i], "--nchan-new")) nchan_new = std::atoi(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--rows"))              // every number that follows
+            for (int j = i + 1; j < argc && std::isdigit((unsigned char)argv[j][0]); ++j)
+                rows.push_back(std::atol(argv[j]));
     }
+    if (rows.empty()) rows = {1, 8, 64, 512, 5000};
     omp_set_num_threads(threads);
 
     // the two frequency grids: a 1.875 GHz band around CO(3-2) at z = 2.5

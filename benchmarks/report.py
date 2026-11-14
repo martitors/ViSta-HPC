@@ -25,7 +25,8 @@ from bench import METHODS, SCANS, STANDARD, load_runs, value
 PARAMS = tuple(STANDARD)
 STEPS = ("stack", "contsub", "extraction", "other")
 LABEL = {"n_ms": "N_MS", "nchan": "N_chan", "readers": "readers", "cores": "cores",
-         "gpu_batch": "GPU batch", "writers": "writers", "extraction": "extraction"}
+         "gpu_batch": "GPU batch", "writers": "writers", "chunk_rows": "rows/chunk",
+         "extraction": "extraction"}
 
 
 def extraction_of(run):

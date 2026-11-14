@@ -5,6 +5,11 @@
 #     bash benchmarks/binding/run_binding.sh          # a job in the debug queue
 #     bash benchmarks/binding/run_binding.sh here     # here and now, for a try
 #
+# The sweep of the chunk, to see where the kernel stops gaining:
+#
+#     THREADS=32 CHANS=1000 ROWS="250 500 1000 2500 5000 10000 20000" \
+#         OUT=$BENCH/results/binding_chunk.jsonl bash .../run_binding.sh
+#
 # It needs no data and reads nothing of the sample, so it can run while the
 # benchmark of the three versions is going on: it only wants a node of its own.
 # The result is $BENCH/results/binding.jsonl and the table on the screen.
@@ -14,6 +19,7 @@ HERE="$REPO/benchmarks/binding"
 OUT=${OUT:-$BENCH/results/binding.jsonl}
 THREADS=${THREADS:-"1 32"}
 CHANS=${CHANS:-"16 1000"}      # a tiny chunk, where the interface shows, and a real one
+ROWS=${ROWS:-}                 # rows per call; empty: 1 8 64 512 5000
 
 if [ "${1:-job}" != here ]; then
     mkdir -p "$BENCH/logs" "$BENCH/results"
@@ -44,9 +50,9 @@ for t in $THREADS; do
         new=$(( nc * 4 / 5 ))
         echo "== $t thread(s), $nc channels =="
         OMP_NUM_THREADS=$t "$BENCH/bench_binding" --threads "$t" --nchan "$nc" \
-                          --nchan-new "$new" | tee -a "$OUT"
+                          --nchan-new "$new" ${ROWS:+--rows $ROWS} | tee -a "$OUT"
         OMP_NUM_THREADS=$t python bench_binding.py --threads "$t" --nchan "$nc" \
-                          --nchan-new "$new" | tee -a "$OUT"
+                          --nchan-new "$new" ${ROWS:+--rows $ROWS} | tee -a "$OUT"
     done
 done
 

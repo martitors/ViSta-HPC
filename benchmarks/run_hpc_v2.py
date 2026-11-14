@@ -48,6 +48,8 @@ def main():
     ap.add_argument("--writers", type=int, default=None)
     ap.add_argument("--threads", type=int, default=None)
     ap.add_argument("--gpu-batch", type=int, default=None)
+    ap.add_argument("--chunk-rows", type=int, default=None,
+                    help="rows a reader hands to the kernel; default: 5000")
     ap.add_argument("--model", default="auto",
                     help="the source of the lines: auto, point, gauss, or a size in arcsec")
     ap.add_argument("--n-null", type=int, default=1000, help="searches on noise")
@@ -57,7 +59,8 @@ def main():
     def vista(continuum, extract):
         v = ViSta(a.input, output_name=a.output_name, device=a.device,
                   output_format=a.output_format, n_readers=a.readers, n_writers=a.writers,
-                  n_threads=a.threads, gpu_batch=a.gpu_batch, verbose="debug")
+                  n_threads=a.threads, gpu_batch=a.gpu_batch,
+                  chunk_rows=a.chunk_rows, verbose="debug")
         v.stack(line_freq=a.rest_freq, line_window=a.line_window,
                 velocity_range=a.velocity_range, continuum=continuum)
         if extract:

@@ -124,6 +124,13 @@ if _AFFINITY is not None:
 _DONE = object()            # end of the stream of processed chunks
 
 
+# Rows of one chunk: what a reader hands to the kernel and a writer writes.
+# Large enough to give every thread work and to amortise the call, small
+# enough that readers, kernel and writers overlap; ms_input lowers it for
+# wide spectra, to keep a chunk around half a gigabyte.
+CHUNK_ROWS = 5000
+
+
 class _Abort(Exception):
     """Raised in a thread waiting on a queue when another thread has failed."""
 
@@ -221,9 +228,10 @@ class Stacker:
 
     # ---- input list -----------------------------------------------------------
 
-    def __init__(self, input_file, verbose=False, chunk_rows=5000):
+    def __init__(self, input_file, verbose=False, chunk_rows=None):
         self.input_file  = input_file
-        self.chunk_rows  = chunk_rows        # at most; fewer for wide spectra (ms_input)
+        # at most; fewer for wide spectra (ms_input)
+        self.chunk_rows  = int(chunk_rows or CHUNK_ROWS)
         self.verbose     = verbose
         self.data_column = "auto"
         self.frame = None
