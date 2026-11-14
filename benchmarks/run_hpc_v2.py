@@ -18,6 +18,11 @@ of the stacking goes (reading, computing, writing), which ``bench.py`` reads.
 Every step prints a ``@@stage <name>`` line, read by ``monitor.py``; the
 results go to ``<output-name>_results.json`` and
 ``<output-name>_continuum_results.json``.
+
+``--model``, ``--n-null`` and ``--n-bootstrap`` are what the benchmark uses to
+ask this version for the measurement all three versions can make (a Gaussian
+source, no searches on noise) instead of its own one, where the data choose
+the model.
 """
 import argparse
 
@@ -43,6 +48,10 @@ def main():
     ap.add_argument("--writers", type=int, default=None)
     ap.add_argument("--threads", type=int, default=None)
     ap.add_argument("--gpu-batch", type=int, default=None)
+    ap.add_argument("--model", default="auto",
+                    help="the source of the lines: auto, point, gauss, or a size in arcsec")
+    ap.add_argument("--n-null", type=int, default=1000, help="searches on noise")
+    ap.add_argument("--n-bootstrap", type=int, default=500, help="resamplings of the sources")
     a = ap.parse_args()
 
     def vista(continuum, extract):
@@ -52,7 +61,13 @@ def main():
         v.stack(line_freq=a.rest_freq, line_window=a.line_window,
                 velocity_range=a.velocity_range, continuum=continuum)
         if extract:
-            v.extract(z_ref=a.z_ref, flux_measure="gauss", figures_draw=False)
+            model = a.model
+            try:                                   # "0.6": a size in arcsec
+                model = float(model)
+            except ValueError:
+                pass
+            v.extract(z_ref=a.z_ref, flux_measure="gauss", figures_draw=False,
+                      model=model, n_null=a.n_null, n_bootstrap=a.n_bootstrap)
         return v
 
     if a.mode == "onepass":

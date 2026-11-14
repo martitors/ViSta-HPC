@@ -6,6 +6,7 @@
 #     bash benchmarks/leonardo/bench.sh nms gpu        # scans: standard, nms, nchan, readers,
 #                                                      # cores, batch (gpu), writers
 #     METHODS=hpc_v1,hpc_v2_zarr bash benchmarks/leonardo/bench.sh readers gpu
+#     EXTRACTION=common bash benchmarks/leonardo/bench.sh standard gpu
 #
 # A job has 32 cores (and, on the Booster, one GPU); every run is limited to
 # the cores of its configuration.  Its results go to its own file,
@@ -33,7 +34,7 @@ case "$DEVICE" in
     *)   echo "device: cpu or gpu"; exit 1 ;;
 esac
 mkdir -p "$BENCH/logs"
-sbatch --job-name="vista_bench_${SCAN}_$DEVICE" "${where[@]}" \
+sbatch --job-name="vista_bench_${SCAN}_$DEVICE${EXTRACTION:+_$EXTRACTION}" "${where[@]}" \
        --nodes=1 --ntasks=1 --cpus-per-task=32 --mem=240G --time="$BENCH_TIME" \
        --output="$BENCH/logs/bench_${SCAN}_${DEVICE}_%j.out" \
        --wrap "source '$REPO/benchmarks/leonardo/config.sh' && activate_env && \
@@ -41,5 +42,6 @@ sbatch --job-name="vista_bench_${SCAN}_$DEVICE" "${where[@]}" \
                python '$REPO/benchmarks/bench.py' --work '$BENCH' --scan $SCAN \
                       --devices $DEVICE --repeats ${REPEATS:-3} \
                       --repeats-vista1 ${REPEATS_VISTA1:-1} --warm-cache \
+                      ${EXTRACTION:+--extraction $EXTRACTION} \
                       ${METHODS:+--methods $METHODS}"
 echo "Follow it with:   tail -f $BENCH/logs/bench_${SCAN}_${DEVICE}_*.out"

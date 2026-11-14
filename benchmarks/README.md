@@ -120,6 +120,14 @@ bash benchmarks/leonardo/bench.sh report         # the tables: $BENCH/results/ta
 CASA never tries to update them: the compute nodes have no internet (a
 previous `config.py` is kept as `config.py.before_vista_bench`).
 
+`EXTRACTION=common` asks ViSta-HPC v2 for the measurement all three versions
+can make — a Gaussian source and no searches on noise — instead of `own`, its
+default, where the data choose between a point source and a Gaussian and a
+thousand searches on noise give the significance.  Only with `common` are the
+times of the extraction comparable.  The two sets of runs live side by side
+in the results, and `report.py --extraction common` shows the second one;
+ViSta 1.0 and ViSta-HPC v1 have no such choice and appear in both tables.
+
 `METHODS=...`, `REPEATS=...`, `REPEATS_VISTA1=...`, `BENCH=...`,
 `CPU_PARTITION=...`, `CPU_ACCOUNT=...`, `CPU_EXCLUSIVE=1` (the whole node, no
 other job beside) in front of a command change its defaults

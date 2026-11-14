@@ -117,10 +117,17 @@ uncertainty of the size in its error.
 
 **When the line cannot tell its size.** A weak line fits a point and a
 Gaussian equally well. If the continuum of the same stack is extended, the
-line is fitted again with **the size of the continuum**: the galaxies are
-the same, so they cannot be a point in the line and extended in the
-continuum. The report says so, and the legend of the figure reads
-`size from cont`:
+report says so and the result carries `continuum_size`, with the size the
+continuum found and its error — but the line keeps the model its own data
+support. The size of the continuum is measured on other channels and comes
+with an error of its own: imposing it on the line moves the flux without any
+error to go with it.
+
+Ask for it with `model="continuum"` and the line is fitted with the size of
+the continuum — the galaxies are the same, so they cannot be a point in the
+line and extended in the continuum — and the error of that size is carried
+into the error of the flux (`flux_error_size`). The legend of the figure
+then reads `size from cont`:
 
 ```{image} ../_static/fig_line_uv_size_from_cont.png
 :alt: A weak line fitted with the size measured on the continuum

@@ -25,7 +25,13 @@ from bench import METHODS, SCANS, STANDARD, load_runs, value
 PARAMS = tuple(STANDARD)
 STEPS = ("stack", "contsub", "extraction", "other")
 LABEL = {"n_ms": "N_MS", "nchan": "N_chan", "readers": "readers", "cores": "cores",
-         "gpu_batch": "GPU batch", "writers": "writers"}
+         "gpu_batch": "GPU batch", "writers": "writers", "extraction": "extraction"}
+
+
+def extraction_of(run):
+    """What a run asked of the extraction: for the versions that have no such
+    choice (ViSta 1.0 and ViSta-HPC v1) it is their own way, in both tables."""
+    return "-" if not run["method"].startswith("hpc_v2") else value(run, "extraction")
 
 
 def median(values):
@@ -37,7 +43,8 @@ def summarise(runs):
     """One record per configuration: the medians of its repeats."""
     groups = {}
     for r in runs:
-        key = (r["method"], r["device"]) + tuple(value(r, p) for p in PARAMS)
+        key = (r["method"], r["device"]) + tuple(
+            extraction_of(r) if p == "extraction" else value(r, p) for p in PARAMS)
         groups.setdefault(key, []).append(r)
     out = []
     for key, rs in groups.items():
@@ -196,7 +203,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--work", required=True)
     for k, v in STANDARD.items():
-        ap.add_argument("--" + k.replace("_", "-"), type=int, default=v,
+        ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=v,
                         help=f"of the standard configuration (default {v})")
     a = ap.parse_args()
     res = os.path.join(a.work, "results")
@@ -205,7 +212,15 @@ def main():
 
     def at(**change):
         cfg = dict(standard, **change)
-        return sorted((r for r in summary if all(r[p] == cfg[p] for p in PARAMS)), key=order)
+
+        def fits(r):
+            for p in PARAMS:
+                if p == "extraction" and r[p] == "-":
+                    continue                      # ViSta 1.0 and v1: in both tables
+                if r[p] != cfg[p]:
+                    return False
+            return True
+        return sorted((r for r in summary if fits(r)), key=order)
 
     txt = ["# Benchmark of ViSta 1.0, ViSta-HPC v1 and ViSta-HPC v2", "",
            "Medians of the repeats; times in seconds.", "",

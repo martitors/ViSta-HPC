@@ -49,6 +49,12 @@ Every job writes its own file, WORK/results/runs_<scan>_<job>.json, and works
 in its own directory, WORK/runs/<job>/; a run already in any results file is
 not repeated, so a job that ran out of time is simply submitted again.
 
+``--extraction common`` asks ViSta-HPC v2 for the measurement all three
+versions can make (a Gaussian source, no searches on noise): only then are
+the times of the extraction comparable.  ``own``, the default, leaves it the
+measurement it is made for.  The two sets of runs live side by side in the
+results.
+
 Usage::
 
     python bench.py --work WORK --scan nms --devices gpu --repeats 3
@@ -78,7 +84,13 @@ METHODS = ("vista1", "hpc_v1", "hpc_v2_ms", "hpc_v2_zarr", "hpc_v2_onepass")
 HPC = METHODS[1:]
 # writers = 0: the Zarr writers are chosen as ViSta-HPC v2 would choose them
 STANDARD = {"n_ms": 50, "nchan": 1000, "cores": 32, "readers": 2, "gpu_batch": 20,
-            "writers": 0}
+            "writers": 0, "extraction": "own"}
+# What ViSta-HPC v2 is asked to measure.  "own": its own way, with the model
+# chosen by the data and the searches on noise.  "common": the measurement all
+# three versions can make, a Gaussian source and no searches, so that the
+# times of the extraction can be compared.  The other versions have no such
+# choice and are the same in both.
+EXTRACTIONS = {"own": [], "common": ["--model", "gauss", "--n-null", "0"]}
 SCANS = {
     "standard": [{}],
     "nms": [{"n_ms": n} for n in (10, 25, 50, 100)],
@@ -227,6 +239,7 @@ def command(method, device, a, cfg, lst, truth, out):
            "--mode", "onepass" if method == "hpc_v2_onepass" else "steps"]
     if zarr:
         cmd += ["--writers", str(used["writers"])]
+    cmd += EXTRACTIONS[cfg["extraction"]]
     return cmd, env, used
 
 
@@ -401,7 +414,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="print the commands that would run, and run nothing")
     for k, v in STANDARD.items():
-        ap.add_argument("--" + k.replace("_", "-"), type=int, default=v,
+        ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=v,
                         help=f"of the standard configuration (default {v})")
     a = ap.parse_args()
     methods = [m for m in a.methods.split(",") if m]
@@ -449,6 +462,8 @@ def main():
                     if scan in GPU_ONLY and device != "gpu":
                         continue
                     key = dict(cfg, method=method, device=device)
+                    if not method.startswith("hpc_v2"):
+                        del key["extraction"]      # only ViSta-HPC v2 has the choice
                     done = sum(all(value(r, k) == v for k, v in key.items())
                                for r in load_runs(a.work))      # also those of other jobs
                     label = f"[{scan}] {method} {device} " + " ".join(
@@ -467,7 +482,8 @@ def main():
                         except RuntimeError as e:
                             print(f"{label}: {e}", flush=True)
                             break
-                        mine.append(dict(key, scan=scan, repeat=rep, meta=meta, **r))
+                        mine.append(dict(key, extraction=key.get("extraction", "-"),
+                                         scan=scan, repeat=rep, meta=meta, **r))
                         with open(path, "w") as fh:
                             json.dump(mine, fh, indent=1)
                         s = r["seconds"]

@@ -595,6 +595,17 @@ class RunResult:
         return self.report()
 
 
+def _flux_error_of_the_size(summary, theta_error, spread):
+    """The error of a size taken from the continuum, carried into the error of
+    the flux of the line: added in quadrature, and kept apart so that the two
+    parts stay visible."""
+    summary["theta_fixed_error_arcsec"] = float(theta_error)
+    summary["flux_error_size"] = float(spread)
+    for block, key in ((summary, "flux_total_error"), (summary.get("line") or {}, "flux_error")):
+        if block.get(key) is not None:
+            block[key] = float(np.hypot(block[key], spread))
+
+
 class ViSta:
     """Stack interferometric observations of many sources in the uv plane
     and measure the stacked lines and continuum.
@@ -1386,11 +1397,22 @@ class ViSta:
                                    "(v.stack(..., continuum='subtract'))")
             cont = the_continuum(None)
             theta = cont.summary.get("theta_fwhm_arcsec") or 0.0
+            theta_err = cont.summary.get("theta_error_arcsec") or 0.0
             _say("Line with the source of the continuum: "
                  + (f"Gaussian, FWHM {theta:.2f} arcsec" if theta else "point"), verbose)
             line = the_line(replace(ex["line"], size="gauss" if theta else "point",
                                     theta_fixed_arcsec=theta or None))
             line.summary["size_from"] = "continuum"
+            if theta and theta_err:
+                # that size is not exact: what its error does to the flux of
+                # the line belongs to the error of the line
+                fluxes = [the_line(replace(ex["line"], size="gauss",
+                                           theta_fixed_arcsec=max(t, 1e-3))).summary["flux_total"]
+                          for t in (theta + theta_err, theta - theta_err)]
+                spread = 0.5 * abs(fluxes[0] - fluxes[1])
+                _flux_error_of_the_size(line.summary, theta_err, spread)
+                _say(f"  the size of the continuum is known to +-{theta_err:.2f} arcsec: "
+                     f"+-{spread:.3g} of error on the flux of the line", verbose)
         else:
             if want_line:
                 line = the_line(ex["line"])
@@ -1401,16 +1423,26 @@ class ViSta:
             if (line is not None and ex["line_model"] == "auto"
                     and not line.summary.get("theta_fwhm_arcsec")
                     and ct.get("adopted") == "gauss" and cont.summary.get("theta_fwhm_arcsec")):
-                # the line cannot tell its size, the continuum can: the same
-                # galaxies, so the line is measured again with that size
+                # The line does not show a size and the continuum does.  It is
+                # said, not done: the size of the continuum comes from other
+                # channels and with an error of its own, and fixing it on the
+                # line moves its flux without any error to go with it.  The
+                # line keeps the model its own data support; the measurement
+                # with the size of the continuum, and the error that size
+                # carries, is what v.extract(model="continuum") gives.
                 theta = cont.summary["theta_fwhm_arcsec"]
-                _say(f"The line does not show its size, the continuum does: the line again "
-                     f"with the size of the continuum, FWHM {theta:.2f} arcsec", verbose)
-                own = line.summary.get("size_test")
-                line = the_line(replace(ex["line"], size="gauss", theta_fixed_arcsec=theta))
-                line.summary["size_from"] = "continuum"
-                line.summary["size_own"] = own
-        if line is not None and line.summary.get("size_from"):
+                theta_err = cont.summary.get("theta_error_arcsec") or 0.0
+                line.summary["continuum_size"] = {
+                    "theta_fwhm_arcsec": theta, "theta_error_arcsec": theta_err,
+                    "used": False,
+                    "note": "the continuum is resolved and the line is not; "
+                            "model='continuum' measures the line with this size"}
+                _say(f"The line does not show its size, the continuum does "
+                     f"(FWHM {theta:.2f} +- {theta_err:.2f} arcsec): the line keeps its own "
+                     f"model; model='continuum' measures it with the size of the continuum",
+                     verbose)
+        if line is not None and (line.summary.get("size_from")
+                                 or line.summary.get("continuum_size")):
             import json
             from .extract.measure import _jsonable
             with open(f"{prefix}_results.json", "w") as fh:        # with where the size is from
