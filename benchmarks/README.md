@@ -143,3 +143,26 @@ build (`git apply .../uvmultifit.patch && python setup.py build_ext
 --inplace`): the patch lets it build with NumPy 2 and finds the baseline of a
 visibility from its two antennas instead of scanning the ~500 000 baselines
 of a stack.
+
+## What the Python interface costs
+
+`benchmarks/binding/` answers a question of its own: ViSta-HPC calls its
+compute kernel from Python, so how much does going through pybind11 cost?
+The same function, `cpu_full_pipeline`, is called on the same data from a
+C++ program (`bench_binding.cpp`, which includes `src/ms_ops.cpp` and calls
+the kernel directly) and from Python (`bench_binding.py`, through
+`ms_ops.full_pipeline`), on chunks from one row to the 5000 of a real read.
+Both print the checksum of what they computed, and the table is refused if
+the two do not agree.
+
+```bash
+bash benchmarks/binding/run_binding.sh          # a job in the debug queue
+bash benchmarks/binding/run_binding.sh here     # here and now, for a try
+```
+
+It needs no data and reads nothing of the sample, so it can run while the
+benchmark of the three versions is going on; it only wants a node of its
+own.  The C++ side is measured twice, with the output buffers allocated once
+and allocated at every call, because the binding has to allocate them: the
+second is the honest comparison.  `THREADS="1 32"` and `CHANS="16 1000"`
+choose the sweeps.
