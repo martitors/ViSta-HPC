@@ -336,7 +336,11 @@ def run_one(method, device, a, cfg, lst, truth, workdir):
         files = " ".join(shlex.quote(r.split()[0]) for r in open(lst))
         subprocess.run(f"find {files} -type f -exec cat {{}} + > /dev/null", shell=True)
     cmd, env, used = command(method, device, a, cfg, lst, truth, out)
-    m = monitor.run(cmd, watch=out, env=env, log=os.path.join(out, "run.log"),
+    # cwd: the directory of the run, never a checkout.  A script run as
+    # "python - <<PY" has the current directory first in its import path,
+    # before PYTHONPATH, so from the directory of one version it would import
+    # the other one; and CASA writes its logs where it runs.
+    m = monitor.run(cmd, watch=out, env=env, log=os.path.join(out, "run.log"), cwd=out,
                     gpu=(device == "gpu"), cpus=job_cpus()[:cfg["cores"]])
     try:
         if m["returncode"] != 0:
