@@ -30,8 +30,12 @@ activate_env
 mkdir -p "$BENCH/results"
 cd "$HERE"
 echo "== building the C++ caller, the flags of the module =="
+# --embed links libpython: an rpath to where it lives, or the program builds
+# and then does not start.
+PYLIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
 g++ -O3 -fopenmp -std=c++17 $(python -m pybind11 --includes) \
-    bench_binding.cpp -o "$BENCH/bench_binding" $(python3-config --ldflags --embed)
+    bench_binding.cpp -o "$BENCH/bench_binding" \
+    $(python3-config --ldflags --embed) -Wl,-rpath,"$PYLIB"
 lscpu | grep "Model name"
 
 : > "$OUT"
