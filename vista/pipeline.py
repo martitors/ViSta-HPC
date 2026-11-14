@@ -697,16 +697,19 @@ class ViSta:
         RA and Dec are parsed by astropy (sexagesimal or decimal).
         FIELD_ID defaults to 0.  SPW_IDs is a comma-separated list of
         spectral window indices (default: all).
-    chunk_rows : int
+    chunk_rows : int or None
         Number of baseline rows processed per chunk.  Larger values reduce
         Python overhead but increase peak memory usage.  An adaptive mechanism
         may lower this at runtime if the input channel count is very large.
+        None: VISTA_CHUNK_ROWS if it is set, else 5000.
     verbose : bool
         If True, print timestamped progress messages to stdout.
     """
 
-    def __init__(self, input_file, chunk_rows=5000, verbose=True):
-        self.chunk_rows = chunk_rows
+    def __init__(self, input_file, chunk_rows=None, verbose=True):
+        # VISTA_CHUNK_ROWS, for scans, like VISTA_OMP_THREADS and
+        # VISTA_N_READERS; an argument given here wins over it.
+        self.chunk_rows = int(chunk_rows or os.environ.get("VISTA_CHUNK_ROWS", 0) or 5000)
         self.verbose    = verbose
         self.ms_list    = []
         self.z_list     = []
