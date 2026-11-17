@@ -310,11 +310,12 @@ def seconds_in(text):
 
 
 def inside(path):
-    """Where the time of the stacking goes, from the log of ViSta-HPC v2
-    (``verbose="debug"``): reading (Python and casacore), computing (the
-    kernel, on the CPU or on the GPU) and writing, which overlap; and, of the
-    computing, the continuum subtraction and the statistics.  Of a log with
-    several runs, the first stacking: the one of the step that is timed."""
+    """Where the time of the stacking goes, from the log of ViSta-HPC v1 and
+    v2 (v2 with ``verbose="debug"``), which write the same lines: setup,
+    reading (Python and casacore), computing (the kernel, on the CPU or on
+    the GPU) and writing, which overlap; and, for v2, of the computing, the
+    continuum subtraction and the statistics.  Of a log with several runs,
+    the first stacking: the one of the step that is timed."""
     out = {}
 
     def fill(line, fields):
@@ -371,7 +372,7 @@ def run_one(method, device, a, cfg, lst, truth, workdir):
     seconds = {"stack": 0.0, "contsub": 0.0, "extraction": 0.0, "other": 0.0}
     for s in m["stages"]:
         seconds[STEPS.get(s["stage"], "other")] += s["seconds"]
-    within = inside(os.path.join(out, "run.log")) if method.startswith("hpc_v2") else None
+    within = inside(os.path.join(out, "run.log")) if method.startswith("hpc_") else None
     if not a.keep_runs:
         shutil.rmtree(out, ignore_errors=True)
     return {"seconds": seconds, "wall_seconds": m["wall_seconds"],
