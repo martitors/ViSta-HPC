@@ -697,19 +697,16 @@ class ViSta:
         RA and Dec are parsed by astropy (sexagesimal or decimal).
         FIELD_ID defaults to 0.  SPW_IDs is a comma-separated list of
         spectral window indices (default: all).
-    chunk_rows : int or None
+    chunk_rows : int
         Number of baseline rows processed per chunk.  Larger values reduce
         Python overhead but increase peak memory usage.  An adaptive mechanism
         may lower this at runtime if the input channel count is very large.
-        None: VISTA_CHUNK_ROWS if it is set, else 5000.
     verbose : bool
         If True, print timestamped progress messages to stdout.
     """
 
-    def __init__(self, input_file, chunk_rows=None, verbose=True):
-        # VISTA_CHUNK_ROWS, for scans, like VISTA_OMP_THREADS and
-        # VISTA_N_READERS; an argument given here wins over it.
-        self.chunk_rows = int(chunk_rows or os.environ.get("VISTA_CHUNK_ROWS", 0) or 5000)
+    def __init__(self, input_file, chunk_rows=5000, verbose=True):
+        self.chunk_rows = chunk_rows
         self.verbose    = verbose
         self.ms_list    = []
         self.z_list     = []
@@ -2072,6 +2069,7 @@ class ViSta:
         writer.join()
         if write_exc[0]:
             raise RuntimeError(f"Writer thread failed: {write_exc[0]}") from write_exc[0]
+        t_loop_end = time.perf_counter()      # the stacking loop ends here
 
         # Fill constant columns once (much faster than per-chunk)
         _fill_constant_cols(ms_out, total_rows)
@@ -2133,6 +2131,30 @@ class ViSta:
             _eff_s = total_bytes / stage_dt if stage_dt > 0 else 0
             _log(f"  staging     (move)          : {stage_dt:7.1f}s"
                  f"   ({_fmt_size(_eff_s)}/s) scratch -> final")
+        _log("=" * 60)
+
+        # The same two lines, in the same words, as ViSta-HPC v2 writes with
+        # verbose="debug": one parser reads the breakdown of both versions,
+        # and the benchmark can put them side by side.  Reading, computing and
+        # writing overlap, so they are how long each stage was busy, not a
+        # partition of the loop; the stage that limits is the busiest one.
+        def _ft(x):
+            return f"{x:.1f} s" if x < 120 else f"{x / 60:.1f} min"
+        _loop = t_loop_end - t_loop_start
+        _busy = {"reading": timers["read"] / max(1, _n_readers),
+                 "computing": timers["compute"],
+                 "writing": timers["write"]}
+        _limit = max(_busy, key=_busy.get)
+        _share = _busy[_limit] / max(_loop, 1e-9)
+        _log(f"Timing: setup {_ft(t_loop_start - t_start)} \u00b7 stacking "
+             f"{_ft(_loop)} \u00b7 subtables and closing "
+             f"{_ft(t_total - (t_loop_end - t_start))}")
+        _log(f"  during the stacking (overlapping): reading "
+             f"{_ft(_busy['reading'])} per reader \u00b7 computing "
+             f"{_ft(_busy['computing'])} \u00b7 writing {_ft(_busy['writing'])}"
+             + (f"  \u2192 limited by {_limit} ({100 * _share:.0f}% busy)"
+                if _share >= 0.5 else
+                "  \u2192 no stage busy for half of the time"))
         _log("=" * 60)
         _log(f"Output MS        : {ms_final}")
         _log(f"Total rows       : {total_rows:,}")
