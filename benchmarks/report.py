@@ -51,7 +51,9 @@ def summarise(runs):
     for key, rs in groups.items():
         rec = dict(zip(("method", "device") + PARAMS, key), repeats=len(rs))
         for step in STEPS:
-            rec[step] = median([r["seconds"][step] for r in rs])
+            # "t_": the parameter "extraction" (own or common) and the step
+            # "extraction" (its seconds) would otherwise be the same key
+            rec["t_" + step] = median([r["seconds"][step] for r in rs])
         for k in ("wall_seconds", "cpu_seconds", "peak_memory_gb", "peak_disk_gb",
                   "final_disk_gb", "peak_gpu_memory_gb"):
             rec[k] = median([r.get(k) for r in rs])
@@ -100,8 +102,9 @@ def time_table(recs, first=None):
     txt = ["| " + " | ".join(head) + " |", "|---" * len(head) + "|"]
     for lead, r in recs:
         cells = ([str(lead)] if first else []) + [
-            r["method"], r["device"], fmt(r["stack"]), fmt(r["contsub"]), fmt(r["extraction"]),
-            fmt(r["other"]), fmt(r["wall_seconds"]), fmt(r["cpu_seconds"])]
+            r["method"], r["device"], fmt(r["t_stack"]), fmt(r["t_contsub"]),
+            fmt(r["t_extraction"]), fmt(r["t_other"]), fmt(r["wall_seconds"]),
+            fmt(r["cpu_seconds"])]
         txt.append("| " + " | ".join(cells) + " |")
     return txt
 
