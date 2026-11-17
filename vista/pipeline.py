@@ -1560,12 +1560,14 @@ class ViSta:
             for row0 in range(0, nrows, eff_chunk):
                 row1 = min(row0 + eff_chunk, nrows)
 
+                _tm = time.perf_counter()
                 with _casacore_lock:
                     chunk_computed = dask.compute(
                         *[v[row0:row1] for v in vis_da_per_spw],
                         *[f[row0:row1] for f in flag_da_per_spw],
                         scheduler="synchronous"
                     )
+                timers["materialise"] += time.perf_counter() - _tm
                 vis_chunks  = [np.asarray(chunk_computed[i])       for i in range(n_spw)]
                 flag_chunks = [np.asarray(chunk_computed[n_spw+i]) for i in range(n_spw)]
 
@@ -1586,6 +1588,7 @@ class ViSta:
 
                 t_proc = time.perf_counter()
 
+                _tk = time.perf_counter()
                 vis_out, flag_out, uvw_out = ms_ops.full_pipeline(
                     vis_merged_chunk, flag_merged_chunk,
                     uvw_all[row0:row1],
@@ -1595,6 +1598,7 @@ class ViSta:
                     freq_new_ms,
                     width_old_rf=pkg["width_merged"],
                 )
+                timers["kernel"] += time.perf_counter() - _tk
 
                 # Free input buffers immediately
                 del vis_merged_chunk, flag_merged_chunk, vis_chunks, flag_chunks, chunk_computed
@@ -1688,12 +1692,14 @@ class ViSta:
                 n_spw           = len(vis_da_per_spw)
                 nrows           = pkg["nrows"]
 
+                _tm = time.perf_counter()
                 with _casacore_lock:
                     chunk_computed = dask.compute(
                         *[v[:nrows] for v in vis_da_per_spw],
                         *[f[:nrows] for f in flag_da_per_spw],
                         scheduler="synchronous"
                     )
+                timers["materialise"] += time.perf_counter() - _tm
                 vis_chunks  = [np.asarray(chunk_computed[i])       for i in range(n_spw)]
                 flag_chunks = [np.asarray(chunk_computed[n_spw+i]) for i in range(n_spw)]
 
@@ -1718,6 +1724,7 @@ class ViSta:
             dec_new_list  = [pkg["dec1_rad"] for pkg in pkgs]
             freq_new_list = [freq_new_per_ms[pkg["ms_idx"]] for pkg in pkgs]
 
+            _tk = time.perf_counter()
             gpu_results = full_pipeline_batch(
                 vis_list, flag_list, uvw_list,
                 z_list, freq_old_list,
@@ -1726,6 +1733,7 @@ class ViSta:
                 freq_new_list,
                 [pkg["width_merged"] for pkg in pkgs],
             )
+            timers["kernel"] += time.perf_counter() - _tk
             dt_batch = time.perf_counter() - t_ms
             _log(f"  GPU batch: {len(pkgs)} MSs processed in {dt_batch:.1f}s")
 
@@ -1881,6 +1889,13 @@ class ViSta:
         # ------------------------------------------------------------------
         timers = {
             "read":       0.0,
+            # "read" is the reader thread, which only prepares the lazy
+            # packages: the bytes are really read when a chunk is
+            # materialised, inside "compute", on the main thread.
+            # "materialise" and "kernel" split that time, so that the
+            # breakdown means the same as in ViSta-HPC v2.
+            "materialise": 0.0,
+            "kernel":     0.0,
             "read_wait":  0.0,
             "compute":    0.0,
             "write_wait": 0.0,
@@ -2120,6 +2135,10 @@ class ViSta:
         _log(f"  read        (reader thread) : {timers['read']:7.1f}s")
         _log(f"  read_wait   (main thread)   : {timers['read_wait']:7.1f}s"
              f"   <- near zero means compute never waits for data")
+        _log(f"  materialise (main thread)   : {timers['materialise']:7.1f}s"
+             f"   (the bytes of the chunks)")
+        _log(f"  kernel      (main thread)   : {timers['kernel']:7.1f}s"
+             f"   (C++/OpenMP or CUDA)")
         _log(f"  compute     (main thread)   : {timers['compute']:7.1f}s"
              f"   ({'GPU' if _gpu_available else 'CPU'})")
         _log(f"  write_wait  (writer thread) : {timers['write_wait']:7.1f}s"
@@ -2141,8 +2160,12 @@ class ViSta:
         def _ft(x):
             return f"{x:.1f} s" if x < 120 else f"{x / 60:.1f} min"
         _loop = t_loop_end - t_loop_start
-        _busy = {"reading": timers["read"] / max(1, _n_readers),
-                 "computing": timers["compute"],
+        # reading: the lazy packages (one thread of _n_readers) plus the
+        # materialisation of the chunks; computing: the kernel alone.  The
+        # difference between "compute" and "kernel" is what the main thread
+        # spends waiting for the bytes and wrapping the result.
+        _busy = {"reading": timers["read"] / max(1, _n_readers) + timers["materialise"],
+                 "computing": timers["kernel"],
                  "writing": timers["write"]}
         _limit = max(_busy, key=_busy.get)
         _share = _busy[_limit] / max(_loop, 1e-9)
