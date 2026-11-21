@@ -15,7 +15,7 @@ setup(
         "dask-ms>=0.2.18",
         "xarray>=0.19",
         "python-casacore>=3.5",  # stacking: reading and writing the MSs
-        "zarr>=2.12,<3",         # the stack: Zarr store (layout of dask-ms)
+        "zarr>=2.12",            # the stack: Zarr store (zarr 2 or 3)
         "numcodecs>=0.10",
         "astropy>=5.0",          # stacking: coordinates; vista.extract: distances
         "scipy>=1.7",            # vista.extract: profile and uv-plane fitting

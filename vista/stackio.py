@@ -81,6 +81,56 @@ def _compressor(compress):
     return Blosc(cname="lz4", clevel=5, shuffle=Blosc.SHUFFLE)
 
 
+# ---------------------------------------------------------------------------
+# zarr 2 and zarr 3
+#
+# The store is always written in the zarr v2 format, which is the layout
+# dask-ms reads, but the API that writes it changed in zarr-python 3:
+# ``create_dataset`` became ``create_array``, ``DirectoryStore`` became
+# ``LocalStore``, and the format has to be asked for explicitly.  The three
+# helpers below are the whole difference, so one code reads and writes the
+# same store with either version installed.
+# ---------------------------------------------------------------------------
+
+def _zarr3():
+    import zarr
+    return int(str(zarr.__version__).split(".")[0]) >= 3
+
+
+def _open_group(path, mode):
+    import zarr
+    if _zarr3():
+        return zarr.open_group(path, mode=mode, zarr_format=2)
+    return zarr.open_group(path, mode=mode)
+
+
+def _local_store(path):
+    import zarr
+    if _zarr3():
+        from zarr.storage import LocalStore
+        return LocalStore(path)
+    return zarr.DirectoryStore(path)
+
+
+def _new_array(group, name, *, shape, chunks, dtype, fill_value, compressor):
+    """One array of the store, with the v2 compressor, on either version."""
+    if _zarr3():
+        return group.create_array(name, shape=shape, chunks=chunks, dtype=dtype,
+                                  fill_value=fill_value, compressors=compressor,
+                                  overwrite=True)
+    return group.create_dataset(name, shape=shape, chunks=chunks, dtype=dtype,
+                                fill_value=fill_value, compressor=compressor,
+                                overwrite=True)
+
+
+def _compressor_of(array):
+    """The compressor of an array already in the store, on either version."""
+    if _zarr3():
+        comps = getattr(array, "compressors", None) or ()
+        return comps[0] if comps else None
+    return array.compressor
+
+
 def _array_attrs(dims):
     """Attributes dask-ms puts on every array of a Zarr store."""
     return {"_ARRAY_DIMENSIONS": list(dims),
@@ -110,12 +160,12 @@ class ZarrStackWriter:
         try:
             import zarr
         except ImportError as e:
-            raise ImportError("output_format='zarr' needs zarr 2 "
-                              "(pip install 'zarr>=2.12,<3'), or use "
+            raise ImportError("output_format='zarr' needs zarr (2 or 3) "
+                              "(pip install zarr), or use "
                               "output_format='ms'") from e
         self.path = path
         self.compressor = _compressor(compress)
-        self.root = zarr.open_group(path, mode="w")
+        self.root = _open_group(path, "w")
         self.main = self.root.require_group("MAIN")
         self.root.attrs["vista"] = dict(attrs or {}, store_version=STORE_VERSION)
         self.parts = {}
@@ -135,9 +185,8 @@ class ZarrStackWriter:
             shape = tuple(sizes[d] for d in dims)
             chunks = tuple(chunk_rows if d == "row" else sizes[d] for d in dims)
             fill = k if name == "DATA_DESC_ID" else 0
-            a = g.create_dataset(name, shape=shape, chunks=chunks, dtype=dtype,
-                                 fill_value=fill, compressor=self.compressor,
-                                 overwrite=True)
+            a = _new_array(g, name, shape=shape, chunks=chunks, dtype=dtype,
+                           fill_value=fill, compressor=self.compressor)
             a.attrs.put(_array_attrs(dims))
             arrays[name] = a
         n_full, rest = divmod(int(nrows), chunk_rows)
@@ -180,7 +229,7 @@ class ZarrStackWriter:
         import zarr
         for k in self.parts:
             zarr.consolidate_metadata(
-                zarr.DirectoryStore(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
+                _local_store(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
         self.parts = {}
 
 
@@ -217,7 +266,7 @@ class ZarrStack:
     def __init__(self, path, writable=False):
         import zarr
         self.path = path
-        self.root = zarr.open_group(path, mode="r+" if writable else "r")
+        self.root = _open_group(path, "r+" if writable else "r")
         self.groups = {}
         for name, g in self.root["MAIN"].groups():
             self.groups[int(name.rsplit("_", 1)[1])] = g
@@ -283,9 +332,9 @@ class ZarrStack:
             for name in names:
                 if name in g:
                     continue
-                a = g.create_dataset(name, shape=ref.shape, chunks=ref.chunks,
-                                     dtype=ref.dtype, fill_value=0,
-                                     compressor=ref.compressor)
+                a = _new_array(g, name, shape=ref.shape, chunks=ref.chunks,
+                               dtype=ref.dtype, fill_value=0,
+                               compressor=_compressor_of(ref))
                 a.attrs.put(dict(ref.attrs))
                 self._modified.add(dd)
 
@@ -293,7 +342,7 @@ class ZarrStack:
         import zarr
         for dd in self._modified:
             zarr.consolidate_metadata(
-                zarr.DirectoryStore(os.path.join(self.path, "MAIN", f"MAIN_{dd}")))
+                _local_store(os.path.join(self.path, "MAIN", f"MAIN_{dd}")))
         self._modified = set()
 
 

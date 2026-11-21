@@ -3,8 +3,18 @@ dask>=2022.1
 dask-ms>=0.2.18
 xarray>=0.19
 python-casacore>=3.5  # stacking: reading and writing the MSs
-zarr>=2.12,<3         # the stack: Zarr store (layout of dask-ms, needs zarr 2)
+zarr>=2.12            # the stack: Zarr store (zarr 2 or 3, the store is v2 either way)
 numcodecs>=0.10
 scipy>=1.7            # vista.extract: profile and uv-plane fitting
 matplotlib>=3.4       # vista.extract: optional, diagnostic plots only
 astropy>=5.0          # stacking: coordinates; vista.extract: luminosity distances
+
+# Two stacks were tested, and the code gives the same numbers on both,
+# to seven decimal places on every quantity it measures:
+#
+#   numpy 1.26.4  dask 2024.10.0  dask-ms 0.2.21  zarr 2.18.7  python-casacore 3.6.1  (Python 3.11)
+#   numpy 2.5.5   dask 2026.8.0   dask-ms 0.3.0   zarr 3.4.2   python-casacore 3.8.1  (Python 3.12)
+#
+# The second one reads the Measurement Sets through arcae, which dask-ms 0.3
+# uses in place of python-casacore.  The measurements of the paper were taken
+# with Python 3.8.20, numpy 1.23.5 and python-casacore 3.7.1.
