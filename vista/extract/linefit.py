@@ -117,7 +117,7 @@ class Cube:
         return cache
 
 
-def annulus_nodes(baseline, edges, k=8):
+def annulus_nodes(baseline, edges, k=8, iters=24):
     """Quadrature nodes and weights of every cell over its annulus.
 
     The density of baselines inside annulus [lo, hi] is modelled as
@@ -135,12 +135,17 @@ def annulus_nodes(baseline, edges, k=8):
             * np.log(hi / lo)[..., None])
     nodes = np.exp(logs)
 
+    dlog = logs - logs[..., :1]          # fixed: the bisection only moves gamma
+
     def mean_for(gamma):
-        w = wx[None, None, :] * np.exp((gamma[..., None] + 1) * (logs - logs[..., :1]))
+        w = wx[None, None, :] * np.exp((gamma[..., None] + 1) * dlog)
         return np.sum(w * nodes, axis=-1) / np.sum(w, axis=-1), w
 
+    # 24 steps leave gamma to 4e-6 over [-30, 30], which is 1e-6 of relative
+    # weight over an annulus; 60 steps cost two and a half times as much and
+    # the bootstrap pays them once per realisation
     g_lo, g_hi = np.full(target.shape, -30.0), np.full(target.shape, 30.0)
-    for _ in range(60):                                  # bisection, vectorised
+    for _ in range(iters):                               # bisection, vectorised
         mid = 0.5 * (g_lo + g_hi)
         m, _ = mean_for(mid)
         up = m < target
@@ -159,14 +164,17 @@ def _correlation(corr, idx):
     channels)."""
     key = (id(corr), corr.shape, idx.tobytes())
     hit = _CORR_CACHE.get(key)
-    if hit is None:
+    # the entry keeps a reference to the matrix it was built from, so that its
+    # id cannot be reused by another array while it is cached, and the identity
+    # is checked on every hit
+    if hit is None or hit[0] is not corr:
         r = corr[np.ix_(idx, idx)]
         vals, vecs = np.linalg.eigh(r)
         root = (vecs * np.sqrt(np.clip(vals, 0, None))) @ vecs.T
         if len(_CORR_CACHE) > 256:
             _CORR_CACHE.clear()
-        hit = _CORR_CACHE[key] = (r, root)
-    return hit
+        hit = _CORR_CACHE[key] = (corr, r, root)
+    return hit[1], hit[2]
 
 
 class Whitener:

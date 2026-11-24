@@ -534,6 +534,99 @@ def _fit_groups(job):
         gs.theta = float(result.params.get("theta", 0.0))
 
 
+_BOOT_CTX: dict = {}
+
+
+def _boot_init(ctx):
+    """Give a bootstrap worker the inputs that every realisation shares."""
+    _BOOT_CTX.clear()
+    _BOOT_CTX.update(ctx)
+
+
+def _boot_one(m):
+    """One realisation of the bootstrap, the arithmetic of the serial loop.
+
+    Returns one entry per group, or ``None`` for a group with no cells left or
+    whose fit did not converge (a failed fit returns its start point, which is
+    not a sample).
+    """
+    c = _BOOT_CTX
+    r_b, _, w_b, mb_b = combine(c["sums"], c["factors"], multiplicity=m,
+                                renormalise=c["renorm"])
+    v_b = combine_variance(c["var_src"], c["sums"], c["factors"], multiplicity=m,
+                           renormalise=c["renorm"])
+    out = []
+    for g in c["groups"]:
+        ok_b = g["ok"] & np.isfinite(r_b) & np.isfinite(v_b) & (v_b > 0)
+        if not ok_b.any():
+            out.append(None)
+            continue
+        c_b = Cube(real=r_b, variance=v_b,
+                   baseline=np.where(np.isfinite(mb_b), mb_b, c["baseline"]),
+                   velocity=g["velocity"], dv=c["dv"], ok=ok_b, corr=c["corr"],
+                   velocities=g["velocities"], edges=c["edges"])
+        fb = fit(c_b, g["spec_boot"])
+        if not fb.converged:
+            out.append(None)
+            continue
+        params = {k: fb.params.get(k) for k in g["free"]}
+        s_b, e_b = zero_spacing_spectrum(c_b, float(fb.params.get("theta", g["theta"])))
+        f_w = {k: _area(s_b, e_b, c["dv"], c["win_masks"][k], c["corr"],
+                        fb.params.get("C"))[0] for k in g["members"]}
+        flux_avg = None
+        if g["other"] is not None:
+            fo = fit(c_b, g["other"])
+            fp, fg = (fo, fb) if g["adopted"] == "gauss" else (fb, fo)
+            wg = akaike_weight((fp.chi2 - fg.chi2) / g["size_factor"])
+            flux_avg = {}
+            for i, k in enumerate(g["members"]):
+                nf = _names(i)[0]
+                flux_avg[k] = (1 - wg) * fp.params[nf] + wg * fg.params[nf]
+            s_o, e_o = zero_spacing_spectrum(c_b, float(fo.params.get("theta", 0.0)))
+            w_this = wg if g["adopted"] == "gauss" else 1 - wg
+            f_w = {k: w_this * f_w[k] + (1 - w_this)
+                   * _area(s_o, e_o, c["dv"], c["win_masks"][k], c["corr"],
+                           fo.params.get("C"))[0] for k in g["members"]}
+            s_b = w_this * s_b + (1 - w_this) * s_o
+        out.append({"params": params, "profile": s_b, "window": f_w,
+                    "flux_avg": flux_avg})
+    return out
+
+
+def _boot_map(mults, ctx):
+    """The realisations, on several cores when it is worth it.
+
+    The results come back in the order of ``mults``, so the bootstrap does not
+    depend on how many workers ran it.  ``VISTA_BOOT_WORKERS`` sets that
+    number; the default is eight, or the cores of the job if fewer.
+    """
+    import os
+    import warnings
+    if not mults:
+        return []
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except AttributeError:                               # not Linux
+        cpus = os.cpu_count() or 1
+    workers = int(os.environ.get("VISTA_BOOT_WORKERS", "0")) or min(8, cpus)
+    if workers > 1 and len(mults) >= 8:
+        try:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor
+            chunk = max(1, len(mults) // (4 * workers))
+            with ProcessPoolExecutor(max_workers=workers,
+                                     mp_context=mp.get_context("fork"),
+                                     initializer=_boot_init,
+                                     initargs=(ctx,)) as pool:
+                return list(pool.map(_boot_one, mults, chunksize=chunk))
+        except Exception as exc:
+            warnings.warn(f"the bootstrap could not run on several cores "
+                          f"({exc}): running it on one", RuntimeWarning,
+                          stacklevel=2)
+    _boot_init(ctx)
+    return [_boot_one(m) for m in mults]
+
+
 def _bootstrap(job):
     """The bootstrap over the sources: the fits repeated on resampled stacks,
     for the errors that come from the differences among the galaxies."""
@@ -557,42 +650,38 @@ def _bootstrap(job):
             o_res, o_spec = gs.fits["point" if gs.adopted == "gauss" else "gauss"]
             gs.other = FitSpec(o_spec.free, dict(o_res.params), o_spec.bounds,
                                n_lines=o_spec.n_lines, continuum=o_spec.continuum)
+    dropped = 0
     if n_src >= 2:
-        for _ in range(int(bootstrap.n_realisations)):
-            m = np.bincount(rng.integers(0, n_src, n_src), minlength=n_src).astype(float)
-            r_b, _, w_b, mb_b = combine(sums, factors, multiplicity=m, renormalise=renorm)
-            v_b = combine_variance(var_src, sums, factors, multiplicity=m,
-                                   renormalise=renorm)
-            for gs in G:
-                ok_b = gs.ok & np.isfinite(r_b) & np.isfinite(v_b) & (v_b > 0)
-                if not ok_b.any():
+        # every realisation is drawn first, in order, so that the random
+        # numbers do not depend on how the work is shared out
+        mults = [np.bincount(rng.integers(0, n_src, n_src), minlength=n_src).astype(float)
+                 for _ in range(int(bootstrap.n_realisations))]
+        ctx = {"sums": sums, "factors": factors, "renorm": renorm, "var_src": var_src,
+               "baseline": baseline, "dv": dv, "corr": corr, "win_masks": win_masks,
+               "edges": data.bin_edges_lambda,
+               "groups": [{"ok": gs.ok, "velocity": gs.cube.velocity,
+                           "velocities": gs.cube.velocities, "spec_boot": gs.spec_boot,
+                           "free": gs.spec.free, "theta": gs.theta, "members": gs.members,
+                           "other": gs.other, "adopted": gs.adopted,
+                           "size_factor": gs.size_factor} for gs in G]}
+        for out in _boot_map(mults, ctx):
+            for gs, item in zip(G, out):
+                if item is None:
+                    dropped += 1
                     continue
-                c_b = Cube(real=r_b, variance=v_b,
-                           baseline=np.where(np.isfinite(mb_b), mb_b, baseline),
-                           velocity=gs.cube.velocity, dv=dv, ok=ok_b, corr=corr,
-                           velocities=gs.cube.velocities, edges=data.bin_edges_lambda)
-                fb = fit(c_b, gs.spec_boot)
-                gs.boot_params.append({k: fb.params.get(k) for k in gs.spec.free})
-                s_b, e_b = zero_spacing_spectrum(c_b, float(fb.params.get("theta", gs.theta)))
-                f_w = {k: _area(s_b, e_b, dv, win_masks[k], corr, fb.params.get("C"))[0]
-                       for k in gs.members}
-                if gs.other is not None:
-                    fo = fit(c_b, gs.other)
-                    fp, fg = (fo, fb) if gs.adopted == "gauss" else (fb, fo)
-                    wg = akaike_weight((fp.chi2 - fg.chi2) / gs.size_factor)
-                    for i, k in enumerate(gs.members):
-                        nf = _names(i)[0]
-                        gs.boot_flux_avg[k].append((1 - wg) * fp.params[nf]
-                                                   + wg * fg.params[nf])
-                    s_o, e_o = zero_spacing_spectrum(c_b, float(fo.params.get("theta", 0.0)))
-                    w_this = wg if gs.adopted == "gauss" else 1 - wg
-                    f_w = {k: w_this * f_w[k] + (1 - w_this)
-                           * _area(s_o, e_o, dv, win_masks[k], corr, fo.params.get("C"))[0]
-                           for k in gs.members}
-                    s_b = w_this * s_b + (1 - w_this) * s_o
-                gs.boot_profile.append(s_b)
+                gs.boot_params.append(item["params"])
+                gs.boot_profile.append(item["profile"])
                 for k in gs.members:
-                    gs.boot_window[k].append(f_w[k])
+                    gs.boot_window[k].append(item["window"][k])
+                if item["flux_avg"] is not None:
+                    for k in gs.members:
+                        gs.boot_flux_avg[k].append(item["flux_avg"][k])
+    if dropped:
+        import warnings
+        warnings.warn(f"bootstrap: {dropped} realisations out of "
+                      f"{int(bootstrap.n_realisations) * max(1, len(G))} were dropped, "
+                      f"with no cells left or a fit that did not converge",
+                      RuntimeWarning, stacklevel=2)
     for gs in G:
         gs.boot_err, gs.boot_pct = {}, {}
         for k in gs.spec.free:
