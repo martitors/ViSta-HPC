@@ -64,7 +64,7 @@ VELOCITY_RANGE=2000         # half-width of the output band, km/s ("" to use NCH
 NCHAN=""                    # fixed number of output channels, alternative
 WIDTH=""                    # common rest-frame channel width, Hz; empty =
                             # widest rest-framed channel of the sample
-CHUNK_ROWS=50000
+CHUNK_ROWS=${VISTA_CHUNK_ROWS:-50000}   # the benchmark sets it in the environment
 SCRATCH="${TMPDIR:-}"       # build the MS on fast local disk, then move it
 IN_COLUMN="auto"            # column read from each input MS: auto prefers
                             # CORRECTED_DATA, or name one (DATA, ...)

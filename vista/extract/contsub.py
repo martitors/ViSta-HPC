@@ -138,8 +138,17 @@ def subtract_continuum(ms_path: str,
     existing = tb.colnames()
     for column in (config.model_column, config.line_column):
         if column not in existing:
-            tb.addcols(maketabdesc(makecoldesc(
-                column, tb.getcoldesc(config.data_column))))
+            # the same tiled storage manager as the data column, so that the
+            # column is written in whole tiles instead of 64 KiB buckets
+            desc = tb.getcoldesc(config.data_column)
+            shape = tb.getcell(config.data_column, 0).shape       # (nchan, ncorr)
+            nchan, ncorr = int(shape[0]), int(shape[1])
+            ch_tile = min(nchan, 16)
+            rows = max(1, (1 << 20) // (ncorr * ch_tile * 8))
+            dm = {"TYPE": "TiledColumnStMan", "NAME": f"{column}_GROUP",
+                  "SPEC": {"DEFAULTTILESHAPE": np.array([ncorr, ch_tile, rows],
+                                                        np.int32)}}
+            tb.addcols(maketabdesc(makecoldesc(column, desc)), dm)
     dd_column = tb.getcol("DATA_DESC_ID")
 
     # the work: one entry per data descriptor, its rows in contiguous runs
