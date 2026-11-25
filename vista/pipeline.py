@@ -308,9 +308,13 @@ class Stacker:
                    f"{sum(len(f) for f in meta.freq)} channels")
             return meta
 
-        with ThreadPoolExecutor(max_workers=min(4, n_ms)) as pool:
+        t_meta = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=min(8, n_ms)) as pool:
             self._meta = list(pool.map(read, range(n_ms)))
+        t_frames = time.perf_counter()
         self._check_frames()
+        detail(f"  metadata {fmt_time(t_frames - t_meta)} · frames "
+               f"{fmt_time(time.perf_counter() - t_frames)}")
 
         df_rest, nchan_in, ranges = [], [], []
         for i, (z, meta) in enumerate(zip(self.z_list, self._meta)):
@@ -605,12 +609,16 @@ class Stacker:
                 detail(f"Removing existing output: {path}")
                 shutil.rmtree(path)
 
+        t_grid = time.perf_counter()
         self._compute_per_ms_grids(central_freq, nchan_out=nchan_out,
                                    velocity_range_kms=velocity_range_kms,
                                    channel_width_hz=channel_width_hz)
         self._log_grid(central_freq)
+        t_sub = time.perf_counter()
         subtables, ant_offsets = ms_output.build_subtables(
             self.ms_list, self.z_list, self._grid.freq, self._grid.df, central_freq)
+        detail(f"Setup: grid and metadata {fmt_time(t_sub - t_grid)} · subtables "
+               f"{fmt_time(time.perf_counter() - t_sub)}")
         return output, subtables, ant_offsets
 
     # ---- the three stages ---------------------------------------------------------

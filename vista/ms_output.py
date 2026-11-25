@@ -72,6 +72,82 @@ def rename_duplicates(names):
     return out
 
 
+def read_subtable(path, columns=None, limit=None):
+    """Columns of a subtable of an MS, read with python-casacore.
+
+    The subtables are small and are read once per input, so the cost is the
+    opening and not the data: a dask-ms dataset per subtable costs far more
+    than the rows it returns, and it has to be serialised because dask-ms is
+    not thread safe, while every call here opens its own table.
+
+    Parameters
+    ----------
+    path : str
+        Path of the subtable, ``<ms>::<NAME>``.
+    columns : sequence of str or None, default None
+        Columns to read; ``None`` reads every column of the subtable.
+    limit : int or None, default None
+        Read at most this many rows; ``None`` reads all of them.
+
+    Returns
+    -------
+    (int, dict)
+        Number of rows read and column -> ndarray, with the strings as
+        ``object``.  ``(0, {})`` when the subtable is missing or empty, and a
+        column whose cells do not have the same shape is left out.
+    """
+    from casacore.tables import table
+    try:
+        t = table(path, ack=False, readonly=True)
+    except Exception:
+        return 0, {}
+    try:
+        n = t.nrows() if limit is None else min(int(limit), t.nrows())
+        if n <= 0:
+            return 0, {}
+        present = set(t.colnames())
+        wanted = [c for c in (columns if columns is not None else t.colnames())
+                  if c in present]
+        out = {}
+        for c in wanted:
+            try:
+                arr = np.asarray(t.getcol(c, startrow=0, nrow=n))
+            except Exception:           # a column with a shape of its own per row
+                continue
+            if arr.dtype.kind in "USa":
+                arr = np.array([str(v) for v in arr.ravel()],
+                               dtype=object).reshape(arr.shape)
+            out[c] = arr
+    finally:
+        t.close()
+    return n, out
+
+
+def subtable_rows(path, columns=None, limit=None):
+    """Rows of a subtable as Datasets, one per row.
+
+    The same shape as ``xds_from_table(path, group_cols='__row__')``, built
+    from NumPy with :func:`read_subtable`.  The names of the dimensions are
+    ours, like those of the tables built here, and only the shapes matter to
+    the writer.
+
+    Returns
+    -------
+    list of Dataset
+        Empty when the subtable is missing or empty.
+    """
+    n, cols = read_subtable(path, columns, limit)
+    rows = []
+    for r in range(n):
+        data_vars = {}
+        for c, arr in cols.items():
+            cell = np.asarray(arr[r])[None, ...]
+            dims = ("row",) + tuple(f"{c.lower()}-{k+1}" for k in range(cell.ndim - 1))
+            data_vars[c] = (dims, to_dask(cell))
+        rows.append(Dataset(data_vars))
+    return rows
+
+
 # =============================================================================
 # Main table
 # =============================================================================
@@ -190,7 +266,9 @@ class MsWriter:
 # Subtables
 # =============================================================================
 # Each builder returns the dask-ms Dataset(s) of one subtable of the output
-# MS.  Everything that reads an input table holds casacore_lock.
+# MS.  The inputs are read with python-casacore, which lets the builders read
+# several of them at the same time; what still goes through dask-ms holds
+# casacore_lock, which is what dask-ms needs.
 
 def build_subtables(ms_list, z_list, freq_list, df_new, central_freq):
     """Every subtable of the output MS, in the order they are written.
@@ -274,22 +352,18 @@ def build_antenna_table(ms_list, z_list):
     def load(args):
         ms, z = args
         inv = 1.0 / (1.0 + z)
-        with casacore_lock:
-            rows = xds_from_table(f"{ms}::ANTENNA", group_cols=[])
-            if not rows:
-                return None
-            ds = rows[0]
-            col = lambda name: ds.data_vars[name].data if name in ds.data_vars else None
-            names, pos, diam, mounts, stations = dask.compute(
-                col("NAME"), col("POSITION"), col("DISH_DIAMETER"),
-                col("MOUNT"), col("STATION"), scheduler="synchronous")
-        nant = ds.sizes.get("row", 0)
+        nant, cols = read_subtable(f"{ms}::ANTENNA",
+                                   ("NAME", "POSITION", "DISH_DIAMETER",
+                                    "MOUNT", "STATION"))
+        if not nant:
+            return None
+        names, pos = cols.get("NAME"), cols.get("POSITION")
+        diam, mounts, stations = (cols.get("DISH_DIAMETER"), cols.get("MOUNT"),
+                                  cols.get("STATION"))
         as_str = lambda a, default: ([str(v) for v in np.asarray(a).ravel()]
                                      if a is not None else [default] * nant)
         if pos is not None:
-            pos = np.asarray(pos, dtype=np.float64)
-            if pos.ndim == 2 and pos.shape[0] == 3:
-                pos = pos.T
+            pos = np.asarray(pos, dtype=np.float64).reshape(nant, 3)
             positions = list(pos * inv)
         else:
             positions = list(np.zeros((nant, 3)))
@@ -430,23 +504,8 @@ def copy_subtable_first_row(ms_path, name):
     Dataset or None
         None when the subtable is missing or empty.
     """
-    with casacore_lock:
-        try:
-            rows = xds_from_table(f"{ms_path}::{name}", group_cols="__row__")
-        except Exception:
-            return None
-        if not rows:
-            return None
-        r = rows[0]
-        names = list(r.data_vars)
-        got = dask.compute(*[r[v].data for v in names])
-    data_vars = {}
-    for v, arr in zip(names, got):
-        arr = np.asarray(arr)
-        if arr.ndim >= 1 and r[v].dims[0] == "row":
-            arr = arr[:1]
-        data_vars[v] = (r[v].dims, to_dask(arr))
-    return Dataset(data_vars)
+    rows = subtable_rows(f"{ms_path}::{name}", limit=1)
+    return rows[0] if rows else None
 
 
 def build_observation_table(ms_list):
@@ -458,24 +517,10 @@ def build_observation_table(ms_list):
         One per row; an empty list when no input has the table.
     """
     def load(ms):
-        with casacore_lock:
-            try:
-                return xds_from_table(f"{ms}::OBSERVATION", group_cols="__row__") or []
-            except Exception:
-                return []
+        return subtable_rows(f"{ms}::OBSERVATION")
 
     with ThreadPoolExecutor(max_workers=min(8, len(ms_list))) as pool:
-        rows = [r for per_ms in pool.map(load, ms_list) for r in per_ms]
-    if not rows:
-        return []
-    names = [list(r.data_vars) for r in rows]
-    lazy = [r[v].data for r, vs in zip(rows, names) for v in vs]
-    if not lazy:
-        return []
-    with casacore_lock:
-        got = iter(dask.compute(*lazy))
-    return [Dataset({v: (r[v].dims, to_dask(np.asarray(next(got)))) for v in vs})
-            for r, vs in zip(rows, names)]
+        return [r for per_ms in pool.map(load, ms_list) for r in per_ms]
 
 
 def build_feed_table(nant):

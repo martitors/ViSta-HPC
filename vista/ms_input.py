@@ -13,8 +13,8 @@ The SPWs of one entry are merged row by row (their channels side by side),
 which is correct only if they have the same rows: see :func:`merge_spws`.
 
 The reader runs in the reader processes, which import only this module (plus
-numpy, python-casacore and astropy): dask-ms, used for the metadata in the
-main process, is imported only there.
+numpy, python-casacore and astropy); the metadata read by the main process
+goes through python-casacore too, so this module never needs dask-ms.
 
 Internal module of :mod:`vista.pipeline`.
 """
@@ -71,7 +71,10 @@ class MsMetadata:
 def read_ms_metadata(ms, field, spws):
     """SPWs, channel frequencies and phase centre of one input MS.
 
-    Called by the main process (from a thread pool), with dask-ms.
+    Called by the main process, from a thread pool.  The three subtables hold
+    a handful of rows each, so they are read with python-casacore: building a
+    dask-ms dataset for them costs far more than the read itself, and since
+    every call opens its own tables the calls do not wait for each other.
 
     Parameters
     ----------
@@ -86,38 +89,37 @@ def read_ms_metadata(ms, field, spws):
     -------
     MsMetadata
     """
-    import dask
-    from daskms import xds_from_table
-    from .common import casacore_lock
+    from casacore.tables import table
 
-    with casacore_lock:
-        dd = xds_from_table(f"{ms}::DATA_DESCRIPTION")[0]
-        spw_ids = np.asarray(dd.SPECTRAL_WINDOW_ID.data.compute(scheduler="synchronous"))
-        spw2dd = {int(s): row for row, s in enumerate(spw_ids)}
+    with table(f"{ms}::DATA_DESCRIPTION", ack=False, readonly=True) as t:
+        spw_ids = np.asarray(t.getcol("SPECTRAL_WINDOW_ID")).ravel()
+    spw2dd = {int(s): row for row, s in enumerate(spw_ids)}
 
-        spw_rows = xds_from_table(f"{ms}::SPECTRAL_WINDOW", group_cols="__row__")
-        n_spw = len(spw_rows)
-        spws_used = list(range(n_spw)) if spws is None else spws
-        lazy = []
+    with table(f"{ms}::SPECTRAL_WINDOW", ack=False, readonly=True) as t:
+        n_spw = t.nrows()
+        spws_used = list(range(n_spw)) if spws is None else list(spws)
         for sp in spws_used:
             if sp >= n_spw:
                 raise ValueError(f"{os.path.basename(ms)}: SPW {sp} does not exist "
                                  f"(available: 0-{n_spw-1})")
-            lazy += [spw_rows[sp].CHAN_FREQ.data, spw_rows[sp].CHAN_WIDTH.data]
-        got = dask.compute(*lazy, scheduler="synchronous") if lazy else ()
+        freq = [np.asarray(t.getcell("CHAN_FREQ", sp), dtype=np.float64).ravel()
+                for sp in spws_used]
+        width = [np.asarray(t.getcell("CHAN_WIDTH", sp), dtype=np.float64).ravel()
+                 for sp in spws_used]
 
-        field_rows = xds_from_table(f"{ms}::FIELD", group_cols="__row__")
+    with table(f"{ms}::FIELD", ack=False, readonly=True) as t:
+        n_field = t.nrows()
         fid = field if field is not None else 0
-        if fid >= len(field_rows):
+        if fid >= n_field:
             raise ValueError(f"{os.path.basename(ms)}: FIELD {fid} does not exist "
-                             f"(available: 0-{len(field_rows)-1})")
-        phase_dir = np.asarray(field_rows[fid].PHASE_DIR.data.compute(scheduler="synchronous"),
-                               dtype=np.float64).ravel()
+                             f"(available: 0-{n_field-1})")
+        phase_dir = np.asarray(t.getcell("PHASE_DIR", fid), dtype=np.float64).ravel()
+
     return MsMetadata(
         spws=spws_used,
         ddids=[spw2dd.get(s, s) for s in spws_used],
-        freq=[np.asarray(got[2*k], dtype=np.float64).ravel() for k in range(len(spws_used))],
-        width=[np.asarray(got[2*k+1], dtype=np.float64).ravel() for k in range(len(spws_used))],
+        freq=freq,
+        width=width,
         phase_dir=(float(phase_dir[0]), float(phase_dir[1])),
     )
 
