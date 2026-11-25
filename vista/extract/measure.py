@@ -536,9 +536,25 @@ def _fit_groups(job):
 
 _BOOT_CTX: dict = {}
 
+# Kept alive so that the limit of one thread per worker stays in force.
+_BOOT_LIMITS = None
+
 
 def _boot_init(ctx):
-    """Give a bootstrap worker the inputs that every realisation shares."""
+    """Give a bootstrap worker the inputs that every realisation shares.
+
+    Every worker is held to one thread.  The realisations are already spread
+    over the workers, so the threads that NumPy and its linear algebra would
+    start inside each of them have no work of their own to do and only take
+    cores away from the other workers.  It also makes the arithmetic of a
+    realisation independent of how many threads happen to be available.
+    """
+    global _BOOT_LIMITS
+    try:
+        from threadpoolctl import threadpool_limits
+        _BOOT_LIMITS = threadpool_limits(limits=1)
+    except Exception:                    # threadpoolctl is not installed
+        pass
     _BOOT_CTX.clear()
     _BOOT_CTX.update(ctx)
 
@@ -598,17 +614,24 @@ def _boot_map(mults, ctx):
 
     The results come back in the order of ``mults``, so the bootstrap does not
     depend on how many workers ran it.  ``VISTA_BOOT_WORKERS`` sets that
-    number; the default is eight, or the cores of the job if fewer.
+    number; the default is eight, or the cores of the job if fewer, and on a
+    job of eight cores or less one core is left to the process that collects
+    the results, which would otherwise wait behind its own workers.
     """
     import os
     import warnings
     if not mults:
         return []
     try:
-        cpus = len(os.sched_getaffinity(0))
-    except AttributeError:                               # not Linux
-        cpus = os.cpu_count() or 1
-    workers = int(os.environ.get("VISTA_BOOT_WORKERS", "0")) or min(8, cpus)
+        from ..resources import available_cores
+        cpus = available_cores()
+    except Exception:
+        try:
+            cpus = len(os.sched_getaffinity(0))
+        except AttributeError:                           # not Linux
+            cpus = os.cpu_count() or 1
+    default = min(8, cpus if cpus > 8 else max(1, cpus - 1))
+    workers = int(os.environ.get("VISTA_BOOT_WORKERS", "0")) or default
     if workers > 1 and len(mults) >= 8:
         try:
             import multiprocessing as mp
