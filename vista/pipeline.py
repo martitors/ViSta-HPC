@@ -922,6 +922,10 @@ class Stacker:
                 + (f"  → limited by {limit} ({100 * share:.0f}% busy)" if share >= 0.5 else
                    f"  → no stage busy for half of the time: the first data arrived "
                    f"after {fmt_time(run.t_first or 0.0)} (start of the readers)"))
+            waited = getattr(run.store, "t_partitions", None)
+            if waited is not None:
+                detail(f"  of the writing: waiting for the partitions "
+                    f"{fmt_time(waited / run.n_writers)} per writer")
             if run.inline is not None:
                 detail(f"  of the computing: continuum subtraction "
                     f"{fmt_time(run.inline.t_contsub)} · statistics "

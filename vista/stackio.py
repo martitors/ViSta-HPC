@@ -26,6 +26,7 @@ input order, so the exported MS has the row order of ViSta 2.2.
 import os
 import shutil
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -182,6 +183,11 @@ class ZarrStackWriter:
         from concurrent.futures import ThreadPoolExecutor
         self._pool = ThreadPoolExecutor(max_workers=1,
                                         thread_name_prefix="vista-zarr-meta")
+        # How long the writers spent waiting for the arrays of a partition to
+        # exist, summed over them: the rest of their time is the writing
+        # itself.  Only measured, nothing depends on it.
+        self.t_partitions = 0.0
+        self._wait_lock = threading.Lock()
 
     def add_partition(self, k, nrows, chunk_rows, nchan, ncorr, extra=()):
         """The group of dataset *k*; *extra*: visibility columns written
@@ -223,7 +229,11 @@ class ZarrStackWriter:
         """The arrays of partition *k*, waiting for their creation if needed."""
         arrays = self.parts[k]
         if not isinstance(arrays, dict):
-            arrays = self.parts[k] = arrays.result()
+            t0 = time.perf_counter()
+            arrays = arrays.result()
+            with self._wait_lock:
+                self.t_partitions += time.perf_counter() - t0
+            self.parts[k] = arrays
         return arrays
 
     def write(self, k, row0, item):

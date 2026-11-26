@@ -316,9 +316,10 @@ def inside(path):
     """Where the time of the stacking goes, from the log of ViSta-HPC v1 and
     v2 (v2 with ``verbose="debug"``), which write the same lines: setup,
     reading (Python and casacore), computing (the kernel, on the CPU or on
-    the GPU) and writing, which overlap; and, for v2, of the computing, the
-    continuum subtraction and the statistics.  Of a log with several runs,
-    the first stacking: the one of the step that is timed."""
+    the GPU) and writing, which overlap; and, for v2, of the writing, the wait
+    for the partitions of a chunked store, and of the computing, the continuum
+    subtraction and the statistics.  Of a log with several runs, the first
+    stacking: the one of the step that is timed."""
     out = {}
 
     def fill(line, fields):
@@ -342,6 +343,8 @@ def inside(path):
             limit = re.search(r"limited by (\w+)", line)
             if limit and "reading" in out:
                 out["limited_by"] = limit.group(1)
+        elif "of the writing:" in line and "partition_wait" not in out:
+            fill(line, (("partition_wait", "waiting for the partitions"),))
         elif "of the computing:" in line and "inline_contsub" not in out:
             fill(line, (("inline_contsub", "continuum subtraction"),
                         ("inline_stats", "statistics")))
