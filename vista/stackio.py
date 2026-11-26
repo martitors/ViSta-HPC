@@ -112,15 +112,25 @@ def _local_store(path):
     return zarr.DirectoryStore(path)
 
 
-def _new_array(group, name, *, shape, chunks, dtype, fill_value, compressor):
-    """One array of the store, with the v2 compressor, on either version."""
+def _new_array(group, name, *, shape, chunks, dtype, fill_value, compressor,
+               attrs=None):
+    """One array of the store, with the v2 compressor, on either version.
+
+    The attributes are given at creation when the version allows it, so that
+    the array costs one metadata file instead of two.  ``overwrite`` is not
+    asked for: the store is created by this process and the array is new, so
+    the check it would make is a read of a path that cannot exist.
+    """
     if _zarr3():
-        return group.create_array(name, shape=shape, chunks=chunks, dtype=dtype,
-                                  fill_value=fill_value, compressors=compressor,
-                                  overwrite=True)
-    return group.create_dataset(name, shape=shape, chunks=chunks, dtype=dtype,
-                                fill_value=fill_value, compressor=compressor,
-                                overwrite=True)
+        a = group.create_array(name, shape=shape, chunks=chunks, dtype=dtype,
+                               fill_value=fill_value, compressors=compressor,
+                               attributes=dict(attrs or {}))
+        return a
+    a = group.create_dataset(name, shape=shape, chunks=chunks, dtype=dtype,
+                             fill_value=fill_value, compressor=compressor)
+    if attrs:
+        a.attrs.put(dict(attrs))
+    return a
 
 
 def _compressor_of(array):
@@ -169,11 +179,24 @@ class ZarrStackWriter:
         self.main = self.root.require_group("MAIN")
         self.root.attrs["vista"] = dict(attrs or {}, store_version=STORE_VERSION)
         self.parts = {}
+        from concurrent.futures import ThreadPoolExecutor
+        self._pool = ThreadPoolExecutor(max_workers=1,
+                                        thread_name_prefix="vista-zarr-meta")
 
     def add_partition(self, k, nrows, chunk_rows, nchan, ncorr, extra=()):
         """The group of dataset *k*; *extra*: visibility columns written
         besides DATA (MODEL_DATA, CORRECTED_DATA of the continuum subtraction
         during the stacking)."""
+        self.parts[k] = self._pool.submit(self._make_partition, k, nrows,
+                                          chunk_rows, nchan, ncorr, tuple(extra))
+
+    def _make_partition(self, k, nrows, chunk_rows, nchan, ncorr, extra):
+        """Create the arrays of one partition: about forty metadata files.
+
+        This runs on a thread of its own because the files are created on a
+        shared filesystem, where the cost is the creation and not the bytes,
+        and the caller is the thread that runs the kernel.
+        """
         sizes = {"row": int(nrows), "chan": int(nchan), "corr": int(ncorr), "uvw": 3}
         chunk_rows = max(1, min(int(chunk_rows), int(nrows)))
         g = self.main.require_group(f"MAIN_{k}")
@@ -185,21 +208,27 @@ class ZarrStackWriter:
             shape = tuple(sizes[d] for d in dims)
             chunks = tuple(chunk_rows if d == "row" else sizes[d] for d in dims)
             fill = k if name == "DATA_DESC_ID" else 0
-            a = _new_array(g, name, shape=shape, chunks=chunks, dtype=dtype,
-                           fill_value=fill, compressor=self.compressor)
-            a.attrs.put(_array_attrs(dims))
-            arrays[name] = a
+            arrays[name] = _new_array(g, name, shape=shape, chunks=chunks, dtype=dtype,
+                                     fill_value=fill, compressor=self.compressor,
+                                     attrs=_array_attrs(dims))
         n_full, rest = divmod(int(nrows), chunk_rows)
         row_chunks = [chunk_rows] * n_full + ([rest] if rest else [])
         g.attrs.put({"DATA_DESC_ID": int(k), "FIELD_ID": 0,
                      _PARTITION_KEY: [["FIELD_ID", "int32"], ["DATA_DESC_ID", "int32"]],
                      _DASKMS_ATTR: {"chunks": {"row": row_chunks, "chan": [int(nchan)],
                                                "corr": [int(ncorr)], "uvw": [3]}}})
-        self.parts[k] = arrays
+        return arrays
+
+    def _arrays(self, k):
+        """The arrays of partition *k*, waiting for their creation if needed."""
+        arrays = self.parts[k]
+        if not isinstance(arrays, dict):
+            arrays = self.parts[k] = arrays.result()
+        return arrays
 
     def write(self, k, row0, item):
         """Write the columns of one chunk (dict name -> array) at row0."""
-        arrays = self.parts[k]
+        arrays = self._arrays(k)
         for name, value in item.items():
             a = arrays.get(name)
             if a is None or name in self._FILLED:
@@ -226,10 +255,26 @@ class ZarrStackWriter:
             _detail(f"  Written: {name}")
 
     def close(self):
+        """Consolidate the metadata of every partition.
+
+        One group per input dataset, each independent of the others, so they
+        are consolidated at the same time: on a shared filesystem this stage is
+        waiting for metadata, not computing.
+        """
         import zarr
-        for k in self.parts:
+        from concurrent.futures import ThreadPoolExecutor
+        keys = list(self.parts)
+        for k in keys:                       # a partition still being created
+            self._arrays(k)
+        self._pool.shutdown(wait=True)
+
+        def consolidate(k):
             zarr.consolidate_metadata(
                 _local_store(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
+
+        if keys:
+            with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
+                list(pool.map(consolidate, keys))
         self.parts = {}
 
 
