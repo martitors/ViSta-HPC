@@ -28,8 +28,11 @@ from .common import casacore_lock, detail
 
 # Columns with the same value in every row, written with each chunk.
 CONSTANT_COLUMNS = {"FEED1": np.int32, "FEED2": np.int32, "PROCESSOR_ID": np.int32,
-                    "ARRAY_ID": np.int32, "OBSERVATION_ID": np.int32,
-                    "TIME_CENTROID": np.float64}
+                    "ARRAY_ID": np.int32, "OBSERVATION_ID": np.int32}
+
+# Columns that are neither stacked nor constant: they repeat a column that is
+# written, and an MS without them holds a value no tool can use.
+MIRRORED_COLUMNS = {"TIME_CENTROID": "TIME"}
 
 
 # =============================================================================
@@ -232,6 +235,9 @@ class MsWriter:
         for col, dt in CONSTANT_COLUMNS.items():
             if col in self._columns:
                 self._tab.putcol(col, np.zeros(n, dtype=dt), startrow=start, nrow=n)
+        for col, src in MIRRORED_COLUMNS.items():
+            if col in self._columns and src in columns:
+                self._tab.putcol(col, columns[src], startrow=start, nrow=n)
 
     def _create(self, nchan, ncorr, extra=()):
         from casacore.tables import default_ms, makearrcoldesc, maketabdesc
