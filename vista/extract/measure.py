@@ -614,9 +614,9 @@ def _boot_map(mults, ctx):
 
     The results come back in the order of ``mults``, so the bootstrap does not
     depend on how many workers ran it.  ``VISTA_BOOT_WORKERS`` sets that
-    number; the default is eight, or the cores of the job if fewer, and on a
-    job of eight cores or less one core is left to the process that collects
-    the results, which would otherwise wait behind its own workers.
+    number; by default every core of the job is used but one, which is left to
+    the process that collects the results and would otherwise wait behind its
+    own workers.
     """
     import os
     import warnings
@@ -630,8 +630,7 @@ def _boot_map(mults, ctx):
             cpus = len(os.sched_getaffinity(0))
         except AttributeError:                           # not Linux
             cpus = os.cpu_count() or 1
-    default = min(8, cpus if cpus > 8 else max(1, cpus - 1))
-    workers = int(os.environ.get("VISTA_BOOT_WORKERS", "0")) or default
+    workers = int(os.environ.get("VISTA_BOOT_WORKERS", "0")) or max(1, cpus - 1)
     if workers > 1 and len(mults) >= 8:
         try:
             import multiprocessing as mp
