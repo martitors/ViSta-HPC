@@ -5,6 +5,7 @@
 * ``hpc_v1``: ViSta-HPC v1, the branch ``extract`` (its ``run_vista.sh``);
 * ``hpc_v2_ms``, ``hpc_v2_zarr``: ViSta-HPC v2, the branch ``extract_opt``,
   writing a Measurement Set or Zarr, one step after the other;
+* ``hpc_v2_onepass_ms``: the one pass with a Measurement Set as output.
 * ``hpc_v2_onepass``: the same (Zarr) as it is meant to be used: continuum
   subtracted and statistics made while the stack is written.
 
@@ -81,7 +82,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-METHODS = ("vista1", "hpc_v1", "hpc_v2_ms", "hpc_v2_zarr", "hpc_v2_onepass")
+METHODS = ("vista1", "hpc_v1", "hpc_v2_ms", "hpc_v2_zarr", "hpc_v2_onepass",
+           "hpc_v2_onepass_ms")
 HPC = METHODS[1:]
 # writers = 0: the Zarr writers are chosen as ViSta-HPC v2 would choose them
 STANDARD = {"n_ms": 50, "nchan": 1000, "cores": 32, "readers": 2, "gpu_batch": 20,
@@ -191,7 +193,7 @@ def split(method, cfg):
     cores, readers = cfg["cores"], cfg["readers"]
     if method == "vista1":
         return {"cores": cores}
-    if method in ("hpc_v1", "hpc_v2_ms"):
+    if method in ("hpc_v1", "hpc_v2_ms", "hpc_v2_onepass_ms"):
         writers = 1                                      # a Measurement Set: one writer
     elif cfg["writers"]:
         writers = cfg["writers"]
@@ -232,7 +234,7 @@ def command(method, device, a, cfg, lst, truth, out):
                 "--contsub", "before", "--method", "template", "--model", "gauss",
                 "--scratch", "", "--no-plot", "--out-dir", out], env, used
     env["PYTHONPATH"] = a.hpc_v2
-    zarr = method != "hpc_v2_ms"
+    zarr = method not in ("hpc_v2_ms", "hpc_v2_onepass_ms")
     cmd = [sys.executable, os.path.join(HERE, "run_hpc_v2.py"), "--input", lst,
            "--output-name", os.path.join(out, TAG), "--rest-freq", rest,
            "--line-window", str(LINE_WINDOW), "--velocity-range", vrange,
@@ -240,7 +242,8 @@ def command(method, device, a, cfg, lst, truth, out):
            "--threads", str(threads), "--gpu-batch", str(cfg["gpu_batch"]),
            "--chunk-rows", str(cfg["chunk_rows"]),
            "--output-format", "zarr" if zarr else "ms",
-           "--mode", "onepass" if method == "hpc_v2_onepass" else "steps"]
+           "--mode", ("onepass" if method in ("hpc_v2_onepass", "hpc_v2_onepass_ms")
+                      else "steps")]
     if zarr:
         cmd += ["--writers", str(used["writers"])]
     cmd += EXTRACTIONS[cfg["extraction"]]
