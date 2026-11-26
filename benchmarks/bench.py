@@ -42,8 +42,11 @@ of at most 5000 rows for v2).  Every scan changes one thing:
     writers    1, 2, 4, 8 Zarr writers                  (ViSta-HPC v2 Zarr only)
     chunk      500, 1000, 2500, 10000, 20000 rows per chunk   (and 5000: standard)
 
-ViSta 1.0 runs in the scans standard, nms and nchan, once per configuration
-(``--repeats-vista1``), and only when ``cpu`` is among the devices.  The
+ViSta 1.0 runs in the scans standard, nms, nchan and cores, once per
+configuration (``--repeats-vista1``), and only when ``cpu`` is among the
+devices.  Its continuum subtraction and its fits cost about an hour on fifty
+datasets, so ``--vista1-stop-after stacking`` times the stack alone in a short
+job and the whole run is measured apart, in a long one.  The
 standard configuration is run only by the scan ``standard``: the other scans
 take it from there, so that jobs running at the same time do not repeat it.
 Every job writes its own file, WORK/results/runs_<scan>_<job>.json, and works
@@ -102,7 +105,7 @@ SCANS = {
     "writers": [{"writers": n} for n in (1, 2, 4, 8)],
     "chunk": [{"chunk_rows": n} for n in (500, 1000, 2500, 5000, 10000, 20000)],
 }
-VISTA1_SCANS = ("standard", "nms", "nchan")     # ViSta 1.0 has no readers, threads, GPU
+VISTA1_SCANS = ("standard", "nms", "nchan", "cores")   # no readers, writers, GPU
 GPU_ONLY = ("batch",)
 ZARR_ONLY = ("writers",)                        # only the Zarr store has several writers
 TAG = "line345796"                              # the name run_vista.sh gives to CO(3-2)
@@ -216,10 +219,13 @@ def command(method, device, a, cfg, lst, truth, out):
     rest = str(truth["rest_freq_ghz"])
     vrange = str(a.velocity_range)
     if method == "vista1":
-        return [sys.executable, os.path.join(HERE, "run_vista_casa.py"), "--input", lst,
-                "--vista-casa", a.vista1, "--uvmultifit", a.uvmultifit, "--rest-freq", rest,
-                "--z-ref", z_ref, "--v-window", str(-LINE_WINDOW), str(LINE_WINDOW),
-                "--velocity-range", vrange, "--out-dir", out, "--keep"], env, used
+        cmd = [sys.executable, os.path.join(HERE, "run_vista_casa.py"), "--input", lst,
+               "--vista-casa", a.vista1, "--uvmultifit", a.uvmultifit, "--rest-freq", rest,
+               "--z-ref", z_ref, "--v-window", str(-LINE_WINDOW), str(LINE_WINDOW),
+               "--velocity-range", vrange, "--out-dir", out, "--keep"]
+        if a.vista1_stop_after:
+            cmd += ["--stop-after", a.vista1_stop_after]
+        return cmd, env, used
     if method == "hpc_v1":
         # readers, threads and GPU batch of this version are set in the environment;
         # --scratch "": the stack is written in place, as by the other versions
@@ -402,6 +408,9 @@ def main():
                     help="cpu, gpu or cpu,gpu (ViSta 1.0 runs only with cpu)")
     ap.add_argument("--repeats", type=int, default=3, help="of every configuration")
     ap.add_argument("--repeats-vista1", type=int, default=1, help="of ViSta 1.0")
+    ap.add_argument("--vista1-stop-after", choices=("stacking", "unify", "contsub"), default=None,
+                    help="ViSta 1.0 ends after this stage, so that the stack can be timed in a "
+                         "short job and the continuum subtraction and the fits apart")
     ap.add_argument("--velocity-range", type=float, default=None,
                     help="half-width of the stacked band, km/s (default: the widest range "
                          "every dataset covers)")

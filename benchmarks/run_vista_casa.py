@@ -55,6 +55,11 @@ results go to ``<out-dir>/results.json``.  The stages, in order:
 (the stack), ``unify``, ``contsub``, ``fit_size``, ``fit_channels``,
 ``fit_profile``, ``fit_continuum``; ``bench.py`` counts ``averaging`` and
 ``unify`` (what UVMultiFit needs) with the extraction.
+
+``--stop-after`` ends the run at the end of one stage and writes the usual
+file with the quantities it did not measure set to NaN, so that the stages up
+to the stack can be timed in a short job while the continuum subtraction and
+the fits, which cost about an hour on fifty datasets, are measured apart.
 """
 from __future__ import annotations
 
@@ -257,12 +262,35 @@ def main():
     ap.add_argument("--noiseless", action="store_true",
                     help="noiseless data: UVMultiFit errors are zero, the spectrum is fitted "
                          "with equal weights and without Monte Carlo errors")
+    ap.add_argument("--stop-after", choices=["stacking", "unify", "contsub"], default=None,
+                    help="end the run after this stage, with NaN for what the stages that "
+                         "follow would have measured")
     a = ap.parse_args()
 
     rest_hz = a.rest_freq * 1e9
     os.makedirs(a.out_dir, exist_ok=True)
     out = os.path.abspath(a.out_dir)
     t_all = time.time()
+    settings = {"timebin": a.timebin, "average": a.average, "v_window_kms": list(a.v_window),
+                "size_window_kms": list(a.size_window), "z_ref": a.z_ref}
+
+    def write(res):
+        res["seconds"] = time.time() - t_all
+        res["settings"] = settings
+        json.dump(res, open(os.path.join(out, "results.json"), "w"), indent=1)
+        print(json.dumps(res, indent=1))
+
+    def stop_after(name):
+        """True when the run ends here, after writing what it has."""
+        if a.stop_after != name:
+            return False
+        nan = float("nan")
+        write({"pipeline": "vista_casa", "stopped_after": name,
+               "line_flux": nan, "line_flux_error": nan, "v0_kms": nan, "v0_error_kms": nan,
+               "fwhm_kms": nan, "fwhm_error_kms": nan, "size_arcsec": nan,
+               "size_error_arcsec": nan, "cont_flux": nan, "cont_flux_error": nan,
+               "cont_size_arcsec": nan, "n_mc": 0})
+        return True
 
     # the inputs are linked into the output directory, where ViSta writes its copies
     lines = []
@@ -303,19 +331,32 @@ def main():
     if not a.keep:
         for ms in v.ms_list:
             v._safe_remove(ms)
+    if stop_after("stacking"):
+        return
 
     stage("unify")
     unified = stacked + ".unified"
     unify(stacked, unified)
     if not a.keep:
         shutil.rmtree(stacked)
+    if stop_after("unify"):
+        return
 
     stage("contsub")
     from casatasks import uvcontsub
     lo, hi = a.v_window
     linefree = spw_selection(unified, rest_hz, lambda vv: (vv < lo) | (vv > hi))
     contsub = unified + ".contsub"
-    uvcontsub(vis=unified, outputvis=contsub, fitspec=linefree, fitorder=0, datacolumn="data")
+    try:
+        uvcontsub(vis=unified, outputvis=contsub, fitspec=linefree, fitorder=0,
+                  datacolumn="data")
+    except TypeError:
+        # CASA before 6.5 names the arguments differently and writes the output
+        # itself, next to the input and with the suffix this one asks for, so
+        # nothing else changes.
+        uvcontsub(vis=unified, fitspw=linefree, fitorder=0, want_cont=False)
+    if stop_after("contsub"):
+        return
 
     if a.average == "after":
         stage("averaging")
@@ -375,11 +416,8 @@ def main():
            "size_arcsec": float(size), "size_error_arcsec": float(size_err),
            "cont_flux": float(cpar[0]), "cont_flux_error": float(cerr[0]),
            "cont_size_arcsec": float(abs(cpar[1])),
-           "n_mc": int(n_ok), "seconds": time.time() - t_all,
-           "settings": {"timebin": a.timebin, "average": a.average, "v_window_kms": list(a.v_window),
-                        "size_window_kms": list(a.size_window), "z_ref": a.z_ref}}
-    json.dump(res, open(os.path.join(out, "results.json"), "w"), indent=1)
-    print(json.dumps(res, indent=1))
+           "n_mc": int(n_ok)}
+    write(res)
 
 
 if __name__ == "__main__":
