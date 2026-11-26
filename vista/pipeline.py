@@ -435,7 +435,9 @@ class Stacker:
         dict
             ``output``, ``format``, ``n_rows``, ``n_spw``, ``nchan``,
             ``df_hz``, ``flagged_fraction``, ``skipped`` (lines of the input
-            list without data), ``bytes_on_disk``, ``seconds`` and the
+            list without data), ``bytes_on_disk`` (the bytes written, for a
+            Zarr store, where the size on disk would have to be walked for),
+            ``seconds`` and the
             ``resources`` used; with *continuum*, ``contsub_orders``; with
             *stats_line*, ``statistics``.
         """
@@ -927,11 +929,12 @@ class Stacker:
             if run.gpu is not None and run.gpu.launches:
                 detail(f"  GPU: {run.gpu.launches} launches, "
                     f"{run.gpu.chunks / run.gpu.launches:.1f} chunks per launch on average")
-        # The size on disk of a Zarr store is one stat() per file, thousands of
-        # them on a shared filesystem, for a line of log: the bytes written are
-        # already counted, and the benchmark measures the disk on its own.
+        # Walking a Zarr store is one stat() per file, thousands of them on a
+        # shared filesystem, for a line of log: for a store the bytes written
+        # are reported instead, and they are already counted.
+        on_disk = run.bytes if output_format == "zarr" else store_size(final)
         size = (f"{fmt_size(run.bytes)} of visibilities written"
-                if output_format == "zarr" else fmt_size(store_size(final)))
+                if output_format == "zarr" else fmt_size(on_disk))
         log(f"Done in {fmt_time(total)}: {final} · {n_spw} SPW × {self._grid.nchan} "
             f"channels · {run.rows:,} rows · {size} · "
             f"{100 * flagged:.1f}% of the output flagged (no data)")
