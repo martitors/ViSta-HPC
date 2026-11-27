@@ -181,7 +181,13 @@ class ZarrStackWriter:
         self.root.attrs["vista"] = dict(attrs or {}, store_version=STORE_VERSION)
         self.parts = {}
         from concurrent.futures import ThreadPoolExecutor
-        self._pool = ThreadPoolExecutor(max_workers=1,
+        # The arrays of a partition are about forty small files, so creating
+        # them costs metadata operations on the filesystem and not a core, and
+        # a writer that reaches a partition before it exists waits for it.
+        # Several threads create them at once, as the consolidation at the end
+        # already does; VISTA_META_WORKERS overrides the number.
+        meta_workers = int(os.environ.get("VISTA_META_WORKERS", "0")) or 8
+        self._pool = ThreadPoolExecutor(max_workers=max(1, meta_workers),
                                         thread_name_prefix="vista-zarr-meta")
         # How long the writers spent waiting for the arrays of a partition to
         # exist, summed over them: the rest of their time is the writing
