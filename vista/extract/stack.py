@@ -227,6 +227,46 @@ def combine(sums, factors, multiplicity=None, renormalise=True):
     return real, imaginary, denominator, mean_b
 
 
+def real_combiner(sums, factors, renormalise=True, multiplicity=None):
+    """The real part of the stack, for accumulators whose real part changes.
+
+    The phase null rotates the real and the imaginary part of every source and
+    keeps the real part of the stack alone, hundreds of times over.  The
+    weights of the sources and the denominator do not depend on the real part,
+    so they are worked out once here and the function returned does what is
+    left of :func:`combine`.  The expressions and their order are those of
+    :func:`combine`, so the values are the same down to the last bit.
+
+    Returns
+    -------
+    (callable, ndarray)
+        A function from a ``(n_src, nchan, nbins)`` real part to the
+        ``(nchan, nbins)`` real part of the stack, and the denominator, which
+        is the weight :func:`combine` returns third.
+    """
+    if multiplicity is None:
+        multiplicity = np.ones(sums.shape[0])
+    multiplicity = np.asarray(multiplicity, dtype=float)
+
+    if renormalise:
+        total = sums[:, :, :, 2].sum(axis=(1, 2))
+        ok = total > 0
+        gain = np.zeros_like(total)
+        gain[ok] = multiplicity[ok] / total[ok]
+    else:
+        gain = multiplicity
+
+    denominator = np.einsum("s,scb->cb", gain, sums[:, :, :, 2])
+    positive = denominator > 0
+
+    def real_of(real_part):
+        numerator_re = np.einsum("s,s,scb->cb", gain, factors, real_part)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(positive, numerator_re / denominator, np.nan)
+
+    return real_of, denominator
+
+
 def sources_per_bin(sums, channel_mask) -> np.ndarray:
     """Number of sources contributing to each annulus, over the given channels."""
     weight = sums[..., 2][:, channel_mask, :].sum(axis=1)
@@ -383,7 +423,11 @@ def measure_continuum(statistics: Union[str, SufficientStatistics],
     for _ in range(bootstrap.n_realisations):
         multiplicity = np.bincount(rng.integers(0, n_sources, n_sources),
                                    minlength=n_sources).astype(float)
-        r, _, w, _ = combine(sums, factors, multiplicity=multiplicity, renormalise=renormalise)
+        # only the real part and the weight are used, so the imaginary part
+        # and the mean baseline are not worked out
+        real_of, w = real_combiner(sums, factors, renormalise=renormalise,
+                                   multiplicity=multiplicity)
+        r = real_of(sums[:, :, :, 0])
         boot_spectrum.append(mean_per_channel(r, w))
         boot_flux.append(mean_per_annulus(r, w, channels))
     boot_flux = np.asarray(boot_flux)

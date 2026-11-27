@@ -117,6 +117,10 @@ def read_subtable(path, columns=None, limit=None):
                 arr = np.asarray(t.getcol(c, startrow=0, nrow=n))
             except Exception:           # a column with a shape of its own per row
                 continue
+            if arr.ndim == 0:
+                # getcol returned a dictionary instead of rows: a column with no
+                # value of its own, such as LOG and SCHEDULE of OBSERVATION.
+                continue
             if arr.dtype.kind in "USa":
                 arr = np.array([str(v) for v in arr.ravel()],
                                dtype=object).reshape(arr.shape)
@@ -515,18 +519,46 @@ def copy_subtable_first_row(ms_path, name):
 
 
 def build_observation_table(ms_list):
-    """OBSERVATION table: the OBSERVATION rows of all the inputs.
+    """OBSERVATION table: the OBSERVATION rows of all the inputs, together.
+
+    The rows are written as one dataset of as many rows, the way
+    SPECTRAL_WINDOW is.  A dataset per row costs a group of the store, or a
+    lock of the table on a Measurement Set, for every input, and with fifty of
+    them that is most of what the closing does; the rows written are the same.
 
     Returns
     -------
     list of Dataset
-        One per row; an empty list when no input has the table.
+        One dataset holding every row; an empty list when no input has the
+        table, and a dataset per row when the inputs do not agree on the
+        columns or on their shape.
     """
     def load(ms):
-        return subtable_rows(f"{ms}::OBSERVATION")
+        return read_subtable(f"{ms}::OBSERVATION")
 
     with ThreadPoolExecutor(max_workers=min(8, len(ms_list))) as pool:
-        return [r for per_ms in pool.map(load, ms_list) for r in per_ms]
+        parts = [cols for n, cols in pool.map(load, ms_list) if n]
+    if not parts:
+        return []
+    names = set(parts[0])
+    shapes = {c: a.shape[1:] for c, a in parts[0].items()}
+    if not all(set(cols) == names and all(a.shape[1:] == shapes[c]
+                                          for c, a in cols.items())
+               for cols in parts):
+        return [r for ms in ms_list for r in subtable_rows(f"{ms}::OBSERVATION")]
+    data_vars = {}
+    for c in sorted(names):
+        arr = np.concatenate([cols[c] for cols in parts], axis=0)
+        if arr.dtype.kind == "O":
+            # read as objects, written as the text of fixed width that a
+            # reader of one row at a time used to hand to the writer
+            try:
+                arr = arr.astype(str)
+            except (TypeError, ValueError):
+                pass
+        dims = ("row",) + tuple(f"{c.lower()}-{k+1}" for k in range(arr.ndim - 1))
+        data_vars[c] = (dims, to_dask(arr))
+    return [Dataset(data_vars)]
 
 
 def build_feed_table(nant):

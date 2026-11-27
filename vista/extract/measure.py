@@ -48,7 +48,8 @@ from .linefit import (Cube, FitResult, FitSpec, Scan, Whitener, fit, flux_per_an
                       peak_flux_density, residual_continuum, window_flux, window_influence,
                       zero_spacing_spectrum)
 from .noise import build_noise_model, combine_variance
-from .stack import build_stack_input, combine, sources_per_bin, sources_per_channel
+from .stack import (build_stack_input, combine, real_combiner, sources_per_bin,
+                    sources_per_channel)
 from .statistics import SufficientStatistics
 
 
@@ -460,12 +461,17 @@ def _search(job):
     if cfg.n_null_phase and n_src >= 2:
         rng = np.random.default_rng(bootstrap.seed + 1)
         vals = [[] for _ in range(n_lines)]
+        # Only the real part of the accumulators is rotated and only the real
+        # part of the stack is kept, so the weights, the denominator and the
+        # three other outputs of combine() are the same at every realisation:
+        # they are worked out once, and the accumulators are not copied.
+        real_of, _ = real_combiner(sums, factors, renormalise=renorm)
+        sum_re, sum_im = sums[..., 0], sums[..., 1]
         for _ in range(int(cfg.n_null_phase)):
             phi = rng.uniform(0, 2 * np.pi, n_src)
-            rot = sums.copy()
-            rot[..., 0] = (np.cos(phi)[:, None, None] * sums[..., 0]
-                           - np.sin(phi)[:, None, None] * sums[..., 1])
-            r_rot, _, _, _ = combine(rot, factors, renormalise=renorm)
+            rot_re = (np.cos(phi)[:, None, None] * sum_re
+                      - np.sin(phi)[:, None, None] * sum_im)
+            r_rot = real_of(rot_re)
             for k in range(n_lines):
                 vals[k].append(scanners[k].best(y=r_rot)["snr"])
         for k in range(n_lines):

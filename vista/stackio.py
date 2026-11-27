@@ -23,6 +23,7 @@ input order, so the exported MS has the row order of ViSta 2.2.
 :func:`process_pieces` overlaps their I/O with the computation.
 """
 
+import json
 import os
 import shutil
 import threading
@@ -98,10 +99,12 @@ def _zarr3():
     return int(str(zarr.__version__).split(".")[0]) >= 3
 
 
-def _open_group(path, mode):
+def _open_group(path, mode, store=None):
     import zarr
     if _zarr3():
         return zarr.open_group(path, mode=mode, zarr_format=2)
+    if store is not None:
+        return zarr.open_group(store=store, mode=mode)
     return zarr.open_group(path, mode=mode)
 
 
@@ -111,6 +114,84 @@ def _local_store(path):
         from zarr.storage import LocalStore
         return LocalStore(path)
     return zarr.DirectoryStore(path)
+
+
+_IN_PLACE = None
+
+
+def _in_place_store(path):
+    """A store that writes every key straight to its file, or ``None``.
+
+    A Zarr store is a tree of small files, and on a shared filesystem the cost
+    of writing one is the number of operations and not the bytes.  The store
+    of zarr 2 spends six of them on every file: it looks the path up three
+    times, writes a temporary file and renames it, so that a reader never sees
+    a half-written file, and looks the temporary one up again.  The store of
+    the stacking is created by one process, written by it alone and read by
+    nobody before :meth:`ZarrStackWriter.close`, so none of that is needed and
+    a file costs one creation instead of six operations.
+
+    The metadata written are kept, so that the consolidated metadata of a
+    partition can be written from memory instead of reading the store back,
+    and the keys written are remembered, so that the question "does this array
+    exist already" is answered without asking the filesystem: this store is
+    the only writer of a store that began empty, so what it has written is
+    what there is.
+
+    Returns ``None`` on zarr 3, whose store is a different class: the group is
+    then opened on the one of the installed version and everything still
+    works, one write at a time.
+    """
+    global _IN_PLACE
+    if _zarr3():
+        return None
+    if _IN_PLACE is None:
+        import zarr
+        from numcodecs.compat import ensure_contiguous_ndarray_like
+
+        _META = (".zarray", ".zattrs", ".zgroup")
+
+        class InPlaceStore(zarr.DirectoryStore):
+
+            def __init__(self, root, **kwargs):
+                super().__init__(root, **kwargs)
+                self.meta = {}                 # key -> the bytes written
+                self._keys = set()
+                self._dirs = set()
+                self._guard = threading.Lock()
+
+            def __setitem__(self, key, value):
+                key = self._normalize_key(key)
+                value = ensure_contiguous_ndarray_like(value)
+                file_path = os.path.join(self.path, key)
+                folder = os.path.dirname(file_path)
+                with self._guard:
+                    fresh = folder and folder not in self._dirs
+                    if fresh:
+                        self._dirs.add(folder)
+                    self._keys.add(key)
+                    if key.endswith(_META):
+                        self.meta[key] = bytes(value)
+                if fresh:
+                    os.makedirs(folder, exist_ok=True)
+                self._tofile(value, file_path)
+
+            def __contains__(self, key):
+                return self._normalize_key(key) in self._keys
+
+        _IN_PLACE = InPlaceStore
+    return _IN_PLACE(path)
+
+
+def _consolidated(meta, prefix):
+    """The consolidated metadata of the group at *prefix*, from the metadata
+    already in memory: the same content zarr writes after reading the store
+    back, in the same bytes."""
+    from zarr.util import json_dumps
+    head = prefix + "/" if prefix else ""
+    inside = {k[len(head):]: json.loads(v) for k, v in meta.items()
+              if k.startswith(head)}
+    return json_dumps({"zarr_consolidated_format": 1, "metadata": inside})
 
 
 def _new_array(group, name, *, shape, chunks, dtype, fill_value, compressor,
@@ -176,12 +257,17 @@ class ZarrStackWriter:
                               "output_format='ms'") from e
         self.path = path
         self.compressor = _compressor(compress)
-        self.root = _open_group(path, "w")
+        self.store = _in_place_store(path)
+        self.root = _open_group(path, "w", store=self.store)
         self.main = self.root.require_group("MAIN")
         self.root.attrs["vista"] = dict(attrs or {}, store_version=STORE_VERSION)
         self.parts = {}
         from concurrent.futures import ThreadPoolExecutor
-        self._pool = ThreadPoolExecutor(max_workers=1,
+        # The arrays of a partition are metadata files on a shared filesystem,
+        # so several partitions are created at the same time: the resource is
+        # the metadata server and a thread of them is mostly waiting.
+        workers = int(os.environ.get("VISTA_META_WORKERS", "0")) or 8
+        self._pool = ThreadPoolExecutor(max_workers=max(1, workers),
                                         thread_name_prefix="vista-zarr-meta")
         # How long the writers spent waiting for the arrays of a partition to
         # exist, summed over them: the rest of their time is the writing
@@ -267,22 +353,29 @@ class ZarrStackWriter:
     def close(self):
         """Consolidate the metadata of every partition.
 
-        One group per input dataset, each independent of the others, so they
-        are consolidated at the same time: on a shared filesystem this stage is
-        waiting for metadata, not computing.
+        One group per input dataset, each independent of the others.  The
+        metadata of a partition are the files this writer has just written, so
+        the consolidated copy is built from them and costs one creation per
+        partition, instead of reading the store back: forty-four files read and
+        a directory listed, for every one of them.
         """
-        import zarr
         from concurrent.futures import ThreadPoolExecutor
         keys = list(self.parts)
         for k in keys:                       # a partition still being created
             self._arrays(k)
         self._pool.shutdown(wait=True)
 
-        def consolidate(k):
-            zarr.consolidate_metadata(
-                _local_store(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
+        if self.store is not None:
+            for k in keys:
+                prefix = f"MAIN/MAIN_{k}"
+                self.store[f"{prefix}/.zmetadata"] = _consolidated(self.store.meta, prefix)
+        elif keys:
+            import zarr
 
-        if keys:
+            def consolidate(k):
+                zarr.consolidate_metadata(
+                    _local_store(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
+
             with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
                 list(pool.map(consolidate, keys))
         self.parts = {}
@@ -394,11 +487,46 @@ class ZarrStack:
                 self._modified.add(dd)
 
     def close(self):
-        import zarr
         for dd in self._modified:
-            zarr.consolidate_metadata(
-                _local_store(os.path.join(self.path, "MAIN", f"MAIN_{dd}")))
+            self._reconsolidate(dd)
         self._modified = set()
+
+    def _reconsolidate(self, dd):
+        """Add the columns just created to the consolidated metadata of a
+        partition.
+
+        The file is already there and only the new arrays are missing from it,
+        so it is read once and written once, instead of listing the group and
+        reading every metadata file of it again.
+        """
+        base = os.path.join(self.path, "MAIN", f"MAIN_{dd}")
+
+        def whole():
+            import zarr
+            zarr.consolidate_metadata(_local_store(base))
+
+        if _zarr3():
+            return whole()
+        from zarr.util import json_dumps
+        path = os.path.join(base, ".zmetadata")
+        try:
+            with open(path, "rb") as fh:
+                out = json.load(fh)
+            inside = out["metadata"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return whole()                   # written by an older version
+        for name in self.groups[dd].array_keys():
+            for meta in (".zarray", ".zattrs"):
+                key = f"{name}/{meta}"
+                if key in inside:
+                    continue
+                try:
+                    with open(os.path.join(base, name, meta), "rb") as fh:
+                        inside[key] = json.load(fh)
+                except OSError:
+                    pass
+        with open(path, "wb") as fh:
+            fh.write(json_dumps({"zarr_consolidated_format": 1, "metadata": inside}))
 
 
 class MSStack:

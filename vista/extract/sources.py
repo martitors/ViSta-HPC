@@ -207,6 +207,24 @@ def primary_beam_gain(theta_rad: float, nu_obs_hz: float,
 # ---------------------------------------------------------------------------
 # cosmology and flux normalisation  (Eq. 27)
 # ---------------------------------------------------------------------------
+_COSMOLOGIES: dict = {}
+
+
+def _flat_lambda_cdm(H0: float, Om0: float):
+    """The astropy cosmology of these parameters, built once.
+
+    A measurement asks for a few hundred distances, always with the same two
+    parameters, so the object that answers them is kept instead of being built
+    again for every one.
+    """
+    key = (float(H0), float(Om0))
+    cosmology = _COSMOLOGIES.get(key)
+    if cosmology is None:
+        from astropy.cosmology import FlatLambdaCDM
+        cosmology = _COSMOLOGIES[key] = FlatLambdaCDM(H0=key[0], Om0=key[1])
+    return cosmology
+
+
 def luminosity_distance_mpc(z: float, H0: float = 67.4,
                             Om0: float = 0.315) -> float:
     """Luminosity distance in Mpc for a flat LambdaCDM cosmology.
@@ -214,9 +232,7 @@ def luminosity_distance_mpc(z: float, H0: float = 67.4,
     Uses astropy when available and falls back to a direct quadrature.
     """
     try:
-        from astropy.cosmology import FlatLambdaCDM
-        return float(FlatLambdaCDM(H0=H0, Om0=Om0)
-                     .luminosity_distance(z).value)
+        return float(_flat_lambda_cdm(H0, Om0).luminosity_distance(z).value)
     except ImportError:
         OL = 1.0 - Om0
         DH = 2.99792458e5 / H0
