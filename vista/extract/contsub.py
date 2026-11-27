@@ -323,6 +323,14 @@ def subtract_continuum(ms_path: str,
             plan[dd] = {"fit_mask": fit_mask, "x_all": x_all, "order": order}
             tasks += [(dd, r0, n) for r0, n in pieces]
 
+        if stack.kind == "ms":
+            # The single writer of the stacking appends the chunks of the
+            # datasets as they arrive, so their rows are interleaved.  Taken
+            # in the order of the table, a tile shared by two datasets is read
+            # and written once instead of twice.  Every row is fitted on its
+            # own, so the result is the same.
+            tasks.sort(key=lambda task: task[1])
+
         def read(task):
             dd, r0, n = task
             return stack.read(dd, r0, n, [config.data_column, "FLAG"])
