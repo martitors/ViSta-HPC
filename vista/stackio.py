@@ -102,6 +102,8 @@ def _zarr3():
 def _open_group(path, mode, store=None):
     import zarr
     if _zarr3():
+        if store is not None:
+            return zarr.open_group(store=store, mode=mode, zarr_format=2)
         return zarr.open_group(path, mode=mode, zarr_format=2)
     if store is not None:
         return zarr.open_group(store=store, mode=mode)
@@ -116,82 +118,131 @@ def _local_store(path):
     return zarr.DirectoryStore(path)
 
 
-_IN_PLACE = None
+_META_FILES = (".zarray", ".zattrs", ".zgroup")
+_IN_PLACE = {}
 
 
 def _in_place_store(path):
-    """A store that writes every key straight to its file, or ``None``.
+    """A store that writes every key straight to its file.
 
     A Zarr store is a tree of small files, and on a shared filesystem the cost
-    of writing one is the number of operations and not the bytes.  The store
-    of zarr 2 spends six of them on every file: it looks the path up three
-    times, writes a temporary file and renames it, so that a reader never sees
-    a half-written file, and looks the temporary one up again.  The store of
-    the stacking is created by one process, written by it alone and read by
-    nobody before :meth:`ZarrStackWriter.close`, so none of that is needed and
-    a file costs one creation instead of six operations.
+    of writing one is the number of operations and not the bytes.  Both
+    versions of zarr spend several on every file so that a reader never sees a
+    half-written one: they make sure the directory is there, write a temporary
+    file and rename it, and zarr 2 looks the path up three times besides.
+    Before creating an array they also ask the filesystem whether it is there
+    already, which it never is.  The store of the stacking is created by one
+    process, written by it alone and read by nobody before
+    :meth:`ZarrStackWriter.close`, so none of that is needed: a key is written
+    where it belongs, once, the directory of a partition is made the first
+    time and not again, and what the store has written answers what is in it.
 
-    The metadata written are kept, so that the consolidated metadata of a
-    partition can be written from memory instead of reading the store back,
-    and the keys written are remembered, so that the question "does this array
-    exist already" is answered without asking the filesystem: this store is
-    the only writer of a store that began empty, so what it has written is
-    what there is.
-
-    Returns ``None`` on zarr 3, whose store is a different class: the group is
-    then opened on the one of the installed version and everything still
-    works, one write at a time.
+    The metadata written are kept as well, so that the consolidated metadata
+    of a partition is built from them instead of reading the whole group back.
     """
-    global _IN_PLACE
-    if _zarr3():
-        return None
-    if _IN_PLACE is None:
-        import zarr
-        from numcodecs.compat import ensure_contiguous_ndarray_like
+    key = 3 if _zarr3() else 2
+    if key not in _IN_PLACE:
+        _IN_PLACE[key] = _in_place_zarr3() if _zarr3() else _in_place_zarr2()
+    return _IN_PLACE[key](path)
 
-        _META = (".zarray", ".zattrs", ".zgroup")
 
-        class InPlaceStore(zarr.DirectoryStore):
+def _in_place_zarr2():
+    import zarr
+    from numcodecs.compat import ensure_contiguous_ndarray_like
 
-            def __init__(self, root, **kwargs):
-                super().__init__(root, **kwargs)
-                self.meta = {}                 # key -> the bytes written
-                self._keys = set()
-                self._dirs = set()
-                self._guard = threading.Lock()
+    class InPlaceStore(zarr.DirectoryStore):
 
-            def __setitem__(self, key, value):
-                key = self._normalize_key(key)
-                value = ensure_contiguous_ndarray_like(value)
-                file_path = os.path.join(self.path, key)
-                folder = os.path.dirname(file_path)
-                with self._guard:
-                    fresh = folder and folder not in self._dirs
-                    if fresh:
-                        self._dirs.add(folder)
-                    self._keys.add(key)
-                    if key.endswith(_META):
-                        self.meta[key] = bytes(value)
-                if fresh:
-                    os.makedirs(folder, exist_ok=True)
-                self._tofile(value, file_path)
+        def __init__(self, root, **kwargs):
+            super().__init__(root, **kwargs)
+            self.meta = {}                     # key -> the bytes written
+            self._written = set()
+            self._folders = set()
+            self._guard = threading.Lock()
 
-            def __contains__(self, key):
-                return self._normalize_key(key) in self._keys
+        def __setitem__(self, key, value):
+            key = self._normalize_key(key)
+            value = ensure_contiguous_ndarray_like(value)
+            file_path = os.path.join(self.path, key)
+            folder = os.path.dirname(file_path)
+            _remember(self, key, folder, value,
+                      lambda: os.makedirs(folder, exist_ok=True))
+            self._tofile(value, file_path)
 
-        _IN_PLACE = InPlaceStore
-    return _IN_PLACE(path)
+        def __contains__(self, key):
+            return self._normalize_key(key) in self._written
+
+    return InPlaceStore
+
+
+def _in_place_zarr3():
+    import asyncio
+
+    from zarr.storage import LocalStore
+
+    class InPlaceLocalStore(LocalStore):
+
+        def __init__(self, root, **kwargs):
+            super().__init__(root, **kwargs)
+            self.meta = {}                     # key -> the bytes written
+            self._written = set()
+            self._folders = set()
+            self._guard = threading.Lock()
+
+        def _write(self, key, value):
+            file_path = self.root / key
+            folder = file_path.parent
+            view = value.as_buffer_like()
+            _remember(self, key, folder, view,
+                      lambda: folder.mkdir(parents=True, exist_ok=True))
+            with open(file_path, "wb") as fh:
+                fh.write(view)
+
+        async def _set(self, key, value, exclusive=False):
+            await self._ensure_open()
+            self._check_writable()
+            await asyncio.to_thread(self._write, key, value)
+
+        async def get(self, key, *args, **kwargs):
+            if key not in self._written:
+                return None
+            return await super().get(key, *args, **kwargs)
+
+        async def exists(self, key):
+            return key in self._written
+
+    return InPlaceLocalStore
+
+
+def _remember(store, key, folder, value, make):
+    """Record a key being written, and make its directory the first time.
+
+    The directory is made while the others wait, because several keys of a
+    partition are written at once and one of them would otherwise find the
+    directory marked as made before it was there.
+    """
+    with store._guard:
+        if folder not in store._folders:
+            make()
+            store._folders.add(folder)
+        store._written.add(key)
+        if key.rpartition("/")[2] in _META_FILES:
+            store.meta[key] = bytes(value)
+
+
+def _consolidated_bytes(inside):
+    """The ``.zmetadata`` of a group, holding the metadata given."""
+    return json.dumps({"metadata": inside, "zarr_consolidated_format": 1},
+                      sort_keys=True, ensure_ascii=True).encode("ascii")
 
 
 def _consolidated(meta, prefix):
-    """The consolidated metadata of the group at *prefix*, from the metadata
-    already in memory: the same content zarr writes after reading the store
-    back, in the same bytes."""
-    from zarr.util import json_dumps
+    """The consolidated metadata of the group at *prefix*, built from the
+    metadata already in memory rather than by reading the store back: the same
+    content zarr writes, which is what a reader of the store parses."""
     head = prefix + "/" if prefix else ""
     inside = {k[len(head):]: json.loads(v) for k, v in meta.items()
               if k.startswith(head)}
-    return json_dumps({"zarr_consolidated_format": 1, "metadata": inside})
+    return _consolidated_bytes(inside)
 
 
 def _new_array(group, name, *, shape, chunks, dtype, fill_value, compressor,
@@ -365,19 +416,11 @@ class ZarrStackWriter:
             self._arrays(k)
         self._pool.shutdown(wait=True)
 
-        if self.store is not None:
-            for k in keys:
-                prefix = f"MAIN/MAIN_{k}"
-                self.store[f"{prefix}/.zmetadata"] = _consolidated(self.store.meta, prefix)
-        elif keys:
-            import zarr
-
-            def consolidate(k):
-                zarr.consolidate_metadata(
-                    _local_store(os.path.join(self.path, "MAIN", f"MAIN_{k}")))
-
-            with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
-                list(pool.map(consolidate, keys))
+        for k in keys:
+            raw = _consolidated(self.store.meta, f"MAIN/MAIN_{k}")
+            with open(os.path.join(self.path, "MAIN", f"MAIN_{k}", ".zmetadata"),
+                      "wb") as fh:
+                fh.write(raw)
         self.parts = {}
 
 
@@ -505,9 +548,6 @@ class ZarrStack:
             import zarr
             zarr.consolidate_metadata(_local_store(base))
 
-        if _zarr3():
-            return whole()
-        from zarr.util import json_dumps
         path = os.path.join(base, ".zmetadata")
         try:
             with open(path, "rb") as fh:
@@ -526,7 +566,7 @@ class ZarrStack:
                 except OSError:
                     pass
         with open(path, "wb") as fh:
-            fh.write(json_dumps({"zarr_consolidated_format": 1, "metadata": inside}))
+            fh.write(_consolidated_bytes(inside))
 
 
 class MSStack:
